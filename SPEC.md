@@ -6,9 +6,33 @@ A PWA map application for tracking physical assets (dumpsters, portable storage,
 
 ## Stack
 
-- Vite + React (PWA)
+- Vite + React (PWA) + vite-plugin-pwa
 - Supabase (Postgres DB + JS client — no Express)
 - Mapbox GL JS (map + geocoding)
+- Tailwind CSS v4
+- shadcn/ui (component library — Radix UI primitives, fully owned/customizable)
+
+## Environment Variables
+
+```
+VITE_SUPABASE_URL=
+VITE_SUPABASE_ANON_KEY=
+VITE_MAPBOX_TOKEN=
+```
+
+## Auth
+
+V1: No authentication. Supabase RLS disabled. Internal tool only.
+
+---
+
+## UI
+
+- **Mobile-first** — designed for field use on phones
+- **Theme** — clean and minimal, brand color derived from company logo applied to primary buttons and active states
+- **Logo** — displayed in top nav/header
+- **Map interaction** — asset detail opens in a bottom sheet on mobile, side panel on desktop
+- **Components via shadcn/ui** — forms, modals, sheets, buttons, selects all consistent out of the box
 
 ---
 
@@ -43,7 +67,7 @@ The physical inventory — each row is a real-world unit.
 | column | type | notes |
 |--------|------|-------|
 | id | uuid | PK |
-| type | text | references asset_types.name |
+| asset_type_id | uuid | FK → asset_types.id |
 | size | text | free text (e.g. "20yd", "40ft") |
 | label | text | identifier for the unit (e.g. "BIN-04") |
 | notes | text | permanent notes about this unit |
