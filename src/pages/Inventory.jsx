@@ -1,26 +1,48 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
-import { Plus, ChevronRight, Truck } from 'lucide-react'
+import { Plus, ChevronRight, Truck, ChevronDown, ChevronUp, Search, X, AlertTriangle } from 'lucide-react'
+import { getMarkerColor } from '@/lib/utils'
+import AssetBottomSheet from '@/components/AssetBottomSheet'
+
+function match(q, ...fields) {
+  return fields.some(f => f?.toLowerCase().includes(q))
+}
 
 export default function Inventory() {
-  const [assets, setAssets] = useState([])
+  const [yardAssets, setYardAssets] = useState([])
+  const [deployedAssets, setDeployedAssets] = useState([])
   const [loading, setLoading] = useState(true)
+  const [deployedOpen, setDeployedOpen] = useState(true)
+  const [selected, setSelected] = useState(null)
+  const [query, setQuery] = useState('')
   const navigate = useNavigate()
 
-  useEffect(() => {
-    fetchYardAssets()
+  const fetchAll = useCallback(async () => {
+    setLoading(true)
+    const [{ data: yard }, { data: deployed }] = await Promise.all([
+      supabase.from('yard_assets').select('*').order('created_at', { ascending: false }),
+      supabase.from('active_deployments').select('*').order('dropped_at', { ascending: false }),
+    ])
+    if (yard) setYardAssets(yard)
+    if (deployed) setDeployedAssets(deployed)
+    setLoading(false)
   }, [])
 
-  async function fetchYardAssets() {
-    setLoading(true)
-    const { data } = await supabase.from('yard_assets').select('*').order('created_at', { ascending: false })
-    if (data) setAssets(data)
-    setLoading(false)
-  }
+  useEffect(() => { fetchAll() }, [fetchAll])
 
-  const grouped = assets.reduce((acc, asset) => {
+  const q = query.trim().toLowerCase()
+  const filteredDeployed = q ? deployedAssets.filter(d => match(q, d.label, d.type_name, d.address, d.customer_name, d.size)) : deployedAssets
+  const filteredYard = q ? yardAssets.filter(a => match(q, a.label, a.type_name, a.size, a.notes)) : yardAssets
+
+  const expiringSoon = deployedAssets.filter(d => {
+    if (!d.expires_at) return false
+    const daysLeft = Math.ceil((new Date(d.expires_at) - new Date()) / (1000 * 60 * 60 * 24))
+    return daysLeft <= 7
+  }).sort((a, b) => new Date(a.expires_at) - new Date(b.expires_at))
+
+  const grouped = filteredYard.reduce((acc, asset) => {
     const key = asset.type_name
     if (!acc[key]) acc[key] = []
     acc[key].push(asset)
@@ -30,61 +52,150 @@ export default function Inventory() {
   return (
     <div className="h-full flex flex-col">
       <div className="flex items-center justify-between px-4 pt-5 pb-3">
-        <h1 className="text-xl font-semibold">Yard Inventory</h1>
+        <h1 className="text-xl font-semibold">Inventory</h1>
         <Button size="sm" onClick={() => navigate('/assets/new')}>
           <Plus size={16} />
           Add Asset
         </Button>
       </div>
 
+      <div className="px-4 pb-3">
+        <div className="relative">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+          <input
+            type="search"
+            placeholder="Search assets…"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            className="w-full rounded-lg border border-input bg-background pl-8 pr-8 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+          />
+          {query && (
+            <button onClick={() => setQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+              <X size={14} />
+            </button>
+          )}
+        </div>
+      </div>
+
       <div className="flex-1 overflow-y-auto px-4 pb-4">
         {loading && <p className="text-muted-foreground text-sm mt-8 text-center">Loading…</p>}
 
-        {!loading && assets.length === 0 && (
-          <div className="text-center mt-16 space-y-2">
-            <p className="text-muted-foreground text-sm">No assets in yard</p>
-            <Button variant="outline" size="sm" onClick={() => navigate('/assets/new')}>
-              Add your first asset
-            </Button>
+        {!loading && expiringSoon.length > 0 && !q && (
+          <div className="mb-5">
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-destructive uppercase tracking-wider mb-2">
+              <AlertTriangle size={13} />
+              Expiring Soon ({expiringSoon.length})
+            </div>
+            <div className="space-y-2">
+              {expiringSoon.map(dep => {
+                const daysLeft = Math.ceil((new Date(dep.expires_at) - new Date()) / (1000 * 60 * 60 * 24))
+                const label = daysLeft < 0 ? 'Expired' : daysLeft === 0 ? 'Today' : `${daysLeft}d left`
+                return (
+                  <button
+                    key={dep.id}
+                    className="w-full text-left bg-card border border-destructive/30 rounded-xl p-4 flex items-center gap-3 hover:bg-accent transition-colors"
+                    onClick={() => setSelected([dep])}
+                  >
+                    <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: getMarkerColor(dep.expires_at) }} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">{dep.label}</span>
+                        <span className="text-muted-foreground text-sm">{dep.type_name}</span>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-0.5 truncate">{dep.address}</p>
+                      {dep.customer_name && <p className="text-xs text-muted-foreground truncate">{dep.customer_name}</p>}
+                    </div>
+                    <span className="text-xs font-medium text-destructive flex-shrink-0">{label}</span>
+                  </button>
+                )
+              })}
+            </div>
           </div>
         )}
 
-        {Object.entries(grouped).map(([type, items]) => (
-          <div key={type} className="mb-5">
-            <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-              {type} ({items.length})
-            </h2>
-            <div className="space-y-2">
-              {items.map(asset => (
-                <div key={asset.id} className="bg-card border rounded-xl p-4 flex items-center justify-between">
-                  <div className="min-w-0">
-                    <p className="font-medium truncate">{asset.label}</p>
-                    {asset.size && <p className="text-sm text-muted-foreground">{asset.size}</p>}
-                    {asset.notes && (
-                      <p className="text-xs text-muted-foreground mt-0.5 truncate">{asset.notes}</p>
-                    )}
+        {!loading && (
+          <>
+            {filteredDeployed.length > 0 && (
+              <div className="mb-6">
+                <button
+                  className="flex items-center justify-between w-full text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2"
+                  onClick={() => setDeployedOpen(v => !v)}
+                >
+                  <span>Deployed ({filteredDeployed.length})</span>
+                  {deployedOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                </button>
+
+                {deployedOpen && (
+                  <div className="space-y-2">
+                    {filteredDeployed.map(dep => (
+                      <button
+                        key={dep.id}
+                        className="w-full text-left bg-card border rounded-xl p-4 flex items-center gap-3 hover:bg-accent transition-colors"
+                        onClick={() => setSelected([dep])}
+                      >
+                        <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: getMarkerColor(dep.expires_at) }} />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">{dep.label}</span>
+                            <span className="text-muted-foreground text-sm">{dep.type_name}</span>
+                            {dep.size && <span className="text-muted-foreground text-sm">· {dep.size}</span>}
+                          </div>
+                          <p className="text-xs text-muted-foreground mt-0.5 truncate">{dep.address}</p>
+                          {dep.customer_name && <p className="text-xs text-muted-foreground truncate">{dep.customer_name}</p>}
+                        </div>
+                        <ChevronRight size={16} className="text-muted-foreground flex-shrink-0" />
+                      </button>
+                    ))}
                   </div>
-                  <div className="flex items-center gap-2 ml-3 flex-shrink-0">
-                    <Button
-                      size="sm"
-                      onClick={() => navigate(`/deploy/${asset.id}`)}
-                    >
-                      <Truck size={14} />
-                      Deploy
-                    </Button>
-                    <button
-                      className="text-muted-foreground hover:text-foreground"
-                      onClick={() => navigate(`/assets/${asset.id}`)}
-                    >
-                      <ChevronRight size={18} />
-                    </button>
+                )}
+              </div>
+            )}
+
+            {filteredYard.length > 0 && (
+              <>
+                <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+                  In Yard ({filteredYard.length})
+                </h2>
+                {Object.entries(grouped).map(([type, items]) => (
+                  <div key={type} className="mb-5">
+                    <h3 className="text-xs text-muted-foreground mb-2 ml-0.5">{type} ({items.length})</h3>
+                    <div className="space-y-2">
+                      {items.map(asset => (
+                        <div key={asset.id} className="bg-card border rounded-xl p-4 flex items-center justify-between">
+                          <div className="min-w-0">
+                            <p className="font-medium truncate">{asset.label}</p>
+                            {asset.size && <p className="text-sm text-muted-foreground">{asset.size}</p>}
+                            {asset.notes && <p className="text-xs text-muted-foreground mt-0.5 truncate">{asset.notes}</p>}
+                          </div>
+                          <div className="flex items-center gap-2 ml-3 flex-shrink-0">
+                            <Button size="sm" onClick={() => navigate(`/deploy/${asset.id}`)}>
+                              <Truck size={14} />
+                              Deploy
+                            </Button>
+                            <button className="text-muted-foreground hover:text-foreground" onClick={() => navigate(`/assets/${asset.id}`)}>
+                              <ChevronRight size={18} />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
+                ))}
+              </>
+            )}
+
+            {!loading && q && filteredDeployed.length === 0 && filteredYard.length === 0 && (
+              <p className="text-muted-foreground text-sm text-center mt-12">No assets match "{query}"</p>
+            )}
+          </>
+        )}
       </div>
+
+      <AssetBottomSheet
+        deployments={selected}
+        onClose={() => setSelected(null)}
+        onPickup={() => { fetchAll(); setSelected(null) }}
+      />
     </div>
   )
 }

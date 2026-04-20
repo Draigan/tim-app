@@ -1,11 +1,13 @@
 import { NavLink } from 'react-router-dom'
-import { Map, Package, Settings } from 'lucide-react'
+import { Map, Package, History, Settings, FlaskConical } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const navItems = [
   { to: '/', icon: Map, label: 'Map' },
   { to: '/inventory', icon: Package, label: 'Inventory' },
+  { to: '/history', icon: History, label: 'History' },
   { to: '/settings', icon: Settings, label: 'Settings' },
+  { to: '/maptest', icon: FlaskConical, label: 'Test' },
 ]
 
 export default function BottomNav() {

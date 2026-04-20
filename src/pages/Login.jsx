@@ -1,14 +1,92 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Share, MoreVertical, Plus, Download } from 'lucide-react'
+
+const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent)
+const isAndroid = /android/i.test(navigator.userAgent)
+const isStandalone = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches
+
+function InstallBanner({ deferredPrompt, onInstall }) {
+  if (isStandalone) return null
+
+  if (isIos) {
+    return (
+      <div className="rounded-xl border bg-muted/50 p-4 text-sm space-y-2">
+        <p className="font-medium text-center">Add to Home Screen</p>
+        <div className="space-y-1.5 text-muted-foreground">
+          <div className="flex items-center gap-2">
+            <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary text-primary-foreground text-xs flex items-center justify-center font-bold">1</span>
+            <span>Tap the <Share size={13} className="inline mx-0.5 mb-0.5" /> Share button in Safari</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary text-primary-foreground text-xs flex items-center justify-center font-bold">2</span>
+            <span>Tap <strong>"Add to Home Screen"</strong> <Plus size={13} className="inline mx-0.5 mb-0.5" /></span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary text-primary-foreground text-xs flex items-center justify-center font-bold">3</span>
+            <span>Tap <strong>"Add"</strong> to install</span>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (deferredPrompt) {
+    return (
+      <Button variant="outline" className="w-full" onClick={onInstall}>
+        <Download size={15} />
+        Install App
+      </Button>
+    )
+  }
+
+  // Android fallback (prompt already dismissed or not Chrome)
+  if (isAndroid) {
+    return (
+      <div className="rounded-xl border bg-muted/50 p-4 text-sm space-y-2">
+        <p className="font-medium text-center">Add to Home Screen</p>
+        <div className="space-y-1.5 text-muted-foreground">
+          <div className="flex items-center gap-2">
+            <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary text-primary-foreground text-xs flex items-center justify-center font-bold">1</span>
+            <span>Tap <MoreVertical size={13} className="inline mx-0.5 mb-0.5" /> in your browser menu</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary text-primary-foreground text-xs flex items-center justify-center font-bold">2</span>
+            <span>Tap <strong>"Add to Home Screen"</strong></span>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return null
+}
 
 export default function Login() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [deferredPrompt, setDeferredPrompt] = useState(null)
+
+  useEffect(() => {
+    function handler(e) {
+      e.preventDefault()
+      setDeferredPrompt(e)
+    }
+    window.addEventListener('beforeinstallprompt', handler)
+    return () => window.removeEventListener('beforeinstallprompt', handler)
+  }, [])
+
+  async function handleInstall() {
+    if (!deferredPrompt) return
+    deferredPrompt.prompt()
+    await deferredPrompt.userChoice
+    setDeferredPrompt(null)
+  }
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -22,8 +100,8 @@ export default function Login() {
   return (
     <div className="min-h-dvh flex items-center justify-center p-6 bg-background">
       <div className="w-full max-w-sm space-y-6">
-        <div className="text-center space-y-1">
-          <h1 className="text-2xl font-semibold">Asset Tracker</h1>
+        <div className="text-center space-y-3">
+          <img src="/logo.webp" alt="Timberfell" className="h-14 w-auto mx-auto logo-invert" />
           <p className="text-sm text-muted-foreground">Sign in to continue</p>
         </div>
 
@@ -57,6 +135,8 @@ export default function Login() {
             {loading ? 'Signing in…' : 'Sign In'}
           </Button>
         </form>
+
+        <InstallBanner deferredPrompt={deferredPrompt} onInstall={handleInstall} />
       </div>
     </div>
   )

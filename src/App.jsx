@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import Layout from '@/components/Layout'
+import { ThemeProvider } from '@/lib/theme'
 import Login from '@/pages/Login'
 import MapView from '@/pages/MapView'
 import Inventory from '@/pages/Inventory'
@@ -9,6 +10,8 @@ import NewAsset from '@/pages/NewAsset'
 import AssetDetail from '@/pages/AssetDetail'
 import DeployAsset from '@/pages/DeployAsset'
 import Settings from '@/pages/Settings'
+import History from '@/pages/History'
+import MapTest from '@/pages/MapTest'
 
 export default function App() {
   const [session, setSession] = useState(undefined)
@@ -21,9 +24,10 @@ export default function App() {
 
   if (session === undefined) return null
 
-  if (!session) return <Login />
+  if (!session) return <ThemeProvider><Login /></ThemeProvider>
 
   return (
+    <ThemeProvider>
     <BrowserRouter>
       <Routes>
         <Route element={<Layout />}>
@@ -32,9 +36,12 @@ export default function App() {
           <Route path="/assets/new" element={<NewAsset />} />
           <Route path="/assets/:id" element={<AssetDetail />} />
           <Route path="/deploy/:assetId" element={<DeployAsset />} />
+          <Route path="/history" element={<History />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/maptest" element={<MapTest />} />
         </Route>
       </Routes>
     </BrowserRouter>
+    </ThemeProvider>
   )
 }

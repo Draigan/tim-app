@@ -2,14 +2,15 @@
 create table asset_types (
   id uuid primary key default gen_random_uuid(),
   name text not null unique,
+  icon text default '📦',
   created_at timestamptz default now()
 );
 
-insert into asset_types (name) values
-  ('Dumpster'),
-  ('Portable Storage'),
-  ('Portable Toilet'),
-  ('Trailer');
+insert into asset_types (name, icon) values
+  ('Dumpster', '🗑️'),
+  ('Portable Storage', '📦'),
+  ('Portable Toilet', '🚽'),
+  ('Trailer', '🚛');
 
 -- Physical asset inventory
 create table assets (
@@ -66,7 +67,7 @@ create view active_deployments as
   select
     d.*,
     a.label, a.size, a.notes as asset_notes, a.asset_type_id,
-    t.name as type_name
+    t.name as type_name, t.icon as type_icon
   from deployments d
   join assets a on a.id = d.asset_id
   join asset_types t on t.id = a.asset_type_id

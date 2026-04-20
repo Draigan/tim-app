@@ -145,11 +145,13 @@ export default function DeployAsset() {
 
         <div className="space-y-2">
           <Label htmlFor="expires_at">Expected Pick Up</Label>
-          <Input
+          <input
             id="expires_at"
             type="date"
             value={form.expires_at}
             onChange={e => set('expires_at', e.target.value)}
+            onClick={e => { try { e.target.showPicker() } catch {} }}
+            className="w-full rounded-md border border-input px-3 py-2 text-sm cursor-pointer"
           />
         </div>
 

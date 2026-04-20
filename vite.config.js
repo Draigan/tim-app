@@ -12,9 +12,9 @@ export default defineConfig({
       registerType: 'autoUpdate',
       workbox: { maximumFileSizeToCacheInBytes: 3 * 1024 * 1024 },
       manifest: {
-        name: 'Asset Tracker',
-        short_name: 'Assets',
-        theme_color: '#1e40af',
+        name: 'Timberfell',
+        short_name: 'Timberfell',
+        theme_color: '#2f6b3a',
         background_color: '#ffffff',
         display: 'standalone',
         icons: [

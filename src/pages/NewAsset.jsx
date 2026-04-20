@@ -8,12 +8,14 @@ import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { ArrowLeft, Plus } from 'lucide-react'
+import { ICON_OPTIONS, iconImgUrl } from '@/lib/icons'
 
 export default function NewAsset() {
   const navigate = useNavigate()
   const [types, setTypes] = useState([])
   const [form, setForm] = useState({ asset_type_id: '', size: '', label: '', notes: '' })
   const [newTypeName, setNewTypeName] = useState('')
+  const [newTypeIcon, setNewTypeIcon] = useState('box')
   const [showNewType, setShowNewType] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -32,7 +34,7 @@ export default function NewAsset() {
     if (!newTypeName.trim()) return
     const { data, error } = await supabase
       .from('asset_types')
-      .insert({ name: newTypeName.trim() })
+      .insert({ name: newTypeName.trim(), icon: newTypeIcon })
       .select()
       .single()
     if (!error && data) {
@@ -40,6 +42,7 @@ export default function NewAsset() {
       set('asset_type_id', data.id)
       setShowNewType(false)
       setNewTypeName('')
+      setNewTypeIcon('box')
     }
   }
 
@@ -128,7 +131,7 @@ export default function NewAsset() {
       </form>
 
       <Dialog open={showNewType} onOpenChange={setShowNewType}>
-        <DialogContent className="max-w-sm mx-4">
+        <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle>New Asset Type</DialogTitle>
           </DialogHeader>
@@ -140,6 +143,23 @@ export default function NewAsset() {
               onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addNewType())}
               autoFocus
             />
+            <div>
+              <p className="text-sm text-muted-foreground mb-2">Icon</p>
+              <div className="grid grid-cols-6 gap-1">
+                {ICON_OPTIONS.map(({ key, label }) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setNewTypeIcon(key)}
+                    title={label}
+                    className={`flex flex-col items-center gap-1 p-2 rounded-md transition-colors ${newTypeIcon === key ? 'bg-primary/10 ring-2 ring-primary' : 'hover:bg-accent'}`}
+                  >
+                    <img src={iconImgUrl(key)} width="20" height="20" alt={label} />
+                    <span className="text-[9px] text-muted-foreground leading-tight text-center">{label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="flex gap-2">
               <Button variant="outline" className="flex-1" onClick={() => setShowNewType(false)}>
                 Cancel

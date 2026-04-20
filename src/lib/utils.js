@@ -13,6 +13,11 @@ export function getMarkerColor(expiresAt) {
   return '#22c55e'
 }
 
+export const TYPE_ICONS = [
+  '🗑️','📦','🚽','🚛','🏗️','⚙️','🛢️','🔧','🏠','⛽','🧲','🪣',
+  '🚰','🪜','🔩','🧱','🪵','🏚️','🚜','🛻','🚧','💡','🔌','🧰',
+]
+
 export function formatPhone(phone) {
   if (!phone) return ''
   const digits = phone.replace(/\D/g, '')
