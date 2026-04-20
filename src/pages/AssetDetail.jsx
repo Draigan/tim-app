@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Textarea } from '@/components/ui/textarea'
 import { ArrowLeft, Truck, MapPin, Calendar, User, Phone, Pencil } from 'lucide-react'
 import { formatPhone } from '@/lib/utils'
+import { ICON_OPTIONS, iconImgUrl } from '@/lib/icons'
 
 function statusBadge(dep) {
   if (dep.picked_up_at) return { label: 'Returned', variant: 'secondary' }
@@ -31,6 +32,7 @@ function EditAssetDialog({ asset, open, onOpenChange, onSaved }) {
   const [label, setLabel] = useState('')
   const [size, setSize] = useState('')
   const [typeId, setTypeId] = useState('')
+  const [typeIcon, setTypeIcon] = useState('')
   const [notes, setNotes] = useState('')
   const [saving, setSaving] = useState(false)
 
@@ -46,17 +48,30 @@ function EditAssetDialog({ asset, open, onOpenChange, onSaved }) {
       setSize(asset.size ?? '')
       setTypeId(asset.asset_type_id ?? '')
       setNotes(asset.notes ?? '')
+      setTypeIcon(asset.type_icon ?? '')
     }
   }, [open, asset])
 
+  // sync icon when type changes
+  function handleTypeChange(id) {
+    setTypeId(id)
+    const t = types.find(t => t.id === id)
+    if (t) setTypeIcon(t.icon ?? '')
+  }
+
   async function handleSave() {
     setSaving(true)
-    await supabase.from('assets').update({
-      label: label.trim(),
-      size: size || null,
-      asset_type_id: typeId,
-      notes: notes || null,
-    }).eq('id', asset.id)
+    await Promise.all([
+      supabase.from('assets').update({
+        label: label.trim(),
+        size: size || null,
+        asset_type_id: typeId,
+        notes: notes || null,
+      }).eq('id', asset.id),
+      typeId && typeIcon
+        ? supabase.from('asset_types').update({ icon: typeIcon }).eq('id', typeId)
+        : Promise.resolve(),
+    ])
     setSaving(false)
     onSaved()
   }
@@ -70,12 +85,29 @@ function EditAssetDialog({ asset, open, onOpenChange, onSaved }) {
         <div className="space-y-3 mt-2">
           <div>
             <p className="text-xs text-muted-foreground mb-1.5">Type</p>
-            <Select value={typeId} onValueChange={setTypeId}>
+            <Select value={typeId} onValueChange={handleTypeChange}>
               <SelectTrigger><SelectValue placeholder="Select type…" /></SelectTrigger>
               <SelectContent>
                 {types.map(t => <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>)}
               </SelectContent>
             </Select>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground mb-1.5">Icon</p>
+            <div className="grid grid-cols-6 gap-1">
+              {ICON_OPTIONS.map(({ key, label: iconLabel }) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setTypeIcon(key)}
+                  title={iconLabel}
+                  className={`flex flex-col items-center gap-1 p-2 rounded-md transition-colors ${typeIcon === key ? 'bg-primary/10 ring-2 ring-primary' : 'hover:bg-accent'}`}
+                >
+                  <img src={iconImgUrl(key)} width="20" height="20" alt={iconLabel} />
+                  <span className="text-[9px] text-muted-foreground leading-tight text-center">{iconLabel}</span>
+                </button>
+              ))}
+            </div>
           </div>
           <div>
             <p className="text-xs text-muted-foreground mb-1.5">Label / ID</p>

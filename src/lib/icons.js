@@ -1,9 +1,10 @@
 export const ICON_OPTIONS = [
-  { key: 'trash',    label: 'Dumpster'  },
-  { key: 'package',  label: 'Storage'   },
-  { key: 'car',      label: 'Vehicle'   },
-  { key: 'stairs',   label: 'Bleachers' },
-  { key: 'tool',     label: 'Equipment' },
+  { key: 'trash',    label: 'Dumpster'        },
+  { key: 'package',  label: 'Storage'         },
+  { key: 'car',      label: 'Vehicle'         },
+  { key: 'stairs',   label: 'Bleachers'       },
+  { key: 'tool',     label: 'Equipment'       },
+  { key: 'toilet-paper', label: 'Portable Toilet' },
 ]
 
 const iconCache = {}
