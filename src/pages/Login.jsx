@@ -65,13 +65,54 @@ function InstallBanner({ deferredPrompt, onInstall }) {
   return null
 }
 
-export default function Login() {
+function SetPasswordForm({ onPasswordSet }) {
+  const [password, setPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  async function handleSubmit(e) {
+    e.preventDefault()
+    if (password !== confirm) { setError('Passwords do not match'); return }
+    if (password.length < 6) { setError('Password must be at least 6 characters'); return }
+    setLoading(true)
+    const { error } = await supabase.auth.updateUser({ password })
+    if (error) { setError(error.message); setLoading(false) }
+    else onPasswordSet?.()
+  }
+
+  return (
+    <div className="min-h-dvh flex items-center justify-center p-6 bg-background">
+      <div className="w-full max-w-sm space-y-6">
+        <div className="text-center space-y-3">
+          <img src="/logo.webp" alt="Timberfell" className="h-14 w-auto mx-auto logo-invert" />
+          <p className="text-sm text-muted-foreground">Set a password to continue</p>
+        </div>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="pw">New Password</Label>
+            <Input id="pw" type="password" value={password} onChange={e => setPassword(e.target.value)} required autoFocus />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="cpw">Confirm Password</Label>
+            <Input id="cpw" type="password" value={confirm} onChange={e => setConfirm(e.target.value)} required />
+          </div>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <Button type="submit" className="w-full" disabled={loading}>
+            {loading ? 'Saving…' : 'Set Password'}
+          </Button>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+export default function Login({ onPasswordSet }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [deferredPrompt, setDeferredPrompt] = useState(null)
-
   useEffect(() => {
     function handler(e) {
       e.preventDefault()
@@ -80,6 +121,7 @@ export default function Login() {
     window.addEventListener('beforeinstallprompt', handler)
     return () => window.removeEventListener('beforeinstallprompt', handler)
   }, [])
+
 
   async function handleInstall() {
     if (!deferredPrompt) return

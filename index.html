@@ -12,6 +12,10 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      var _hash = new URLSearchParams(window.location.hash.slice(1));
+      if (_hash.get('type') === 'invite') sessionStorage.setItem('pendingInvite', '1');
+    </script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

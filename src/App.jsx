@@ -11,18 +11,25 @@ import AssetDetail from '@/pages/AssetDetail'
 import DeployAsset from '@/pages/DeployAsset'
 import Settings from '@/pages/Settings'
 import History from '@/pages/History'
-import MapTest from '@/pages/MapTest'
 
 export default function App() {
   const [session, setSession] = useState(undefined)
+  const [needsPassword, setNeedsPassword] = useState(
+    () => sessionStorage.getItem('pendingInvite') === '1'
+  )
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => setSession(session))
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => setSession(session))
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      setSession(session)
+      if (event === 'USER_UPDATED') { sessionStorage.removeItem('pendingInvite'); setNeedsPassword(false) }
+    })
     return () => subscription.unsubscribe()
   }, [])
 
   if (session === undefined) return null
+
+  if (needsPassword) return <ThemeProvider><Login onPasswordSet={() => setNeedsPassword(false)} /></ThemeProvider>
 
   if (!session) return <ThemeProvider><Login /></ThemeProvider>
 
@@ -38,7 +45,6 @@ export default function App() {
           <Route path="/deploy/:assetId" element={<DeployAsset />} />
           <Route path="/history" element={<History />} />
           <Route path="/settings" element={<Settings />} />
-          <Route path="/maptest" element={<MapTest />} />
         </Route>
       </Routes>
     </BrowserRouter>

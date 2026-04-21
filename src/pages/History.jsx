@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
+import { useRealtime } from '@/lib/useRealtime'
 import { getMarkerColor } from '@/lib/utils'
-import { Search, X, ChevronDown, ChevronUp, MapPin, User, Calendar } from 'lucide-react'
+import { Search, X, ChevronDown, ChevronUp, MapPin, User, Calendar, ClipboardList, FileText } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import AssetBottomSheet from '@/components/AssetBottomSheet'
 
@@ -20,6 +21,8 @@ export default function History() {
   const [records, setRecords] = useState([])
   const [types, setTypes] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [hasMore, setHasMore] = useState(false)
   const [showFilters, setShowFilters] = useState(false)
   const [selected, setSelected] = useState(null)
 
@@ -29,21 +32,36 @@ export default function History() {
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
 
+  const PAGE = 50
+
   const fetchAll = useCallback(async () => {
     setLoading(true)
     const [{ data: deps }, { data: assetTypes }] = await Promise.all([
       supabase
         .from('deployments')
         .select('*, assets(label, size, asset_types(name))')
-        .order('dropped_at', { ascending: false }),
+        .order('dropped_at', { ascending: false })
+        .range(0, PAGE - 1),
       supabase.from('asset_types').select('id, name').order('name'),
     ])
-    if (deps) setRecords(deps)
+    if (deps) { setRecords(deps); setHasMore(deps.length === PAGE) }
     if (assetTypes) setTypes(assetTypes)
     setLoading(false)
   }, [])
 
+  const loadMore = useCallback(async () => {
+    setLoadingMore(true)
+    const { data } = await supabase
+      .from('deployments')
+      .select('*, assets(label, size, asset_types(name))')
+      .order('dropped_at', { ascending: false })
+      .range(records.length, records.length + PAGE - 1)
+    if (data) { setRecords(r => [...r, ...data]); setHasMore(data.length === PAGE) }
+    setLoadingMore(false)
+  }, [records.length])
+
   useEffect(() => { fetchAll() }, [fetchAll])
+  useRealtime(['deployments'], fetchAll)
 
   const q = query.trim().toLowerCase()
   const filtered = records.filter(r => {
@@ -166,7 +184,7 @@ export default function History() {
         )}
 
         {!loading && (
-          <div className="space-y-2">
+          <div className="space-y-2 pb-2">
             {filtered.map(r => {
               const isActive = !r.picked_up_at
               const dot = isActive ? getMarkerColor(r.expires_at) : '#9ca3af'
@@ -207,11 +225,35 @@ export default function History() {
                         <span className="ml-1 text-xs">({duration(r.dropped_at, r.picked_up_at)})</span>
                       </span>
                     </div>
+                    {r.notes && (
+                      <div className="flex items-start gap-2 text-sm text-muted-foreground">
+                        <FileText size={13} className="mt-0.5 flex-shrink-0" />
+                        <span>{r.notes}</span>
+                      </div>
+                    )}
+                    {r.picked_up_by && (
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <User size={13} className="flex-shrink-0" />
+                        <span>Picked up by {r.picked_up_by}</span>
+                      </div>
+                    )}
+                    {r.pickup_notes && (
+                      <div className="flex items-start gap-2 text-sm text-muted-foreground">
+                        <ClipboardList size={13} className="mt-0.5 flex-shrink-0" />
+                        <span>{r.pickup_notes}</span>
+                      </div>
+                    )}
                   </div>
                 </button>
               )
             })}
           </div>
+        )}
+
+        {!loading && hasMore && !q && statusFilter === 'all' && typeFilter === 'all' && !dateFrom && !dateTo && (
+          <Button variant="outline" className="w-full mt-2" onClick={loadMore} disabled={loadingMore}>
+            {loadingMore ? 'Loading…' : 'Load more'}
+          </Button>
         )}
       </div>
 

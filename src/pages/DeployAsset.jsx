@@ -69,7 +69,7 @@ export default function DeployAsset() {
     })
     setSaving(false)
     if (error) { setError(error.message); return }
-    navigate('/')
+    navigate('/', { state: { flyTo: [selectedCoords.lng, selectedCoords.lat] } })
   }
 
   return (

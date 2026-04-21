@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import mapboxgl from 'mapbox-gl'
 import 'mapbox-gl/dist/mapbox-gl.css'
 import { MAPBOX_TOKEN, YARD, geocodeAddress } from '@/lib/mapbox'
+import { useRealtime } from '@/lib/useRealtime'
 import { supabase } from '@/lib/supabase'
 import { getMarkerColor } from '@/lib/utils'
 import AssetBottomSheet from '@/components/AssetBottomSheet'
@@ -19,18 +20,45 @@ function colorKey(expires_at) {
   return hex === '#ef4444' ? 'red' : hex === '#f59e0b' ? 'yellow' : 'green'
 }
 
+function worstColorKey(deps) {
+  const keys = deps.map(d => colorKey(d.expires_at))
+  return keys.includes('red') ? 'red' : keys.includes('yellow') ? 'yellow' : 'green'
+}
+
 function toGeoJSON(deps) {
+  const groups = deps.reduce((acc, dep) => {
+    ;(acc[dep.address] = acc[dep.address] ?? []).push(dep)
+    return acc
+  }, {})
+
   return {
     type: 'FeatureCollection',
-    features: deps.map(dep => ({
-      type: 'Feature',
-      geometry: { type: 'Point', coordinates: [dep.lng, dep.lat] },
-      properties: {
-        ck: colorKey(dep.expires_at),
-        ik: ICON_KEYS.includes(dep.type_icon) ? dep.type_icon : 'package',
-        dep: JSON.stringify(dep),
-      },
-    })),
+    features: Object.values(groups).map(group => {
+      const ck = worstColorKey(group)
+      const coords = [group[0].lng, group[0].lat]
+      if (group.length === 1) {
+        const dep = group[0]
+        return {
+          type: 'Feature',
+          geometry: { type: 'Point', coordinates: coords },
+          properties: {
+            ck,
+            ik: ICON_KEYS.includes(dep.type_icon) ? dep.type_icon : 'package',
+            dep: JSON.stringify(dep),
+            count: 1,
+          },
+        }
+      }
+      return {
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: coords },
+        properties: {
+          ck,
+          count: group.length,
+          deps: JSON.stringify(group),
+        },
+      }
+    }),
   }
 }
 
@@ -46,57 +74,114 @@ async function loadPinImages(map) {
     }
   }))
 
+  const PIN_BODY = (hex, gradId) => `
+    <ellipse cx="13.5" cy="34.8" rx="10.5" ry="5.25" fill="url(#${gradId})"/>
+    <path fill="${hex}" d="M27,13.5C27,19.07 20.25,27 14.75,34.5C14.02,35.5 12.98,35.5 12.25,34.5C6.75,27 0,19.22 0,13.5C0,6.04 6.04,0 13.5,0C20.96,0 27,6.04 27,13.5Z"/>
+    <path opacity="0.25" d="M13.5,0C6.04,0 0,6.04 0,13.5C0,19.22 6.75,27 12.25,34.5C13,35.52 14.02,35.5 14.75,34.5C20.25,27 27,19.07 27,13.5C27,6.04 20.96,0 13.5,0ZM13.5,1C20.42,1 26,6.58 26,13.5C26,15.9 24.5,19.18 22.22,22.74C19.95,26.3 16.71,30.14 13.94,33.91C13.74,34.18 13.61,34.32 13.5,34.44C13.39,34.32 13.26,34.18 13.06,33.91C10.28,30.13 7.41,26.31 5.02,22.77C2.62,19.23 1,15.95 1,13.5C1,6.58 6.58,1 13.5,1Z"/>
+    <circle fill="white" cx="13.5" cy="13.5" r="8"/>
+  `
+
+  function renderPin(name, svgInner) {
+    return new Promise(resolve => {
+      const svg = `<svg display="block" height="41px" width="27px" viewBox="0 0 27 41" xmlns="http://www.w3.org/2000/svg">${svgInner}</svg>`
+      const url = `data:image/svg+xml,${encodeURIComponent(svg)}`
+      const img = new Image()
+      img.onload = () => {
+        const canvas = document.createElement('canvas')
+        canvas.width = 27; canvas.height = 41
+        canvas.getContext('2d').drawImage(img, 0, 0, 27, 41)
+        try {
+          const { data } = canvas.getContext('2d').getImageData(0, 0, 27, 41)
+          if (!map.hasImage(name)) map.addImage(name, { width: 27, height: 41, data: new Uint8Array(data) })
+        } catch (e) { console.error('pin failed', name, e) }
+        resolve()
+      }
+      img.onerror = () => resolve()
+      img.src = url
+    })
+  }
+
+  // Count pins (2–9 and 10+)
+  const COUNT_VALS = [2, 3, 4, 5, 6, 7, 8, 9, 'many']
   await Promise.all(
     Object.entries(COLORS).flatMap(([ck, hex]) =>
-      ICON_KEYS.map(ik => new Promise(resolve => {
-        const inner = contents[ik].replace(/STROKE/g, '#1e293b')
-        const svg = `<svg display="block" height="41px" width="27px" viewBox="0 0 27 41" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <radialGradient id="sg-${ck}-${ik}">
-              <stop offset="10%" stop-opacity="0.4"/>
-              <stop offset="100%" stop-opacity="0.05"/>
-            </radialGradient>
-          </defs>
-          <ellipse cx="13.5" cy="34.8" rx="10.5" ry="5.25" fill="url(#sg-${ck}-${ik})"/>
-          <path fill="${hex}" d="M27,13.5C27,19.07 20.25,27 14.75,34.5C14.02,35.5 12.98,35.5 12.25,34.5C6.75,27 0,19.22 0,13.5C0,6.04 6.04,0 13.5,0C20.96,0 27,6.04 27,13.5Z"/>
-          <path opacity="0.25" d="M13.5,0C6.04,0 0,6.04 0,13.5C0,19.22 6.75,27 12.25,34.5C13,35.52 14.02,35.5 14.75,34.5C20.25,27 27,19.07 27,13.5C27,6.04 20.96,0 13.5,0ZM13.5,1C20.42,1 26,6.58 26,13.5C26,15.9 24.5,19.18 22.22,22.74C19.95,26.3 16.71,30.14 13.94,33.91C13.74,34.18 13.61,34.32 13.5,34.44C13.39,34.32 13.26,34.18 13.06,33.91C10.28,30.13 7.41,26.31 5.02,22.77C2.62,19.23 1,15.95 1,13.5C1,6.58 6.58,1 13.5,1Z"/>
-          <circle fill="white" cx="13.5" cy="13.5" r="8"/>
-          <g transform="translate(6,6) scale(0.625)" fill="none" stroke="#1e293b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${inner}</g>
-        </svg>`
-        const url = `data:image/svg+xml,${encodeURIComponent(svg)}`
-        const img = new Image()
-        img.onload = () => {
-          const canvas = document.createElement('canvas')
-          canvas.width = 27; canvas.height = 41
-          canvas.getContext('2d').drawImage(img, 0, 0, 27, 41)
-          try {
-            const { data } = canvas.getContext('2d').getImageData(0, 0, 27, 41)
-            if (!map.hasImage(`pin-${ck}-${ik}`)) {
-              map.addImage(`pin-${ck}-${ik}`, { width: 27, height: 41, data: new Uint8Array(data) })
-            }
-          } catch (e) { console.error('pin pixel read failed', ck, ik, e) }
-          resolve()
-        }
-        img.onerror = e => { console.error('pin img failed', ck, ik, e); resolve() }
-        img.src = url
-      }))
+      COUNT_VALS.map(n => {
+        const label = n === 'many' ? '9+' : String(n)
+        const gradId = `sgn-${ck}-${n}`
+        return renderPin(`pin-count-${ck}-${n}`, `
+          <defs><radialGradient id="${gradId}"><stop offset="10%" stop-opacity="0.4"/><stop offset="100%" stop-opacity="0.05"/></radialGradient></defs>
+          ${PIN_BODY(hex, gradId)}
+          <text x="13.5" y="17.5" text-anchor="middle" font-size="${n === 'many' ? '8' : '10'}" font-weight="700" fill="${hex}" font-family="system-ui,sans-serif">${label}</text>
+        `)
+      })
     )
   )
+
+  await Promise.all(
+    Object.entries(COLORS).flatMap(([ck, hex]) =>
+      ICON_KEYS.map(ik => {
+        const inner = contents[ik].replace(/STROKE/g, '#1e293b')
+        const gradId = `sg-${ck}-${ik}`
+        return renderPin(`pin-${ck}-${ik}`, `
+          <defs><radialGradient id="${gradId}"><stop offset="10%" stop-opacity="0.4"/><stop offset="100%" stop-opacity="0.05"/></radialGradient></defs>
+          ${PIN_BODY(hex, gradId)}
+          <g transform="translate(6,6) scale(0.625)" fill="none" stroke="#1e293b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${inner}</g>
+        `)
+      })
+    )
+  )
+
+  // Yard pin — white pin with logo image drawn on top
+  if (!map.hasImage('pin-yard')) {
+    await new Promise(resolve => {
+      const gradId = 'sg-yard'
+      const svgInner = `
+        <defs><radialGradient id="${gradId}"><stop offset="10%" stop-opacity="0.4"/><stop offset="100%" stop-opacity="0.05"/></radialGradient></defs>
+        ${PIN_BODY('#ffffff', gradId)}
+      `
+      const svg = `<svg display="block" height="41px" width="27px" viewBox="0 0 27 41" xmlns="http://www.w3.org/2000/svg">${svgInner}</svg>`
+      const pinImg = new Image()
+      pinImg.onload = () => {
+        const canvas = document.createElement('canvas')
+        canvas.width = 27; canvas.height = 41
+        const ctx = canvas.getContext('2d')
+        ctx.drawImage(pinImg, 0, 0, 27, 41)
+        const logoImg = new Image()
+        logoImg.onload = () => {
+          const size = 12
+          ctx.drawImage(logoImg, 13.5 - size / 2 + 1.5, 13.5 - size / 2 + 1.5, size, size)
+          try {
+            const { data } = ctx.getImageData(0, 0, 27, 41)
+            map.addImage('pin-yard', { width: 27, height: 41, data: new Uint8Array(data) })
+          } catch (e) { console.error('yard pin failed', e) }
+          resolve()
+        }
+        logoImg.onerror = () => resolve()
+        logoImg.src = '/favicon.png'
+      }
+      pinImg.onerror = () => resolve()
+      pinImg.src = `data:image/svg+xml,${encodeURIComponent(svg)}`
+    })
+  }
 }
 
 async function addDeploymentLayer(map, deps) {
   await loadPinImages(map)
 
   if (map.getSource('deployments')) {
-    map.removeLayer('deployment-pins')
+    ;['deployment-pins', 'deployment-groups'].forEach(id => {
+      if (map.getLayer(id)) map.removeLayer(id)
+    })
     map.removeSource('deployments')
   }
 
   map.addSource('deployments', { type: 'geojson', data: toGeoJSON(deps) })
+
   map.addLayer({
     id: 'deployment-pins',
     type: 'symbol',
     source: 'deployments',
+    filter: ['==', ['get', 'count'], 1],
     layout: {
       'icon-image': ['concat', 'pin-', ['get', 'ck'], '-', ['get', 'ik']],
       'icon-size': 1,
@@ -105,13 +190,43 @@ async function addDeploymentLayer(map, deps) {
       'icon-ignore-placement': true,
     },
   })
+
+  map.addLayer({
+    id: 'deployment-groups',
+    type: 'symbol',
+    source: 'deployments',
+    filter: ['>', ['get', 'count'], 1],
+    layout: {
+      'icon-image': ['concat', 'pin-count-', ['get', 'ck'], '-',
+        ['case', ['>=', ['get', 'count'], 10], 'many', ['to-string', ['get', 'count']]]
+      ],
+      'icon-size': 1,
+      'icon-anchor': 'bottom',
+      'icon-allow-overlap': true,
+      'icon-ignore-placement': true,
+    },
+  })
 }
 
-function createYardElement() {
-  const el = document.createElement('div')
-  el.style.cssText = 'cursor:default; width:36px; height:36px; border-radius:50%; background:white; box-shadow:0 1px 4px rgba(0,0,0,0.3); display:flex; align-items:center; justify-content:center; overflow:hidden;'
-  el.innerHTML = `<img src="/logo.webp" style="width:26px;height:26px;object-fit:contain;pointer-events:none;" />`
-  return el
+function addYardLayer(map, coords) {
+  if (map.getLayer('yard-pin')) map.removeLayer('yard-pin')
+  if (map.getSource('yard')) map.removeSource('yard')
+  map.addSource('yard', {
+    type: 'geojson',
+    data: { type: 'Feature', geometry: { type: 'Point', coordinates: coords }, properties: {} },
+  })
+  map.addLayer({
+    id: 'yard-pin',
+    type: 'symbol',
+    source: 'yard',
+    layout: {
+      'icon-image': 'pin-yard',
+      'icon-size': 1,
+      'icon-anchor': 'bottom',
+      'icon-allow-overlap': true,
+      'icon-ignore-placement': true,
+    },
+  })
 }
 
 const MAP_STYLES = [
@@ -155,11 +270,13 @@ export default function MapView() {
     map.current.setStyle(styleId)
     map.current.once('style.load', async () => {
       await addDeploymentLayer(map.current, deploymentsRef.current)
+      if (yardCoords.current) addYardLayer(map.current, yardCoords.current)
       mapReady.current = true
     })
   }, [])
 
   useEffect(() => { fetchDeployments() }, [fetchDeployments])
+  useRealtime(['deployments', 'assets'], fetchDeployments)
   useEffect(() => { deploymentsRef.current = deployments }, [deployments])
 
   useEffect(() => {
@@ -179,11 +296,17 @@ export default function MapView() {
       const dep = JSON.parse(e.features[0].properties.dep)
       setSelected([dep])
     })
-    map.current.on('mouseenter', 'deployment-pins', () => {
-      map.current.getCanvas().style.cursor = 'pointer'
+    map.current.on('click', 'deployment-groups', e => {
+      const deps = JSON.parse(e.features[0].properties.deps)
+      setSelected(deps)
     })
-    map.current.on('mouseleave', 'deployment-pins', () => {
-      map.current.getCanvas().style.cursor = ''
+    ;['deployment-pins', 'deployment-groups'].forEach(layer => {
+      map.current.on('mouseenter', layer, () => {
+        map.current.getCanvas().style.cursor = 'pointer'
+      })
+      map.current.on('mouseleave', layer, () => {
+        map.current.getCanvas().style.cursor = ''
+      })
     })
 
     map.current.on('load', async () => {
@@ -192,16 +315,15 @@ export default function MapView() {
         pendingFlyTo.current = null
       }
 
+      await addDeploymentLayer(map.current, deploymentsRef.current)
+
       geocodeAddress(YARD.address).then(results => {
         if (!results.length) return
         const [lng, lat] = results[0].center
         yardCoords.current = [lng, lat]
-        new mapboxgl.Marker({ element: createYardElement(), anchor: 'center' })
-          .setLngLat([lng, lat])
-          .addTo(map.current)
+        addYardLayer(map.current, [lng, lat])
       })
 
-      await addDeploymentLayer(map.current, deploymentsRef.current)
       mapReady.current = true
     })
   }, [])
@@ -218,7 +340,7 @@ export default function MapView() {
       <div ref={mapContainer} className="h-full w-full" />
 
       <div className="absolute top-4 left-4 z-10 flex gap-2">
-        <Button size="sm" variant="secondary" className="shadow-md" onClick={() => yardCoords.current && map.current.flyTo({ center: yardCoords.current, zoom: 12 })}>
+        <Button size="sm" variant="secondary" className="shadow-md" onClick={() => yardCoords.current && map.current.flyTo({ center: yardCoords.current, zoom: 12, bearing: 0, pitch: 0 })}>
           <LocateFixed size={15} />
         </Button>
         <div className="relative">

@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { Map, Package, History, Settings, FlaskConical } from 'lucide-react'
+import { Map, Package, History, Settings } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const navItems = [
@@ -7,7 +7,6 @@ const navItems = [
   { to: '/inventory', icon: Package, label: 'Inventory' },
   { to: '/history', icon: History, label: 'History' },
   { to: '/settings', icon: Settings, label: 'Settings' },
-  { to: '/maptest', icon: FlaskConical, label: 'Test' },
 ]
 
 export default function BottomNav() {

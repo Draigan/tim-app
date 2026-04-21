@@ -2,9 +2,11 @@ import { useEffect, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
-import { Plus, ChevronRight, Truck, ChevronDown, ChevronUp, Search, X, AlertTriangle } from 'lucide-react'
+import { Plus, ChevronRight, Truck, ChevronDown, ChevronUp, Search, X } from 'lucide-react'
 import { getMarkerColor } from '@/lib/utils'
 import AssetBottomSheet from '@/components/AssetBottomSheet'
+import { useRealtime } from '@/lib/useRealtime'
+import { useIsAdmin } from '@/lib/useIsAdmin'
 
 function match(q, ...fields) {
   return fields.some(f => f?.toLowerCase().includes(q))
@@ -18,6 +20,7 @@ export default function Inventory() {
   const [selected, setSelected] = useState(null)
   const [query, setQuery] = useState('')
   const navigate = useNavigate()
+  const isAdmin = useIsAdmin()
 
   const fetchAll = useCallback(async () => {
     setLoading(true)
@@ -31,16 +34,25 @@ export default function Inventory() {
   }, [])
 
   useEffect(() => { fetchAll() }, [fetchAll])
+  useRealtime(['deployments', 'assets', 'asset_types'], fetchAll)
 
   const q = query.trim().toLowerCase()
-  const filteredDeployed = q ? deployedAssets.filter(d => match(q, d.label, d.type_name, d.address, d.customer_name, d.size)) : deployedAssets
-  const filteredYard = q ? yardAssets.filter(a => match(q, a.label, a.type_name, a.size, a.notes)) : yardAssets
 
-  const expiringSoon = deployedAssets.filter(d => {
-    if (!d.expires_at) return false
-    const daysLeft = Math.ceil((new Date(d.expires_at) - new Date()) / (1000 * 60 * 60 * 24))
-    return daysLeft <= 7
-  }).sort((a, b) => new Date(a.expires_at) - new Date(b.expires_at))
+  function daysLeft(d) {
+    if (!d.expires_at) return null
+    return Math.ceil((new Date(d.expires_at) - new Date()) / (1000 * 60 * 60 * 24))
+  }
+
+  const filteredDeployed = deployedAssets
+    .filter(d => !q || match(q, d.label, d.type_name, d.address, d.customer_name, d.size))
+    .sort((a, b) => {
+      const da = daysLeft(a), db = daysLeft(b)
+      if (da !== null && db !== null) return da - db
+      if (da !== null) return -1
+      if (db !== null) return 1
+      return 0
+    })
+  const filteredYard = q ? yardAssets.filter(a => match(q, a.label, a.type_name, a.size, a.notes)) : yardAssets
 
   const grouped = filteredYard.reduce((acc, asset) => {
     const key = asset.type_name
@@ -53,10 +65,12 @@ export default function Inventory() {
     <div className="h-full flex flex-col">
       <div className="flex items-center justify-between px-4 pt-5 pb-3">
         <h1 className="text-xl font-semibold">Inventory</h1>
-        <Button size="sm" onClick={() => navigate('/assets/new')}>
-          <Plus size={16} />
-          Add Asset
-        </Button>
+        {isAdmin && (
+          <Button size="sm" onClick={() => navigate('/assets/new')}>
+            <Plus size={16} />
+            Add Asset
+          </Button>
+        )}
       </div>
 
       <div className="px-4 pb-3">
@@ -80,39 +94,6 @@ export default function Inventory() {
       <div className="flex-1 overflow-y-auto px-4 pb-4">
         {loading && <p className="text-muted-foreground text-sm mt-8 text-center">Loading…</p>}
 
-        {!loading && expiringSoon.length > 0 && !q && (
-          <div className="mb-5">
-            <div className="flex items-center gap-1.5 text-xs font-semibold text-destructive uppercase tracking-wider mb-2">
-              <AlertTriangle size={13} />
-              Expiring Soon ({expiringSoon.length})
-            </div>
-            <div className="space-y-2">
-              {expiringSoon.map(dep => {
-                const daysLeft = Math.ceil((new Date(dep.expires_at) - new Date()) / (1000 * 60 * 60 * 24))
-                const label = daysLeft < 0 ? 'Expired' : daysLeft === 0 ? 'Today' : `${daysLeft}d left`
-                return (
-                  <button
-                    key={dep.id}
-                    className="w-full text-left bg-card border border-destructive/30 rounded-xl p-4 flex items-center gap-3 hover:bg-accent transition-colors"
-                    onClick={() => setSelected([dep])}
-                  >
-                    <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: getMarkerColor(dep.expires_at) }} />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium">{dep.label}</span>
-                        <span className="text-muted-foreground text-sm">{dep.type_name}</span>
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-0.5 truncate">{dep.address}</p>
-                      {dep.customer_name && <p className="text-xs text-muted-foreground truncate">{dep.customer_name}</p>}
-                    </div>
-                    <span className="text-xs font-medium text-destructive flex-shrink-0">{label}</span>
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-        )}
-
         {!loading && (
           <>
             {filteredDeployed.length > 0 && (
@@ -127,25 +108,33 @@ export default function Inventory() {
 
                 {deployedOpen && (
                   <div className="space-y-2">
-                    {filteredDeployed.map(dep => (
-                      <button
-                        key={dep.id}
-                        className="w-full text-left bg-card border rounded-xl p-4 flex items-center gap-3 hover:bg-accent transition-colors"
-                        onClick={() => setSelected([dep])}
-                      >
-                        <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: getMarkerColor(dep.expires_at) }} />
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium">{dep.label}</span>
-                            <span className="text-muted-foreground text-sm">{dep.type_name}</span>
-                            {dep.size && <span className="text-muted-foreground text-sm">· {dep.size}</span>}
+                    {filteredDeployed.map(dep => {
+                      const dl = daysLeft(dep)
+                      const expiryLabel = dl === null ? null : dl < 0 ? 'Expired' : dl === 0 ? 'Today' : `${dl}d left`
+                      const isUrgent = dl !== null && dl <= 7
+                      return (
+                        <button
+                          key={dep.id}
+                          className="w-full text-left bg-card border rounded-xl p-4 flex items-center gap-3 hover:bg-accent transition-colors"
+                          onClick={() => setSelected([dep])}
+                        >
+                          <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: getMarkerColor(dep.expires_at) }} />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium">{dep.label}</span>
+                              <span className="text-muted-foreground text-sm">{dep.type_name}</span>
+                              {dep.size && <span className="text-muted-foreground text-sm">· {dep.size}</span>}
+                            </div>
+                            <p className="text-xs text-muted-foreground mt-0.5 truncate">{dep.address}</p>
+                            {dep.customer_name && <p className="text-xs text-muted-foreground truncate">{dep.customer_name}</p>}
                           </div>
-                          <p className="text-xs text-muted-foreground mt-0.5 truncate">{dep.address}</p>
-                          {dep.customer_name && <p className="text-xs text-muted-foreground truncate">{dep.customer_name}</p>}
-                        </div>
-                        <ChevronRight size={16} className="text-muted-foreground flex-shrink-0" />
-                      </button>
-                    ))}
+                          {expiryLabel
+                            ? <span className={`text-xs font-medium flex-shrink-0 ${isUrgent ? 'text-destructive' : 'text-muted-foreground'}`}>{expiryLabel}</span>
+                            : <ChevronRight size={16} className="text-muted-foreground flex-shrink-0" />
+                          }
+                        </button>
+                      )
+                    })}
                   </div>
                 )}
               </div>
@@ -168,10 +157,12 @@ export default function Inventory() {
                             {asset.notes && <p className="text-xs text-muted-foreground mt-0.5 truncate">{asset.notes}</p>}
                           </div>
                           <div className="flex items-center gap-2 ml-3 flex-shrink-0">
-                            <Button size="sm" onClick={() => navigate(`/deploy/${asset.id}`)}>
-                              <Truck size={14} />
-                              Deploy
-                            </Button>
+                            {isAdmin && (
+                              <Button size="sm" onClick={() => navigate(`/deploy/${asset.id}`)}>
+                                <Truck size={14} />
+                                Deploy
+                              </Button>
+                            )}
                             <button className="text-muted-foreground hover:text-foreground" onClick={() => navigate(`/assets/${asset.id}`)}>
                               <ChevronRight size={18} />
                             </button>

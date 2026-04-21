@@ -77,7 +77,7 @@ export default function NewAsset() {
         <div className="space-y-2">
           <Label>Type</Label>
           <div className="flex gap-2">
-            <Select value={form.asset_type_id} onValueChange={v => set('asset_type_id', v)}>
+            <Select value={form.asset_type_id} onValueChange={v => { if (v === '__new__') { setShowNewType(true) } else { set('asset_type_id', v) } }}>
               <SelectTrigger className="flex-1">
                 <SelectValue placeholder="Select type…" />
               </SelectTrigger>
@@ -85,6 +85,9 @@ export default function NewAsset() {
                 {types.map(t => (
                   <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
                 ))}
+                <SelectItem value="__new__" className="text-primary font-medium">
+                  <span className="flex items-center gap-1.5"><Plus size={13} /> New type…</span>
+                </SelectItem>
               </SelectContent>
             </Select>
             <Button type="button" variant="outline" size="icon" onClick={() => setShowNewType(true)}>

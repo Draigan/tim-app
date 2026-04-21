@@ -32,6 +32,7 @@ create table deployments (
   customer_name text,
   customer_phone text,
   notes text,
+  pickup_notes text,
   dropped_at timestamptz default now(),
   expires_at date,
   picked_up_at timestamptz,

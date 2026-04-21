@@ -7,8 +7,9 @@ import { Input } from '@/components/ui/input'
 import { supabase } from '@/lib/supabase'
 import { geocodeAddress } from '@/lib/mapbox'
 import { getMarkerColor, formatPhone } from '@/lib/utils'
+import { Textarea } from '@/components/ui/textarea'
 import { Phone, MapPin, Calendar, User, ChevronLeft } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 
 function expiryBadge(expiresAt) {
   if (!expiresAt) return { label: 'No expiry set', variant: 'secondary' }
@@ -159,15 +160,63 @@ function UpdateDialog({ deployment, open, onOpenChange, onSaved }) {
   )
 }
 
+function PickupDialog({ deployment, open, onOpenChange, onConfirm }) {
+  const [notes, setNotes] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => { if (open) setNotes('') }, [open])
+
+  async function handleConfirm() {
+    setSaving(true)
+    const { data: { session } } = await supabase.auth.getSession()
+    const user = session?.user
+    const picked_up_by = user?.user_metadata?.full_name ?? user?.email ?? null
+    await supabase.from('deployments').update({
+      picked_up_at: new Date().toISOString(),
+      pickup_notes: notes.trim() || null,
+      picked_up_by,
+    }).eq('id', deployment.id)
+    setSaving(false)
+    onConfirm()
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Confirm Pickup</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3 mt-2">
+          <p className="text-sm text-muted-foreground">
+            Marking <span className="font-medium text-foreground">{deployment.label}</span> as picked up from {deployment.address}.
+          </p>
+          <div>
+            <p className="text-xs text-muted-foreground mb-1.5">Condition / Notes <span className="text-muted-foreground/60">(optional)</span></p>
+            <Textarea
+              placeholder="e.g. Minor damage on lid, customer requested early pickup…"
+              value={notes}
+              onChange={e => setNotes(e.target.value)}
+              rows={3}
+            />
+          </div>
+          <div className="flex gap-2 pt-1">
+            <Button variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button variant="destructive" className="flex-1" onClick={handleConfirm} disabled={saving}>
+              {saving ? 'Picking up…' : 'Confirm Pickup'}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function SingleAsset({ deployment, onBack, onClose, onPickup, readOnly = false }) {
   const navigate = useNavigate()
+  const location = useLocation()
   const [showUpdate, setShowUpdate] = useState(false)
+  const [showPickup, setShowPickup] = useState(false)
   const badge = expiryBadge(deployment.expires_at)
-
-  async function handlePickup() {
-    await supabase.from('deployments').update({ picked_up_at: new Date().toISOString() }).eq('id', deployment.id)
-    onPickup()
-  }
 
   return (
     <>
@@ -216,7 +265,7 @@ function SingleAsset({ deployment, onBack, onClose, onPickup, readOnly = false }
 
       <div className="mt-6 space-y-2">
         <div className="grid grid-cols-2 gap-2">
-          {!readOnly && deployment.lng && (
+          {!readOnly && deployment.lng && location.pathname !== '/' && (
             <Button variant="outline" onClick={() => { onClose(); navigate('/', { state: { flyTo: [deployment.lng, deployment.lat] } }) }}>
               View on Map
             </Button>
@@ -231,19 +280,27 @@ function SingleAsset({ deployment, onBack, onClose, onPickup, readOnly = false }
           )}
         </div>
         {!readOnly && (
-          <Button variant="destructive" className="w-full" onClick={handlePickup}>
+          <Button variant="destructive" className="w-full" onClick={() => setShowPickup(true)}>
             Pick Up
           </Button>
         )}
       </div>
 
       {!readOnly && (
-        <UpdateDialog
-          deployment={deployment}
-          open={showUpdate}
-          onOpenChange={setShowUpdate}
-          onSaved={() => { setShowUpdate(false); onPickup() }}
-        />
+        <>
+          <UpdateDialog
+            deployment={deployment}
+            open={showUpdate}
+            onOpenChange={setShowUpdate}
+            onSaved={() => { setShowUpdate(false); onPickup() }}
+          />
+          <PickupDialog
+            deployment={deployment}
+            open={showPickup}
+            onOpenChange={setShowPickup}
+            onConfirm={() => { setShowPickup(false); onPickup() }}
+          />
+        </>
       )}
     </>
   )
