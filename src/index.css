@@ -53,9 +53,41 @@
   box-sizing: border-box;
 }
 
+@keyframes splash-rise {
+  0%   { opacity: 0; transform: translateY(28px) scale(0.92); filter: invert(1) brightness(1); }
+  40%  { opacity: 1; transform: translateY(0) scale(1);       filter: invert(1) brightness(1); }
+  52%  { filter: invert(1) brightness(2.8) drop-shadow(0 0 12px rgba(255,255,255,0.8)); }
+  62%  { filter: invert(1) brightness(1); }
+  72%  { filter: invert(1) brightness(2.2) drop-shadow(0 0 8px rgba(255,255,255,0.6)); }
+  82%  { filter: invert(1) brightness(1); }
+  90%  { filter: invert(1) brightness(1.6) drop-shadow(0 0 5px rgba(255,255,255,0.3)); }
+  100% { filter: invert(1) brightness(1); }
+}
+@keyframes splash-fade {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.splash-logo {
+  animation: splash-rise 1.8s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+.splash-form {
+  opacity: 0;
+  animation: splash-fade 0.5s ease-out 1.4s forwards;
+}
+
 
 .dark .logo-invert {
   filter: invert(1);
+}
+
+html {
+  background-color: oklch(0.145 0 0);
+  overflow: hidden;
+  position: fixed;
+  width: 100%;
+  height: 100%;
+  overscroll-behavior: none;
 }
 
 body {
@@ -64,10 +96,14 @@ body {
   color: var(--color-foreground);
   font-family: system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-overflow-scrolling: touch;
 }
 
 #root {
   height: 100dvh;
   display: flex;
   flex-direction: column;
+  padding-top: env(safe-area-inset-top);
 }

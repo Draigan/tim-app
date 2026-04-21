@@ -11,6 +11,8 @@ import AssetDetail from '@/pages/AssetDetail'
 import DeployAsset from '@/pages/DeployAsset'
 import Settings from '@/pages/Settings'
 import History from '@/pages/History'
+import Calendar from '@/pages/Calendar'
+import AssetManager from '@/pages/AssetManager'
 
 export default function App() {
   const [session, setSession] = useState(undefined)
@@ -27,7 +29,7 @@ export default function App() {
     return () => subscription.unsubscribe()
   }, [])
 
-  if (session === undefined) return null
+  if (session === undefined) return <div style={{ height: '100dvh', background: 'var(--color-background)' }} />
 
   if (needsPassword) return <ThemeProvider><Login onPasswordSet={() => setNeedsPassword(false)} /></ThemeProvider>
 
@@ -44,7 +46,9 @@ export default function App() {
           <Route path="/assets/:id" element={<AssetDetail />} />
           <Route path="/deploy/:assetId" element={<DeployAsset />} />
           <Route path="/history" element={<History />} />
+          <Route path="/calendar" element={<Calendar />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/asset-manager" element={<AssetManager />} />
         </Route>
       </Routes>
     </BrowserRouter>

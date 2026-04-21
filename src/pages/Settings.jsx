@@ -1,11 +1,11 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
-import { useRealtime } from '@/lib/useRealtime'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Plus, Trash2, LogOut, Sun, Moon, UserX, LogOutIcon, MessageSquare } from 'lucide-react'
+import { Plus, Trash2, LogOut, Sun, Moon, UserX, LogOutIcon, MessageSquare, ChevronRight } from 'lucide-react'
 import { ICON_OPTIONS, iconImgUrl } from '@/lib/icons'
 import { useTheme } from '@/lib/theme'
 
@@ -236,59 +236,104 @@ function UsersPanel() {
   )
 }
 
+const HELP = [
+  {
+    title: 'Adding an Asset',
+    body: 'Go to Inventory and tap Add Asset in the top right. Pick the type, choose an icon, give it a label (e.g. BIN-04), and add a size if it applies. Hit Save and it\'ll show up in the yard.',
+  },
+  {
+    title: 'Deploying an Asset',
+    body: 'Go to Inventory, find the asset, tap Deploy. Type the address and pick it from the suggestions — this pins it on the map. Fill in the customer name, phone, and an expected pickup date if you have one.',
+  },
+  {
+    title: 'Picking Up an Asset',
+    body: 'Tap any active pin on the map or find the asset in Inventory. Tap the card to open it, then hit Pick Up. You can add pickup notes before confirming.',
+  },
+  {
+    title: 'Reservations',
+    body: 'Open an asset from Inventory and tap Reserve. Set the date, customer info, and address. A banner will appear on the day the reservation starts if the asset hasn\'t been deployed yet.',
+  },
+  {
+    title: 'Calendar',
+    body: 'The Calendar tab is for your own schedule — deliveries, service dates, anything you want. Tap a day to see what\'s on, tap + to add an event. Reservations show up automatically as amber dots.',
+  },
+  {
+    title: 'History',
+    body: 'Every deployment is logged automatically with who deployed it, who picked it up, dates, and any notes. Use the filters to search by asset, customer, or date range.',
+  },
+  {
+    title: 'What Employees Can\'t See',
+    body: 'Employees can view the map, inventory, and history — but they cannot add or edit assets, manage reservations, access the calendar, or see the Settings users list. Only you can create and manage employee accounts.',
+  },
+]
+
+function HelpSection() {
+  const [open, setOpen] = useState(null)
+  return (
+    <div>
+      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Help</p>
+      <div className="space-y-2">
+        {HELP.map((item, i) => (
+          <button key={i} onClick={() => setOpen(open === i ? null : i)}
+            className="w-full text-left bg-card border rounded-xl px-4 py-3 transition-colors hover:bg-accent">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm font-medium">{item.title}</span>
+              <span className="text-muted-foreground text-lg leading-none">{open === i ? '−' : '+'}</span>
+            </div>
+            {open === i && (
+              <p className="text-sm text-muted-foreground mt-2 leading-relaxed">{item.body}</p>
+            )}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+
 export default function Settings() {
+  const navigate = useNavigate()
   const { dark, toggle } = useTheme()
-  const [types, setTypes] = useState([])
-  const [newTypeName, setNewTypeName] = useState('')
-  const [newTypeIcon, setNewTypeIcon] = useState('box')
-  const [showAdd, setShowAdd] = useState(false)
-  const [confirmDelete, setConfirmDelete] = useState(null)
-  const [deletingId, setDeletingId] = useState(null)
+  const [fontSize, setFontSize] = useState(() => localStorage.getItem('fontSize') ?? 'md')
+
+  function applyFontSize(size) {
+    const map = { sm: '14px', md: '16px', lg: '18px', xl: '20px' }
+    document.documentElement.style.fontSize = map[size]
+    localStorage.setItem('fontSize', size)
+    setFontSize(size)
+  }
   const [isAdmin, setIsAdmin] = useState(false)
   const [currentUser, setCurrentUser] = useState(null)
+  const [showAddType, setShowAddType] = useState(false)
+  const [newTypeName, setNewTypeName] = useState('')
+  const [newTypeIcon, setNewTypeIcon] = useState('box')
   const [showFeedback, setShowFeedback] = useState(false)
   const [feedbackMsg, setFeedbackMsg] = useState('')
   const [feedbackSent, setFeedbackSent] = useState(false)
   const [sendingFeedback, setSendingFeedback] = useState(false)
 
-  const fetchTypes = useCallback(async () => {
-    const { data } = await supabase.from('asset_types').select('*').order('name')
-    if (data) setTypes(data)
-  }, [])
-
-  useRealtime(['asset_types'], fetchTypes)
+  useEffect(() => { applyFontSize(fontSize) }, [])
 
   useEffect(() => {
-    fetchTypes()
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (!session?.user) return
       setCurrentUser(session.user)
       if (ADMIN_EMAILS.includes(session.user.email)) setIsAdmin(true)
     })
-  }, [fetchTypes])
-
-  async function addType() {
-    if (!newTypeName.trim()) return
-    const { error } = await supabase.from('asset_types').insert({ name: newTypeName.trim(), icon: newTypeIcon })
-    if (!error) {
-      setNewTypeName('')
-      setNewTypeIcon('box')
-      setShowAdd(false)
-      fetchTypes()
-    }
-  }
-
-  async function deleteType() {
-    setDeletingId(confirmDelete.id)
-    await supabase.from('asset_types').delete().eq('id', confirmDelete.id)
-    setDeletingId(null)
-    setConfirmDelete(null)
-    fetchTypes()
-  }
+  }, [])
 
   async function handleSignOut() {
     await supabase.auth.signOut()
   }
+
+  async function addType() {
+    if (!newTypeName.trim()) return
+    await supabase.from('asset_types').insert({ name: newTypeName.trim(), icon: newTypeIcon })
+    setNewTypeName('')
+    setNewTypeIcon('box')
+    setShowAddType(false)
+  }
+
 
   async function handleFeedback() {
     if (!feedbackMsg.trim()) return
@@ -312,34 +357,30 @@ export default function Settings() {
       <div className="flex-1 overflow-y-auto px-4 pb-8 space-y-6">
         {isAdmin && <UsersPanel />}
 
-        {isAdmin && <div>
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-              Asset Types
-            </h2>
-            <Button size="sm" variant="outline" onClick={() => setShowAdd(true)}>
-              <Plus size={14} />
-              Add Type
-            </Button>
-          </div>
-          <div className="space-y-2">
-            {types.map(type => (
-              <div key={type.id} className="flex items-center justify-between bg-card border rounded-xl px-4 py-3">
-                {type.icon && <img src={iconImgUrl(type.icon, 18)} width="18" height="18" alt={type.name} />}
-                <span className="text-sm font-medium">{type.name}</span>
-                <button
-                  className="text-muted-foreground hover:text-destructive transition-colors disabled:opacity-40"
-                  onClick={() => setConfirmDelete(type)}
-                  disabled={deletingId === type.id}
-                >
-                  <Trash2 size={16} />
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>}
+        {isAdmin && (
+          <button
+            onClick={() => navigate('/asset-manager')}
+            className="w-full text-left bg-card border rounded-xl px-4 py-3 flex items-center justify-between hover:bg-accent transition-colors"
+          >
+            <span className="text-sm font-medium">Asset Manager</span>
+            <ChevronRight size={16} className="text-muted-foreground" />
+          </button>
+        )}
+
+        <HelpSection />
 
         <div className="space-y-2 pt-2">
+          <div>
+            <p className="text-xs text-muted-foreground mb-2">Text Size</p>
+            <div className="flex rounded-lg border overflow-hidden">
+              {[{ key: 'sm', label: 'A', size: 'text-xs' }, { key: 'md', label: 'A', size: 'text-sm' }, { key: 'lg', label: 'A', size: 'text-base' }, { key: 'xl', label: 'A', size: 'text-lg' }].map(({ key, label, size }) => (
+                <button key={key} onClick={() => applyFontSize(key)}
+                  className={`flex-1 py-2 flex items-center justify-center transition-colors ${fontSize === key ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
+                  <span className={size}>{label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
           <Button variant="outline" className="w-full" onClick={toggle}>
             {dark ? <Sun size={16} /> : <Moon size={16} />}
             {dark ? 'Light Mode' : 'Dark Mode'}
@@ -358,68 +399,12 @@ export default function Settings() {
             </p>
           )}
         </div>
+
       </div>
-
-      <Dialog open={!!confirmDelete} onOpenChange={open => !open && setConfirmDelete(null)}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Delete "{confirmDelete?.name}"?</DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground mt-1">
-            This will remove the type permanently. Any assets using it will be unaffected but may lose their type label.
-          </p>
-          <div className="flex gap-2 mt-4">
-            <Button variant="outline" className="flex-1" onClick={() => setConfirmDelete(null)}>Cancel</Button>
-            <Button variant="destructive" className="flex-1" onClick={deleteType} disabled={!!deletingId}>
-              {deletingId ? 'Deleting…' : 'Delete'}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={showAdd} onOpenChange={setShowAdd}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>New Asset Type</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 mt-2">
-            <Input
-              placeholder="Type name…"
-              value={newTypeName}
-              onChange={e => setNewTypeName(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addType())}
-              autoFocus
-            />
-            <div>
-              <p className="text-sm text-muted-foreground mb-2">Icon</p>
-              <div className="grid grid-cols-6 gap-1">
-                {ICON_OPTIONS.map(({ key, label }) => (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => setNewTypeIcon(key)}
-                    title={label}
-                    className={`flex flex-col items-center gap-1 p-2 rounded-md transition-colors ${newTypeIcon === key ? 'bg-primary/10 ring-2 ring-primary' : 'hover:bg-accent'}`}
-                  >
-                    <img src={iconImgUrl(key)} width="20" height="20" alt={label} />
-                    <span className="text-[9px] text-muted-foreground leading-tight text-center">{label}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="flex gap-2">
-              <Button variant="outline" className="flex-1" onClick={() => setShowAdd(false)}>Cancel</Button>
-              <Button className="flex-1" onClick={addType}>Add Type</Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       <Dialog open={showFeedback} onOpenChange={v => { setShowFeedback(v); if (!v) { setFeedbackSent(false); setFeedbackMsg('') } }}>
         <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Send Feedback</DialogTitle>
-          </DialogHeader>
+          <DialogHeader><DialogTitle>Send Feedback</DialogTitle></DialogHeader>
           {feedbackSent ? (
             <div className="py-4 text-center space-y-2">
               <p className="font-medium">Thanks for the feedback!</p>
@@ -442,6 +427,37 @@ export default function Settings() {
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showAddType} onOpenChange={setShowAddType}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle>New Asset Type</DialogTitle></DialogHeader>
+          <div className="space-y-4 mt-2">
+            <Input
+              placeholder="Type name…"
+              value={newTypeName}
+              onChange={e => setNewTypeName(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addType())}
+              autoFocus
+            />
+            <div>
+              <p className="text-sm text-muted-foreground mb-2">Icon</p>
+              <div className="grid grid-cols-6 gap-1">
+                {ICON_OPTIONS.map(({ key, label }) => (
+                  <button key={key} type="button" onClick={() => setNewTypeIcon(key)} title={label}
+                    className={`flex flex-col items-center gap-1 p-2 rounded-md transition-colors ${newTypeIcon === key ? 'bg-primary/10 ring-2 ring-primary' : 'hover:bg-accent'}`}>
+                    <img src={iconImgUrl(key)} width="20" height="20" alt={label} />
+                    <span className="text-[9px] text-muted-foreground leading-tight text-center">{label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <Button variant="outline" className="flex-1" onClick={() => setShowAddType(false)}>Cancel</Button>
+              <Button className="flex-1" onClick={addType} disabled={!newTypeName.trim()}>Add Type</Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
-import { Plus, ChevronRight, Truck, ChevronDown, ChevronUp, Search, X } from 'lucide-react'
+import { ChevronRight, Truck, ChevronDown, ChevronUp, Search, X } from 'lucide-react'
 import { getMarkerColor } from '@/lib/utils'
 import AssetBottomSheet from '@/components/AssetBottomSheet'
 import { useRealtime } from '@/lib/useRealtime'
@@ -15,6 +15,7 @@ function match(q, ...fields) {
 export default function Inventory() {
   const [yardAssets, setYardAssets] = useState([])
   const [deployedAssets, setDeployedAssets] = useState([])
+  const [reservationMap, setReservationMap] = useState({})
   const [loading, setLoading] = useState(true)
   const [deployedOpen, setDeployedOpen] = useState(true)
   const [selected, setSelected] = useState(null)
@@ -24,17 +25,27 @@ export default function Inventory() {
 
   const fetchAll = useCallback(async () => {
     setLoading(true)
-    const [{ data: yard }, { data: deployed }] = await Promise.all([
+    const today = new Date().toISOString().slice(0, 10)
+    const [{ data: yard }, { data: deployed }, { data: resData }] = await Promise.all([
       supabase.from('yard_assets').select('*').order('created_at', { ascending: false }),
       supabase.from('active_deployments').select('*').order('dropped_at', { ascending: false }),
+      supabase.from('reservations').select('*').gte('to_date', today).order('from_date'),
     ])
     if (yard) setYardAssets(yard)
     if (deployed) setDeployedAssets(deployed)
+    if (resData) {
+      const map = {}
+      resData.forEach(r => {
+        if (!map[r.asset_id]) map[r.asset_id] = []
+        map[r.asset_id].push(r)
+      })
+      setReservationMap(map)
+    }
     setLoading(false)
   }, [])
 
   useEffect(() => { fetchAll() }, [fetchAll])
-  useRealtime(['deployments', 'assets', 'asset_types'], fetchAll)
+  useRealtime(['deployments', 'assets', 'asset_types', 'reservations'], fetchAll)
 
   const q = query.trim().toLowerCase()
 
@@ -52,7 +63,15 @@ export default function Inventory() {
       if (db !== null) return 1
       return 0
     })
-  const filteredYard = q ? yardAssets.filter(a => match(q, a.label, a.type_name, a.size, a.notes)) : yardAssets
+  const filteredYard = (q ? yardAssets.filter(a => match(q, a.label, a.type_name, a.size, a.notes)) : yardAssets)
+    .slice()
+    .sort((a, b) => {
+      const ra = reservationMap[a.id]?.[0]
+      const rb = reservationMap[b.id]?.[0]
+      const daysA = ra ? Math.ceil((new Date(ra.from_date + 'T00:00:00') - new Date()) / 86400000) : Infinity
+      const daysB = rb ? Math.ceil((new Date(rb.from_date + 'T00:00:00') - new Date()) / 86400000) : Infinity
+      return daysA - daysB
+    })
 
   const grouped = filteredYard.reduce((acc, asset) => {
     const key = asset.type_name
@@ -63,14 +82,8 @@ export default function Inventory() {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex items-center justify-between px-4 pt-5 pb-3">
+      <div className="px-4 pt-5 pb-3">
         <h1 className="text-xl font-semibold">Inventory</h1>
-        {isAdmin && (
-          <Button size="sm" onClick={() => navigate('/assets/new')}>
-            <Plus size={16} />
-            Add Asset
-          </Button>
-        )}
       </div>
 
       <div className="px-4 pb-3">
@@ -118,7 +131,7 @@ export default function Inventory() {
                           className="w-full text-left bg-card border rounded-xl p-4 flex items-center gap-3 hover:bg-accent transition-colors"
                           onClick={() => setSelected([dep])}
                         >
-                          <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: getMarkerColor(dep.expires_at) }} />
+                          <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: getMarkerColor(dep.expires_at), boxShadow: `0 0 7px 2px ${getMarkerColor(dep.expires_at)}99` }} />
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2">
                               <span className="font-medium">{dep.label}</span>
@@ -149,26 +162,37 @@ export default function Inventory() {
                   <div key={type} className="mb-5">
                     <h3 className="text-xs text-muted-foreground mb-2 ml-0.5">{type} ({items.length})</h3>
                     <div className="space-y-2">
-                      {items.map(asset => (
-                        <div key={asset.id} className="bg-card border rounded-xl p-4 flex items-center justify-between">
-                          <div className="min-w-0">
-                            <p className="font-medium truncate">{asset.label}</p>
-                            {asset.size && <p className="text-sm text-muted-foreground">{asset.size}</p>}
-                            {asset.notes && <p className="text-xs text-muted-foreground mt-0.5 truncate">{asset.notes}</p>}
+                      {items.map(asset => {
+                        const nextRes = reservationMap[asset.id]?.[0]
+                        const daysUntil = nextRes ? Math.ceil((new Date(nextRes.from_date + 'T00:00:00') - new Date()) / 86400000) : null
+                        const resSoon = daysUntil !== null && daysUntil <= 7
+                        return (
+                          <div key={asset.id} className={`bg-card border rounded-xl p-4 flex items-center justify-between ${resSoon ? 'border-amber-500/50' : ''}`}>
+                            <div className="min-w-0">
+                              <p className="font-medium truncate">{asset.label}</p>
+                              {asset.size && <p className="text-sm text-muted-foreground">{asset.size}</p>}
+                              {asset.notes && <p className="text-xs text-muted-foreground mt-0.5 truncate">{asset.notes}</p>}
+                              {nextRes && (
+                                <p className={`text-xs mt-1 ${resSoon ? 'text-amber-600 dark:text-amber-400 font-medium' : 'text-muted-foreground'}`}>
+                                  Reserved {nextRes.from_date} → {nextRes.to_date}
+                                  {nextRes.customer_name ? ` · ${nextRes.customer_name}` : ''}
+                                </p>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2 ml-3 flex-shrink-0">
+                              {isAdmin && (
+                                <Button size="sm" onClick={() => navigate(`/deploy/${asset.id}`)}>
+                                  <Truck size={14} />
+                                  Deploy
+                                </Button>
+                              )}
+                              <button className="text-muted-foreground hover:text-foreground" onClick={() => navigate(`/assets/${asset.id}`)}>
+                                <ChevronRight size={18} />
+                              </button>
+                            </div>
                           </div>
-                          <div className="flex items-center gap-2 ml-3 flex-shrink-0">
-                            {isAdmin && (
-                              <Button size="sm" onClick={() => navigate(`/deploy/${asset.id}`)}>
-                                <Truck size={14} />
-                                Deploy
-                              </Button>
-                            )}
-                            <button className="text-muted-foreground hover:text-foreground" onClick={() => navigate(`/assets/${asset.id}`)}>
-                              <ChevronRight size={18} />
-                            </button>
-                          </div>
-                        </div>
-                      ))}
+                        )
+                      })}
                     </div>
                   </div>
                 ))}

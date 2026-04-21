@@ -6,7 +6,7 @@ export function cn(...inputs) {
 }
 
 export function getMarkerColor(expiresAt) {
-  if (!expiresAt) return '#6b7280'
+  if (!expiresAt) return '#22c55e'
   const daysLeft = Math.ceil((new Date(expiresAt) - new Date()) / (1000 * 60 * 60 * 24))
   if (daysLeft < 0) return '#ef4444'
   if (daysLeft <= 3) return '#f59e0b'

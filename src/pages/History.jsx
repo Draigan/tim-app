@@ -195,55 +195,51 @@ export default function History() {
                 type_name: r.assets?.asset_types?.name,
               }
               return (
-                <button key={r.id} onClick={() => setSelected([flat])} className="w-full text-left bg-card border rounded-xl p-4 space-y-2 hover:bg-accent transition-colors">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: dot }} />
-                      <span className="font-medium truncate">{r.assets?.label}</span>
-                      <span className="text-muted-foreground text-sm flex-shrink-0">{r.assets?.asset_types?.name}</span>
+                <button key={r.id} onClick={() => setSelected([flat])} className="w-full text-left bg-card border rounded-xl p-4 hover:bg-accent transition-colors space-y-3">
+
+                  {/* Asset + status */}
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full flex-shrink-0 mt-0.5" style={{ backgroundColor: dot }} />
+                        <span className="font-semibold truncate">{r.assets?.label}</span>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-0.5 ml-4">{r.assets?.asset_types?.name}{r.assets?.size ? ` · ${r.assets.size}` : ''}</p>
                     </div>
                     <span className={`text-xs px-2 py-0.5 rounded-full flex-shrink-0 ${isActive ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`}>
                       {isActive ? 'Active' : 'Completed'}
                     </span>
                   </div>
 
-                  <div className="space-y-1 ml-4">
-                    <div className="flex items-start gap-2 text-sm text-muted-foreground">
-                      <MapPin size={13} className="mt-0.5 flex-shrink-0" />
-                      <span className="truncate">{r.address}</span>
-                    </div>
-                    {r.customer_name && (
-                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                        <User size={13} className="flex-shrink-0" />
-                        <span>{r.customer_name}</span>
-                      </div>
-                    )}
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Calendar size={13} className="flex-shrink-0" />
-                      <span>
-                        {fmt(r.dropped_at)} → {r.picked_up_at ? fmt(r.picked_up_at) : 'Present'}
-                        <span className="ml-1 text-xs">({duration(r.dropped_at, r.picked_up_at)})</span>
-                      </span>
-                    </div>
-                    {r.notes && (
-                      <div className="flex items-start gap-2 text-sm text-muted-foreground">
-                        <FileText size={13} className="mt-0.5 flex-shrink-0" />
-                        <span>{r.notes}</span>
-                      </div>
-                    )}
-                    {r.picked_up_by && (
-                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                        <User size={13} className="flex-shrink-0" />
-                        <span>Picked up by {r.picked_up_by}</span>
-                      </div>
-                    )}
-                    {r.pickup_notes && (
-                      <div className="flex items-start gap-2 text-sm text-muted-foreground">
-                        <ClipboardList size={13} className="mt-0.5 flex-shrink-0" />
-                        <span>{r.pickup_notes}</span>
-                      </div>
-                    )}
+                  {/* Address + customer */}
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium truncate">{r.address}</p>
+                    {r.customer_name && <p className="text-sm text-muted-foreground">{r.customer_name}</p>}
                   </div>
+
+                  {/* Dates */}
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <span>{fmt(r.dropped_at)}</span>
+                    <span>→</span>
+                    <span>{r.picked_up_at ? fmt(r.picked_up_at) : 'Present'}</span>
+                    <span className="text-muted-foreground/50">· {duration(r.dropped_at, r.picked_up_at)}</span>
+                  </div>
+
+                  {/* Notes */}
+                  {(r.notes || r.pickup_notes) && (
+                    <div className="space-y-1">
+                      {r.notes && <p className="text-xs text-muted-foreground bg-muted rounded-lg px-3 py-2">{r.notes}</p>}
+                      {r.pickup_notes && <p className="text-xs text-muted-foreground bg-muted rounded-lg px-3 py-2">Pickup: {r.pickup_notes}</p>}
+                    </div>
+                  )}
+
+                  {/* Staff attribution */}
+                  {(r.deployed_by || r.picked_up_by) && (
+                    <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground/70 border-t border-border/50 pt-2">
+                      {r.deployed_by && <span>Deployed by {r.deployed_by}</span>}
+                      {r.picked_up_by && <span>Picked up by {r.picked_up_by}</span>}
+                    </div>
+                  )}
                 </button>
               )
             })}

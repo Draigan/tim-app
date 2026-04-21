@@ -6,12 +6,13 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { ArrowLeft, MapPin } from 'lucide-react'
+import { ArrowLeft, MapPin, TriangleAlert } from 'lucide-react'
 
 export default function DeployAsset() {
   const { assetId } = useParams()
   const navigate = useNavigate()
   const [asset, setAsset] = useState(null)
+  const [reservations, setReservations] = useState([])
   const [form, setForm] = useState({
     address: '', customer_name: '', customer_phone: '', expires_at: '', notes: ''
   })
@@ -22,12 +23,14 @@ export default function DeployAsset() {
   const geocodeTimer = useRef(null)
 
   useEffect(() => {
-    supabase
-      .from('assets')
-      .select('*, asset_types(name)')
-      .eq('id', assetId)
-      .single()
-      .then(({ data }) => { if (data) setAsset(data) })
+    const today = new Date().toISOString().slice(0, 10)
+    Promise.all([
+      supabase.from('assets').select('*, asset_types(name)').eq('id', assetId).single(),
+      supabase.from('reservations').select('*').eq('asset_id', assetId).gte('to_date', today).order('from_date'),
+    ]).then(([{ data: a }, { data: r }]) => {
+      if (a) setAsset(a)
+      if (r) setReservations(r)
+    })
   }, [assetId])
 
   function set(field, value) {
@@ -56,6 +59,7 @@ export default function DeployAsset() {
     if (!selectedCoords) { setError('Please select an address from the suggestions.'); return }
     if (!form.address.trim()) { setError('Address is required.'); return }
     setSaving(true)
+    const { data: { user } } = await supabase.auth.getUser()
     const { error } = await supabase.from('deployments').insert({
       asset_id: assetId,
       address: form.address,
@@ -66,9 +70,12 @@ export default function DeployAsset() {
       notes: form.notes || null,
       expires_at: form.expires_at || null,
       dropped_at: new Date().toISOString(),
+      deployed_by: user?.user_metadata?.full_name ?? user?.email ?? null,
     })
     setSaving(false)
     if (error) { setError(error.message); return }
+    const today = new Date().toISOString().slice(0, 10)
+    await supabase.from('reservations').delete().eq('asset_id', assetId).lte('from_date', today).gte('to_date', today)
     navigate('/', { state: { flyTo: [selectedCoords.lng, selectedCoords.lat] } })
   }
 
@@ -89,6 +96,25 @@ export default function DeployAsset() {
       </div>
 
       <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto px-4 pb-8 space-y-5">
+        {reservations.length > 0 && (() => {
+          const next = reservations[0]
+          const daysUntil = Math.ceil((new Date(next.from_date + 'T00:00:00') - new Date()) / 86400000)
+          const conflict = form.expires_at && form.expires_at >= next.from_date
+          return (
+            <div className={`flex items-start gap-3 rounded-xl p-4 text-sm ${conflict ? 'bg-destructive/10 border border-destructive/40 text-destructive' : 'bg-amber-500/10 border border-amber-500/40 text-amber-700 dark:text-amber-400'}`}>
+              <TriangleAlert size={16} className="flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="font-medium">
+                  {conflict ? 'Pickup date conflicts with reservation' : `Reserved in ${daysUntil} day${daysUntil === 1 ? '' : 's'}`}
+                </p>
+                <p className="text-xs mt-0.5 opacity-80">
+                  {next.from_date} → {next.to_date}{next.customer_name ? ` · ${next.customer_name}` : ''}
+                </p>
+              </div>
+            </div>
+          )
+        })()}
+
         <div className="space-y-2">
           <Label htmlFor="address">Address</Label>
           <div className="relative">

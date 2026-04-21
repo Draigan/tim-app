@@ -107,21 +107,27 @@ function SetPasswordForm({ onPasswordSet }) {
   )
 }
 
+export function LogoSplash() {
+  return (
+    <div className="text-center">
+      <img src="/logo.webp" alt="Timberfell" className="splash-logo h-16 w-auto mx-auto" />
+      <p className="splash-form text-sm text-muted-foreground mt-3">Sign in to continue</p>
+    </div>
+  )
+}
+
 export default function Login({ onPasswordSet }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [deferredPrompt, setDeferredPrompt] = useState(null)
+
   useEffect(() => {
-    function handler(e) {
-      e.preventDefault()
-      setDeferredPrompt(e)
-    }
+    function handler(e) { e.preventDefault(); setDeferredPrompt(e) }
     window.addEventListener('beforeinstallprompt', handler)
     return () => window.removeEventListener('beforeinstallprompt', handler)
   }, [])
-
 
   async function handleInstall() {
     if (!deferredPrompt) return
@@ -141,44 +147,29 @@ export default function Login({ onPasswordSet }) {
 
   return (
     <div className="min-h-dvh flex items-center justify-center p-6 bg-background">
-      <div className="w-full max-w-sm space-y-6">
-        <div className="text-center space-y-3">
-          <img src="/logo.webp" alt="Timberfell" className="h-14 w-auto mx-auto logo-invert" />
-          <p className="text-sm text-muted-foreground">Sign in to continue</p>
-        </div>
+      <div className="w-full max-w-sm space-y-8">
+        <LogoSplash />
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form className="splash-form space-y-4" onSubmit={handleSubmit}>
           <div className="space-y-2">
             <Label htmlFor="email">Email</Label>
-            <Input
-              id="email"
-              type="email"
-              placeholder="you@company.com"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              required
-            />
+            <Input id="email" type="email" placeholder="you@company.com"
+              value={email} onChange={e => setEmail(e.target.value)} required />
           </div>
-
           <div className="space-y-2">
             <Label htmlFor="password">Password</Label>
-            <Input
-              id="password"
-              type="password"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              required
-            />
+            <Input id="password" type="password"
+              value={password} onChange={e => setPassword(e.target.value)} required />
           </div>
-
           {error && <p className="text-sm text-destructive">{error}</p>}
-
           <Button type="submit" className="w-full" disabled={loading}>
             {loading ? 'Signing in…' : 'Sign In'}
           </Button>
         </form>
 
-        <InstallBanner deferredPrompt={deferredPrompt} onInstall={handleInstall} />
+        <div className="splash-form">
+          <InstallBanner deferredPrompt={deferredPrompt} onInstall={handleInstall} />
+        </div>
       </div>
     </div>
   )
