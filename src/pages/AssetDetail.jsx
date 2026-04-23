@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -249,13 +249,14 @@ function EditAssetDialog({ asset, open, onOpenChange, onSaved }) {
 export default function AssetDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const { state: routeState } = useLocation()
   const isAdmin = useIsAdmin()
   const [asset, setAsset] = useState(null)
   const [deployments, setDeployments] = useState([])
   const [reservations, setReservations] = useState([])
   const [loading, setLoading] = useState(true)
   const [showEdit, setShowEdit] = useState(false)
-  const [showReserve, setShowReserve] = useState(false)
+  const [showReserve, setShowReserve] = useState(!!routeState?.reserve)
   const [confirmDeleteRes, setConfirmDeleteRes] = useState(null)
 
   async function load() {
@@ -309,7 +310,7 @@ export default function AssetDetail() {
               Reserve
             </Button>
           )}
-          {!activeDeployment && (
+          {!activeDeployment && isAdmin && (
             <Button size="sm" onClick={() => navigate(`/deploy/${asset.id}`)}>
               <Truck size={14} />
               Deploy
