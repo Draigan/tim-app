@@ -63,6 +63,17 @@ create view yard_assets as
     where d.asset_id = a.id and d.picked_up_at is null
   );
 
+-- Broadcast messages from admin to employees (shown in Notifications tab)
+create table broadcasts (
+  id uuid primary key default gen_random_uuid(),
+  message text not null,
+  sent_at timestamptz default now()
+);
+
+alter table broadcasts enable row level security;
+create policy "authenticated users can read broadcasts" on broadcasts
+  for select using (auth.uid() is not null);
+
 -- Push notification subscriptions (one row per browser/device per user)
 create table push_subscriptions (
   id uuid primary key default gen_random_uuid(),

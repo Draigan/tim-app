@@ -63,6 +63,8 @@ Deno.serve(async (req) => {
   if (broadcast) {
     // Admin-only: blast to all employees (everyone except admin)
     if (user.id !== adminUser.id) return json({ error: 'Forbidden' }, 403)
+    // Persist so employees can read it in the Notifications tab
+    await supabaseAdmin.from('broadcasts').insert({ message: body })
     const { data: subs } = await supabaseAdmin
       .from('push_subscriptions')
       .select('*')
