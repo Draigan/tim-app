@@ -51,28 +51,24 @@ Deno.serve(async (req) => {
   const { data: { user } } = await supabaseAdmin.auth.getUser(token)
   if (!user) return json({ error: 'Unauthorized' }, 401)
 
-  const { title, body, url, exclude_user_id, broadcast } = await req.json()
+  const { title, body, url, exclude_user_id, to_all } = await req.json()
   if (!title || !body) return json({ error: 'title and body required' }, 400)
-
-  const { data: { users } } = await supabaseAdmin.auth.admin.listUsers({ perPage: 100 })
-  const adminUser = users.find(u => u.email === ADMIN_EMAIL)
-  if (!adminUser) return json({ ok: true, sent: 0 })
 
   const payload = JSON.stringify({ title, body, url: url ?? '/' })
 
-  if (broadcast) {
-    // Admin-only: blast to all employees (everyone except admin)
-    if (user.id !== adminUser.id) return json({ error: 'Forbidden' }, 403)
-    // Persist so employees can read it in the Notifications tab
-    await supabaseAdmin.from('broadcasts').insert({ message: body })
-    const { data: subs } = await supabaseAdmin
-      .from('push_subscriptions')
-      .select('*')
-      .neq('user_id', adminUser.id)
+  if (to_all) {
+    // Send to every subscriber except the sender — used for chat messages
+    let query = supabaseAdmin.from('push_subscriptions').select('*')
+    if (exclude_user_id) query = query.neq('user_id', exclude_user_id)
+    const { data: subs } = await query
     if (!subs?.length) return json({ ok: true, sent: 0 })
     const sent = await sendToSubs(subs, payload)
     return json({ ok: true, sent })
   }
+
+  const { data: { users } } = await supabaseAdmin.auth.admin.listUsers({ perPage: 100 })
+  const adminUser = users.find(u => u.email === ADMIN_EMAIL)
+  if (!adminUser) return json({ ok: true, sent: 0 })
 
   // Normal mode: notify admin about employee actions
   if (exclude_user_id === adminUser.id) return json({ ok: true, sent: 0 })

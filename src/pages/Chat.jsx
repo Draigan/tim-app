@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
+import { markChatRead } from '@/lib/useUnreadChat'
 import { Button } from '@/components/ui/button'
 import { Send } from 'lucide-react'
 
@@ -43,10 +44,12 @@ export default function Chat() {
   }, [])
 
   useEffect(() => {
+    markChatRead()
     const channel = supabase
       .channel('messages-chat')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, ({ new: msg }) => {
         setMessages(prev => [...prev, msg])
+        markChatRead()
       })
       .subscribe()
     return () => supabase.removeChannel(channel)
@@ -88,12 +91,19 @@ export default function Chat() {
     const text = input.trim()
     if (!text) return
     setInput('')
-    const user = sessionRef.current?.user
+    const session = sessionRef.current
+    const user = session?.user
+    const senderName = user?.user_metadata?.full_name ?? user?.email ?? 'Unknown'
     await supabase.from('messages').insert({
       user_id: user.id,
-      sender_name: user?.user_metadata?.full_name ?? user?.email ?? 'Unknown',
+      sender_name: senderName,
       content: text,
     })
+    fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-push`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: senderName, body: text, url: '/chat', to_all: true, exclude_user_id: user.id }),
+    }).catch(() => {})
     inputRef.current?.focus()
   }
 
