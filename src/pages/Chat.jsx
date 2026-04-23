@@ -80,17 +80,21 @@ export default function Chat() {
         {messages.map((msg, i) => {
           const isOwn = msg.user_id === userId
           const prevMsg = messages[i - 1]
-          const showName = !isOwn && msg.sender_name !== prevMsg?.sender_name
+          const nextMsg = messages[i + 1]
+          const showName = msg.sender_name !== prevMsg?.sender_name
+          const isLastInRun = nextMsg?.sender_name !== msg.sender_name
           return (
-            <div key={msg.id} className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'}`}>
+            <div key={msg.id} className="flex flex-col items-start">
               {showName && (
-                <p className="text-xs text-muted-foreground mb-1 px-1">{msg.sender_name}</p>
+                <p className={`text-xs font-medium mb-1 px-1 ${isOwn ? 'text-primary' : 'text-muted-foreground'}`}>
+                  {isOwn ? 'You' : msg.sender_name}
+                </p>
               )}
-              <div className={`max-w-[75%] px-3.5 py-2.5 rounded-2xl ${isOwn ? 'bg-primary text-primary-foreground rounded-br-sm' : 'bg-muted rounded-bl-sm'}`}>
+              <div className={`max-w-[80%] px-3.5 py-2.5 rounded-2xl ${isOwn ? 'bg-primary/15 text-foreground' : 'bg-muted'}`}>
                 <p className="text-sm leading-relaxed break-words">{msg.content}</p>
               </div>
-              {(i === messages.length - 1 || messages[i + 1]?.user_id !== msg.user_id) && (
-                <p className="text-[10px] text-muted-foreground mt-1 px-1">{timeAgo(msg.sent_at)}</p>
+              {isLastInRun && (
+                <p className="text-[10px] text-muted-foreground mt-1 mb-1 px-1">{timeAgo(msg.sent_at)}</p>
               )}
             </div>
           )
