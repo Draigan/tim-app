@@ -1,7 +1,9 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
 import { Send } from 'lucide-react'
+
+const PAGE_SIZE = 30
 
 function timeAgo(iso) {
   const diff = (Date.now() - new Date(iso)) / 1000
@@ -16,27 +18,29 @@ export default function Chat() {
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [userId, setUserId] = useState(null)
-  const [sessionReady, setSessionReady] = useState(false)
+  const [hasMore, setHasMore] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
   const bottomRef = useRef(null)
   const inputRef = useRef(null)
+  const scrollRef = useRef(null)
   const sessionRef = useRef(null)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       sessionRef.current = session
       setUserId(session?.user?.id)
-      setSessionReady(true)
+      supabase
+        .from('messages')
+        .select('*')
+        .order('sent_at', { ascending: false })
+        .limit(PAGE_SIZE)
+        .then(({ data }) => {
+          if (!data) return
+          setMessages(data.reverse())
+          setHasMore(data.length === PAGE_SIZE)
+        })
     })
   }, [])
-
-  useEffect(() => {
-    if (!sessionReady) return
-    supabase
-      .from('messages')
-      .select('*')
-      .order('sent_at', { ascending: true })
-      .then(({ data }) => { if (data) setMessages(data) })
-  }, [sessionReady])
 
   useEffect(() => {
     const channel = supabase
@@ -48,17 +52,43 @@ export default function Chat() {
     return () => supabase.removeChannel(channel)
   }, [])
 
+  // Scroll to bottom on initial load and new messages
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+  }, [messages.length > 0 && messages[messages.length - 1]?.id])
+
+  async function loadMore() {
+    if (loadingMore || !hasMore || messages.length === 0) return
+    setLoadingMore(true)
+    const oldest = messages[0].sent_at
+    const el = scrollRef.current
+    const prevScrollHeight = el?.scrollHeight ?? 0
+
+    const { data } = await supabase
+      .from('messages')
+      .select('*')
+      .order('sent_at', { ascending: false })
+      .lt('sent_at', oldest)
+      .limit(PAGE_SIZE)
+
+    if (data) {
+      const older = data.reverse()
+      setMessages(prev => [...older, ...prev])
+      setHasMore(data.length === PAGE_SIZE)
+      // Preserve scroll position after prepend
+      requestAnimationFrame(() => {
+        if (el) el.scrollTop = el.scrollHeight - prevScrollHeight
+      })
+    }
+    setLoadingMore(false)
+  }
 
   async function sendMessage(e) {
     e.preventDefault()
     const text = input.trim()
     if (!text) return
     setInput('')
-    const session = sessionRef.current
-    const user = session?.user
+    const user = sessionRef.current?.user
     await supabase.from('messages').insert({
       user_id: user.id,
       sender_name: user?.user_metadata?.full_name ?? user?.email ?? 'Unknown',
@@ -69,7 +99,18 @@ export default function Chat() {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-2">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-2">
+        {hasMore && (
+          <div className="flex justify-center pb-2">
+            <button
+              onClick={loadMore}
+              disabled={loadingMore}
+              className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+            >
+              {loadingMore ? 'Loading…' : 'Load older messages'}
+            </button>
+          </div>
+        )}
         {messages.length === 0 && (
           <p className="text-sm text-muted-foreground text-center pt-8">No messages yet. Say something!</p>
         )}
