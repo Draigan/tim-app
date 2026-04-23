@@ -310,7 +310,7 @@ export default function AssetDetail() {
               Reserve
             </Button>
           )}
-          {!activeDeployment && isAdmin && (
+          {!activeDeployment && (
             <Button size="sm" onClick={() => navigate(`/deploy/${asset.id}`)}>
               <Truck size={14} />
               Deploy

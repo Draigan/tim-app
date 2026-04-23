@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
-import { ChevronRight, Truck, ChevronDown, ChevronUp, Search, X } from 'lucide-react'
+import { ChevronRight, Truck, ChevronDown, ChevronUp, Search, X, BookMarked } from 'lucide-react'
 import { getMarkerColor } from '@/lib/utils'
 import AssetBottomSheet from '@/components/AssetBottomSheet'
 import { useRealtime } from '@/lib/useRealtime'
@@ -181,11 +181,14 @@ export default function Inventory() {
                             </div>
                             <div className="flex items-center gap-2 ml-3 flex-shrink-0">
                               {isAdmin && (
-                                <Button size="sm" onClick={() => navigate(`/deploy/${asset.id}`)}>
-                                  <Truck size={14} />
-                                  Deploy
+                                <Button size="icon" className="h-8 w-8 flex-shrink-0 bg-muted hover:bg-muted/70 text-muted-foreground" onClick={() => navigate(`/assets/${asset.id}`, { state: { reserve: true } })}>
+                                  <BookMarked size={14} />
                                 </Button>
                               )}
+                              <Button size="sm" onClick={() => navigate(`/deploy/${asset.id}`)}>
+                                <Truck size={14} />
+                                Deploy
+                              </Button>
                               <button className="text-muted-foreground hover:text-foreground" onClick={() => navigate(`/assets/${asset.id}`)}>
                                 <ChevronRight size={18} />
                               </button>
