@@ -89,7 +89,7 @@ export default function AssetManager() {
           </button>
           <h1 className="text-xl font-semibold">Asset Manager</h1>
         </div>
-        <Button size="sm" onClick={() => navigate('/assets/new')}>
+        <Button size="sm" onClick={() => navigate('/assets/new', { state: { from: '/asset-manager' } })}>
           <Plus size={16} />
           Add Asset
         </Button>

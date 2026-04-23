@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -12,6 +12,7 @@ import { ICON_OPTIONS, iconImgUrl } from '@/lib/icons'
 
 export default function NewAsset() {
   const navigate = useNavigate()
+  const { state } = useLocation()
   const [types, setTypes] = useState([])
   const [form, setForm] = useState({ asset_type_id: '', size: '', label: '', notes: '' })
   const [newTypeName, setNewTypeName] = useState('')
@@ -61,7 +62,7 @@ export default function NewAsset() {
     })
     setSaving(false)
     if (error) { setError(error.message); return }
-    navigate('/inventory')
+    navigate(state?.from ?? '/inventory')
   }
 
   return (
