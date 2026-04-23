@@ -7,8 +7,10 @@ const CORS = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
+const ADMIN_EMAIL = 'tim@timberfell.ca'
+
 webpush.setVapidDetails(
-  'mailto:tim@timberfell.ca',
+  `mailto:${ADMIN_EMAIL}`,
   Deno.env.get('VAPID_PUBLIC_KEY')!,
   Deno.env.get('VAPID_PRIVATE_KEY')!,
 )
@@ -33,9 +35,18 @@ Deno.serve(async (req) => {
   const { title, body, url, exclude_user_id } = await req.json()
   if (!title || !body) return json({ error: 'title and body required' }, 400)
 
-  let query = supabaseAdmin.from('push_subscriptions').select('*')
-  if (exclude_user_id) query = query.neq('user_id', exclude_user_id)
-  const { data: subs } = await query
+  // Resolve admin's user_id so we only notify them, not employees
+  const { data: { users } } = await supabaseAdmin.auth.admin.listUsers({ perPage: 100 })
+  const adminUser = users.find(u => u.email === ADMIN_EMAIL)
+  if (!adminUser) return json({ ok: true, sent: 0 })
+
+  // Skip if the admin themselves triggered the action
+  if (exclude_user_id === adminUser.id) return json({ ok: true, sent: 0 })
+
+  const { data: subs } = await supabaseAdmin
+    .from('push_subscriptions')
+    .select('*')
+    .eq('user_id', adminUser.id)
   if (!subs?.length) return json({ ok: true, sent: 0 })
 
   const payload = JSON.stringify({ title, body, url: url ?? '/' })

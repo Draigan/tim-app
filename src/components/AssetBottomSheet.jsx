@@ -8,7 +8,7 @@ import { supabase } from '@/lib/supabase'
 import { geocodeAddress } from '@/lib/mapbox'
 import { getMarkerColor, formatPhone } from '@/lib/utils'
 import { Textarea } from '@/components/ui/textarea'
-import { Phone, MapPin, Calendar, User, ChevronLeft } from 'lucide-react'
+import { Phone, MapPin, Calendar, User, ChevronLeft, Navigation } from 'lucide-react'
 import { useNavigate, useLocation } from 'react-router-dom'
 
 function expiryBadge(expiresAt) {
@@ -176,6 +176,21 @@ function PickupDialog({ deployment, open, onOpenChange, onConfirm }) {
       pickup_notes: notes.trim() || null,
       picked_up_by,
     }).eq('id', deployment.id)
+
+    if (session) {
+      const who = picked_up_by ?? 'Someone'
+      fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-push`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: `${deployment.label} picked up`,
+          body: `${deployment.address}${deployment.customer_name ? ` · ${deployment.customer_name}` : ''} — by ${who}`,
+          url: '/',
+          exclude_user_id: user?.id,
+        }),
+      }).catch(() => {})
+    }
+
     setSaving(false)
     onConfirm()
   }
@@ -264,6 +279,18 @@ function SingleAsset({ deployment, onBack, onClose, onPickup, readOnly = false }
       </div>
 
       <div className="mt-6 space-y-2">
+        {deployment.lat && deployment.lng && (
+          <a
+            href={`https://www.google.com/maps/dir/?api=1&destination=${deployment.lat},${deployment.lng}`}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <Button variant="outline" className="w-full">
+              <Navigation size={15} />
+              Directions
+            </Button>
+          </a>
+        )}
         <div className="grid grid-cols-2 gap-2">
           {!readOnly && deployment.lng && location.pathname !== '/' && (
             <Button variant="outline" onClick={() => { onClose(); navigate('/', { state: { flyTo: [deployment.lng, deployment.lat] } }) }}>
