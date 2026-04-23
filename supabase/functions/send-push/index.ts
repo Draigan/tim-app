@@ -24,33 +24,7 @@ const supabaseAdmin = createClient(
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { ...CORS, 'Content-Type': 'application/json' } })
 
-Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response(null, { headers: CORS })
-
-  const token = req.headers.get('Authorization')?.replace('Bearer ', '')
-  if (!token) return json({ error: 'Unauthorized' }, 401)
-  const { data: { user } } = await supabaseAdmin.auth.getUser(token)
-  if (!user) return json({ error: 'Unauthorized' }, 401)
-
-  const { title, body, url, exclude_user_id } = await req.json()
-  if (!title || !body) return json({ error: 'title and body required' }, 400)
-
-  // Resolve admin's user_id so we only notify them, not employees
-  const { data: { users } } = await supabaseAdmin.auth.admin.listUsers({ perPage: 100 })
-  const adminUser = users.find(u => u.email === ADMIN_EMAIL)
-  if (!adminUser) return json({ ok: true, sent: 0 })
-
-  // Skip if the admin themselves triggered the action
-  if (exclude_user_id === adminUser.id) return json({ ok: true, sent: 0 })
-
-  const { data: subs } = await supabaseAdmin
-    .from('push_subscriptions')
-    .select('*')
-    .eq('user_id', adminUser.id)
-  if (!subs?.length) return json({ ok: true, sent: 0 })
-
-  const payload = JSON.stringify({ title, body, url: url ?? '/' })
-
+async function sendToSubs(subs: any[], payload: string) {
   const results = await Promise.allSettled(
     subs.map(sub =>
       webpush.sendNotification(
@@ -59,8 +33,6 @@ Deno.serve(async (req) => {
       )
     )
   )
-
-  // Remove subscriptions that the browser has invalidated (410 Gone)
   const expired = subs.filter((_, i) => {
     const r = results[i]
     return r.status === 'rejected' && (r.reason as any)?.statusCode === 410
@@ -68,7 +40,45 @@ Deno.serve(async (req) => {
   if (expired.length > 0) {
     await supabaseAdmin.from('push_subscriptions').delete().in('endpoint', expired.map(s => s.endpoint))
   }
+  return results.filter(r => r.status === 'fulfilled').length
+}
 
-  const sent = results.filter(r => r.status === 'fulfilled').length
+Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') return new Response(null, { headers: CORS })
+
+  const token = req.headers.get('Authorization')?.replace('Bearer ', '')
+  if (!token) return json({ error: 'Unauthorized' }, 401)
+  const { data: { user } } = await supabaseAdmin.auth.getUser(token)
+  if (!user) return json({ error: 'Unauthorized' }, 401)
+
+  const { title, body, url, exclude_user_id, broadcast } = await req.json()
+  if (!title || !body) return json({ error: 'title and body required' }, 400)
+
+  const { data: { users } } = await supabaseAdmin.auth.admin.listUsers({ perPage: 100 })
+  const adminUser = users.find(u => u.email === ADMIN_EMAIL)
+  if (!adminUser) return json({ ok: true, sent: 0 })
+
+  const payload = JSON.stringify({ title, body, url: url ?? '/' })
+
+  if (broadcast) {
+    // Admin-only: blast to all employees (everyone except admin)
+    if (user.id !== adminUser.id) return json({ error: 'Forbidden' }, 403)
+    const { data: subs } = await supabaseAdmin
+      .from('push_subscriptions')
+      .select('*')
+      .neq('user_id', adminUser.id)
+    if (!subs?.length) return json({ ok: true, sent: 0 })
+    const sent = await sendToSubs(subs, payload)
+    return json({ ok: true, sent })
+  }
+
+  // Normal mode: notify admin about employee actions
+  if (exclude_user_id === adminUser.id) return json({ ok: true, sent: 0 })
+  const { data: subs } = await supabaseAdmin
+    .from('push_subscriptions')
+    .select('*')
+    .eq('user_id', adminUser.id)
+  if (!subs?.length) return json({ ok: true, sent: 0 })
+  const sent = await sendToSubs(subs, payload)
   return json({ ok: true, sent })
 })

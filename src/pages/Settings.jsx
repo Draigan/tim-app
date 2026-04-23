@@ -278,6 +278,10 @@ export default function Settings() {
   const [feedbackMsg, setFeedbackMsg] = useState('')
   const [feedbackSent, setFeedbackSent] = useState(false)
   const [sendingFeedback, setSendingFeedback] = useState(false)
+  const [showBroadcast, setShowBroadcast] = useState(false)
+  const [broadcastMsg, setBroadcastMsg] = useState('')
+  const [broadcastSent, setBroadcastSent] = useState(false)
+  const [sendingBroadcast, setSendingBroadcast] = useState(false)
 
   useEffect(() => { applyFontSize(fontSize) }, [])
 
@@ -302,6 +306,20 @@ export default function Settings() {
   }
 
 
+  async function handleBroadcast() {
+    if (!broadcastMsg.trim()) return
+    setSendingBroadcast(true)
+    const { data: { session } } = await supabase.auth.getSession()
+    await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-push`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Message from Tim', body: broadcastMsg.trim(), broadcast: true }),
+    })
+    setSendingBroadcast(false)
+    setBroadcastSent(true)
+    setBroadcastMsg('')
+  }
+
   async function handleFeedback() {
     if (!feedbackMsg.trim()) return
     setSendingFeedback(true)
@@ -323,13 +341,22 @@ export default function Settings() {
 
       <div className="flex-1 overflow-y-auto px-4 pb-8 space-y-6">
         {isAdmin && (
-          <button
-            onClick={() => navigate('/asset-manager')}
-            className="w-full text-left bg-primary/10 border border-primary/30 rounded-xl px-4 py-3 flex items-center justify-between hover:bg-primary/15 transition-colors"
-          >
-            <span className="text-sm font-medium text-primary">Asset Manager</span>
-            <ChevronRight size={16} className="text-primary" />
-          </button>
+          <div className="space-y-2">
+            <button
+              onClick={() => navigate('/asset-manager')}
+              className="w-full text-left bg-primary/10 border border-primary/30 rounded-xl px-4 py-3 flex items-center justify-between hover:bg-primary/15 transition-colors"
+            >
+              <span className="text-sm font-medium text-primary">Asset Manager</span>
+              <ChevronRight size={16} className="text-primary" />
+            </button>
+            <button
+              onClick={() => { setShowBroadcast(true); setBroadcastSent(false); setBroadcastMsg('') }}
+              className="w-full text-left bg-primary/10 border border-primary/30 rounded-xl px-4 py-3 flex items-center justify-between hover:bg-primary/15 transition-colors"
+            >
+              <span className="text-sm font-medium text-primary">Message Employees</span>
+              <ChevronRight size={16} className="text-primary" />
+            </button>
+          </div>
         )}
 
         {isAdmin && <UsersPanel />}
@@ -401,6 +428,35 @@ export default function Settings() {
                 <Button variant="outline" className="flex-1" onClick={() => setShowFeedback(false)}>Cancel</Button>
                 <Button className="flex-1" onClick={handleFeedback} disabled={sendingFeedback || !feedbackMsg.trim()}>
                   {sendingFeedback ? 'Sending…' : 'Send'}
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showBroadcast} onOpenChange={v => { setShowBroadcast(v); if (!v) { setBroadcastSent(false); setBroadcastMsg('') } }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle>Message Employees</DialogTitle></DialogHeader>
+          {broadcastSent ? (
+            <div className="py-4 text-center space-y-2">
+              <p className="font-medium">Message sent!</p>
+              <p className="text-sm text-muted-foreground">All employees with notifications enabled will receive it.</p>
+              <Button className="w-full mt-2" onClick={() => setShowBroadcast(false)}>Done</Button>
+            </div>
+          ) : (
+            <div className="space-y-3 mt-2">
+              <Textarea
+                placeholder="Write a message to your team…"
+                value={broadcastMsg}
+                onChange={e => setBroadcastMsg(e.target.value)}
+                rows={4}
+                autoFocus
+              />
+              <div className="flex gap-2">
+                <Button variant="outline" className="flex-1" onClick={() => setShowBroadcast(false)}>Cancel</Button>
+                <Button className="flex-1" onClick={handleBroadcast} disabled={sendingBroadcast || !broadcastMsg.trim()}>
+                  {sendingBroadcast ? 'Sending…' : 'Send'}
                 </Button>
               </div>
             </div>
