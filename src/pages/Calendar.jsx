@@ -27,9 +27,9 @@ function isoDate(y, m, d) {
 }
 
 function addDays(iso, n) {
-  const d = new Date(iso + 'T00:00:00')
-  d.setDate(d.getDate() + n)
-  return d.toISOString().slice(0, 10)
+  const [y, m, d] = iso.split('-').map(Number)
+  const date = new Date(y, m - 1, d + n)
+  return isoDate(date.getFullYear(), date.getMonth(), date.getDate())
 }
 
 function fmtTime(t) {
@@ -146,7 +146,7 @@ export default function Calendar() {
   const [weekStart, setWeekStart] = useState(() => {
     const d = new Date()
     d.setDate(d.getDate() - d.getDay())
-    return d.toISOString().slice(0, 10)
+    return isoDate(d.getFullYear(), d.getMonth(), d.getDate())
   })
   const [events, setEvents] = useState([])
   const [reservations, setReservations] = useState([])
@@ -249,7 +249,7 @@ export default function Calendar() {
             setSelected(todayIso)
             setYear(today.getFullYear()); setMonth(today.getMonth())
             const d = new Date(); d.setDate(d.getDate() - d.getDay())
-            setWeekStart(d.toISOString().slice(0, 10))
+            setWeekStart(isoDate(d.getFullYear(), d.getMonth(), d.getDate()))
           }} className="text-xs text-muted-foreground hover:text-foreground border rounded-md px-2 py-1">Today</button>
           <div className="flex rounded-lg border overflow-hidden text-xs">
             <button onClick={() => { setView('month'); localStorage.setItem('calView', 'month') }} className={`px-3 py-1.5 ${view === 'month' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}>Month</button>

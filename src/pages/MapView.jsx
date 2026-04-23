@@ -252,6 +252,7 @@ export default function MapView() {
   const [activeStyle, setActiveStyle] = useState(
     () => localStorage.getItem('mapStyle') ?? 'mapbox://styles/mapbox/streets-v12'
   )
+  const stylesRef = useRef(null)
   const navigate = useNavigate()
   const location = useLocation()
   const pendingFlyTo = useRef(location.state?.flyTo ?? null)
@@ -335,6 +336,17 @@ export default function MapView() {
     if (source) source.setData(toGeoJSON(deployments))
   }, [deployments])
 
+  useEffect(() => {
+    if (!showStyles) return
+    function handleClickOutside(e) {
+      if (stylesRef.current && !stylesRef.current.contains(e.target)) {
+        setShowStyles(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [showStyles])
+
   return (
     <div className="relative h-full">
       <div ref={mapContainer} className="h-full w-full" />
@@ -343,7 +355,7 @@ export default function MapView() {
         <Button size="sm" variant="secondary" className="shadow-md" onClick={() => yardCoords.current && map.current.flyTo({ center: yardCoords.current, zoom: 12, bearing: 0, pitch: 0 })}>
           <LocateFixed size={15} />
         </Button>
-        <div className="relative">
+        <div className="relative" ref={stylesRef}>
           <Button size="sm" variant="secondary" className="shadow-md" onClick={() => setShowStyles(s => !s)}>
             <Layers size={15} />
           </Button>
