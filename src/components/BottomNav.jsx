@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { Map, Package, History, Settings, CalendarDays, Bell } from 'lucide-react'
+import { Map, Package, History, Settings, CalendarDays, MessageCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useIsAdmin } from '@/lib/useIsAdmin'
 
@@ -9,13 +9,9 @@ export default function BottomNav() {
   const navItems = [
     { to: '/', icon: Map, label: 'Map' },
     { to: '/inventory', icon: Package, label: 'Inventory' },
-    ...(isAdmin
-      ? [
-          { to: '/calendar', icon: CalendarDays, label: 'Calendar' },
-          { to: '/history', icon: History, label: 'History' },
-        ]
-      : [{ to: '/notifications', icon: Bell, label: 'Notifications' }]
-    ),
+    ...(isAdmin ? [{ to: '/calendar', icon: CalendarDays, label: 'Calendar' }] : []),
+    { to: '/chat', icon: MessageCircle, label: 'Chat' },
+    ...(isAdmin ? [{ to: '/history', icon: History, label: 'History' }] : []),
     { to: '/settings', icon: Settings, label: 'Settings' },
   ]
 

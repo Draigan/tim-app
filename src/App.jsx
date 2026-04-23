@@ -12,6 +12,7 @@ import DeployAsset from '@/pages/DeployAsset'
 import Settings from '@/pages/Settings'
 import History from '@/pages/History'
 import Notifications from '@/pages/Notifications'
+import Chat from '@/pages/Chat'
 import Calendar from '@/pages/Calendar'
 import AssetManager from '@/pages/AssetManager'
 
@@ -48,6 +49,7 @@ export default function App() {
           <Route path="/deploy/:assetId" element={<DeployAsset />} />
           <Route path="/history" element={<History />} />
           <Route path="/notifications" element={<Notifications />} />
+          <Route path="/chat" element={<Chat />} />
           <Route path="/calendar" element={<Calendar />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/asset-manager" element={<AssetManager />} />
