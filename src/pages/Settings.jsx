@@ -205,6 +205,7 @@ function UsersPanel() {
 const HELP = [
   {
     title: 'Adding an Asset',
+    adminOnly: true,
     body: 'Go to Settings and tap Asset Manager, then hit Add Asset in the top right. Pick the type, choose an icon, give it a label (e.g. BIN-04), and add a size if it applies. Hit Save and it\'ll show up in Inventory.',
   },
   {
@@ -217,30 +218,35 @@ const HELP = [
   },
   {
     title: 'Reservations',
+    adminOnly: true,
     body: 'Open an asset from Inventory and tap Reserve. Set the date, customer info, and address. A banner will appear on the day the reservation starts if the asset hasn\'t been deployed yet.',
   },
   {
     title: 'Calendar',
+    adminOnly: true,
     body: 'The Calendar tab is for your own schedule — deliveries, service dates, anything you want. Tap a day to see what\'s on, tap + to add an event. Reservations show up automatically as amber dots.',
   },
   {
     title: 'History',
+    adminOnly: true,
     body: 'Every deployment is logged automatically with who deployed it, who picked it up, dates, and any notes. Use the filters to search by asset, customer, or date range.',
   },
   {
     title: 'What Employees Can\'t See',
+    adminOnly: true,
     body: 'Employees can view the map, inventory, and history — but they cannot add or edit assets, manage reservations, access the calendar, or see the Settings users list. Only you can create and manage employee accounts.',
   },
 ]
 
-function HelpSection() {
+function HelpSection({ isAdmin }) {
   const [open, setOpen] = useState(null)
+  const items = HELP.filter(item => isAdmin || !item.adminOnly)
   return (
     <div>
       <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Help</p>
       <div className="space-y-2">
-        {HELP.map((item, i) => (
-          <button key={i} onClick={() => setOpen(open === i ? null : i)}
+        {items.map((item, i) => (
+          <button key={item.title} onClick={() => setOpen(open === i ? null : i)}
             className="w-full text-left bg-card border rounded-xl px-4 py-3 transition-colors hover:bg-accent">
             <div className="flex items-center justify-between gap-2">
               <span className="text-sm font-medium">{item.title}</span>
@@ -361,7 +367,7 @@ export default function Settings() {
 
         {isAdmin && <UsersPanel />}
 
-        <HelpSection />
+        <HelpSection isAdmin={isAdmin} />
 
         <div className="space-y-2 pt-2">
           <div>
