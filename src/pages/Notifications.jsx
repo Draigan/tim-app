@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
+import { useRealtime } from '@/lib/useRealtime'
 import { Bell } from 'lucide-react'
 
 function timeAgo(iso) {
@@ -15,7 +16,7 @@ export default function Notifications() {
   const [messages, setMessages] = useState([])
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
+  const fetchMessages = useCallback(() => {
     supabase
       .from('broadcasts')
       .select('*')
@@ -25,6 +26,9 @@ export default function Notifications() {
         setLoading(false)
       })
   }, [])
+
+  useEffect(() => { fetchMessages() }, [fetchMessages])
+  useRealtime(['broadcasts'], fetchMessages)
 
   return (
     <div className="h-full flex flex-col">
