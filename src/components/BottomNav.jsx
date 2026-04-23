@@ -35,7 +35,7 @@ export default function BottomNav() {
           <div className="relative">
             <Icon size={22} />
             {badge && (
-              <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-green-400" />
+              <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-green-400 shadow-[0_0_6px_2px_rgba(74,222,128,0.6)]" />
             )}
           </div>
           {label}
