@@ -5,6 +5,7 @@ import { useRealtime } from '@/lib/useRealtime'
 import { useCallback } from 'react'
 import { X } from 'lucide-react'
 import BottomNav from './BottomNav'
+import PushPrompt from './PushPrompt'
 
 function ReservationBanner() {
   const [alerts, setAlerts] = useState([])
@@ -80,6 +81,7 @@ export default function Layout() {
         <Outlet />
       </main>
       <BottomNav />
+      <PushPrompt />
     </div>
   )
 }
