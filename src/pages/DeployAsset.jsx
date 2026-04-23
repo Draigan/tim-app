@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { ArrowLeft, MapPin, TriangleAlert } from 'lucide-react'
+import { ArrowLeft, Calendar, MapPin, Plus, TriangleAlert, X } from 'lucide-react'
 
 export default function DeployAsset() {
   const { assetId } = useParams()
@@ -21,6 +21,11 @@ export default function DeployAsset() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const geocodeTimer = useRef(null)
+  const pickupRef = useRef(null)
+
+  function formatPickupDate(iso) {
+    return new Date(iso + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+  }
 
   useEffect(() => {
     const today = new Date().toISOString().slice(0, 10)
@@ -170,15 +175,36 @@ export default function DeployAsset() {
         </div>
 
         <div className="space-y-2">
-          <Label htmlFor="expires_at">Expected Pick Up</Label>
+          <Label>Expected Pick Up</Label>
           <input
-            id="expires_at"
+            ref={pickupRef}
             type="date"
             value={form.expires_at}
             onChange={e => set('expires_at', e.target.value)}
-            onClick={e => { try { e.target.showPicker() } catch {} }}
-            className="w-full rounded-md border border-input px-3 py-2 text-sm cursor-pointer"
+            className="sr-only"
           />
+          {form.expires_at ? (
+            <div className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-primary/10 border border-primary/20 text-sm font-medium text-primary">
+              <Calendar size={14} />
+              <span>{formatPickupDate(form.expires_at)}</span>
+              <button
+                type="button"
+                onClick={() => set('expires_at', '')}
+                className="ml-1 hover:text-destructive transition-colors"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => { try { pickupRef.current?.showPicker() } catch {} }}
+              className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground border border-dashed rounded-lg px-3 py-2 transition-colors"
+            >
+              <Plus size={14} />
+              Set expected pickup
+            </button>
+          )}
         </div>
 
         <div className="space-y-2">
