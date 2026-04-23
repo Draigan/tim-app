@@ -81,6 +81,23 @@ export default function DeployAsset() {
     if (error) { setError(error.message); return }
     const today = new Date().toISOString().slice(0, 10)
     await supabase.from('reservations').delete().eq('asset_id', assetId).lte('from_date', today).gte('to_date', today)
+
+    // Notify other users about the deployment (fire-and-forget)
+    const { data: { session } } = await supabase.auth.getSession()
+    if (session) {
+      const label = asset ? `${asset.label}${asset.size ? ` ${asset.size}` : ''}` : 'Asset'
+      fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-push`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: `${label} deployed`,
+          body: form.address + (form.customer_name ? ` · ${form.customer_name}` : ''),
+          url: '/',
+          exclude_user_id: session.user.id,
+        }),
+      }).catch(() => {})
+    }
+
     navigate('/', { state: { flyTo: [selectedCoords.lng, selectedCoords.lat] } })
   }
 

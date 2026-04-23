@@ -5,9 +5,10 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Plus, Trash2, LogOut, Sun, Moon, UserX, LogOutIcon, MessageSquare, ChevronRight } from 'lucide-react'
+import { Plus, Trash2, LogOut, Sun, Moon, MessageSquare, ChevronRight, Bell, BellOff } from 'lucide-react'
 import { ICON_OPTIONS, iconImgUrl } from '@/lib/icons'
 import { useTheme } from '@/lib/theme'
+import { usePushNotifications } from '@/lib/usePushNotifications'
 
 const ADMIN_EMAILS = ['tim@timberfell.ca']
 
@@ -40,7 +41,6 @@ function UsersPanel() {
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState('')
   const [createDone, setCreateDone] = useState(false)
-  const [actionUserId, setActionUserId] = useState(null)
   const [confirmDeleteUser, setConfirmDeleteUser] = useState(null)
   const [deleteConfirmText, setDeleteConfirmText] = useState('')
 
@@ -75,25 +75,10 @@ function UsersPanel() {
     fetchUsers()
   }
 
-  async function handleSignOut(userId) {
-    setActionUserId(userId)
-    await adminFetch('?action=signout', { method: 'POST', body: JSON.stringify({ userId }) })
-    setActionUserId(null)
-  }
-
-  async function handleBan(userId, ban) {
-    setActionUserId(userId)
-    await adminFetch('?action=ban', { method: 'POST', body: JSON.stringify({ userId, ban }) })
-    await fetchUsers()
-    setActionUserId(null)
-  }
-
   async function handleDelete(userId) {
-    setActionUserId(userId)
     await adminFetch('?action=delete', { method: 'POST', body: JSON.stringify({ userId }) })
     setConfirmDeleteUser(null)
     await fetchUsers()
-    setActionUserId(null)
   }
 
   function fmtDate(iso) {
@@ -115,40 +100,21 @@ function UsersPanel() {
 
       <div className="space-y-2">
         {users.map(u => (
-          <div key={u.id} className={`bg-card border rounded-xl px-4 py-3 ${u.banned ? 'opacity-50' : ''}`}>
+          <div key={u.id} className="bg-card border rounded-xl px-4 py-3">
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
                 <p className="font-medium text-sm truncate">{u.full_name ?? u.email}</p>
                 {u.full_name && <p className="text-xs text-muted-foreground truncate">{u.email}</p>}
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  {u.banned ? 'Disabled' : u.last_sign_in_at ? `Last seen ${fmtDate(u.last_sign_in_at)}` : u.confirmed_at ? 'Never signed in' : 'Invite pending'}
+                  {u.last_sign_in_at ? `Last seen ${fmtDate(u.last_sign_in_at)}` : u.confirmed_at ? 'Never signed in' : 'Invite pending'}
                 </p>
               </div>
               {!ADMIN_EMAILS.includes(u.email) && (
                 <div className="flex gap-1.5 flex-shrink-0">
-                  {!u.banned && (
-                    <button
-                      title="Sign out"
-                      disabled={actionUserId === u.id}
-                      onClick={() => handleSignOut(u.id)}
-                      className="text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
-                    >
-                      <LogOutIcon size={15} />
-                    </button>
-                  )}
-                  <button
-                    title={u.banned ? 'Re-enable' : 'Disable account'}
-                    disabled={actionUserId === u.id}
-                    onClick={() => handleBan(u.id, !u.banned)}
-                    className={`transition-colors disabled:opacity-40 ${u.banned ? 'text-muted-foreground hover:text-foreground' : 'text-muted-foreground hover:text-destructive'}`}
-                  >
-                    <UserX size={15} />
-                  </button>
                   <button
                     title="Delete account"
-                    disabled={actionUserId === u.id}
                     onClick={() => setConfirmDeleteUser(u)}
-                    className="text-muted-foreground hover:text-destructive transition-colors disabled:opacity-40"
+                    className="text-muted-foreground hover:text-destructive transition-colors"
                   >
                     <Trash2 size={15} />
                   </button>
@@ -179,10 +145,10 @@ function UsersPanel() {
             <Button
               variant="destructive"
               className="flex-1"
-              disabled={actionUserId === confirmDeleteUser?.id || deleteConfirmText.trim().toLowerCase() !== (confirmDeleteUser?.full_name ?? confirmDeleteUser?.email ?? '').toLowerCase()}
+              disabled={deleteConfirmText.trim().toLowerCase() !== (confirmDeleteUser?.full_name ?? confirmDeleteUser?.email ?? '').toLowerCase()}
               onClick={() => handleDelete(confirmDeleteUser.id)}
             >
-              {actionUserId === confirmDeleteUser?.id ? 'Deleting…' : 'Delete'}
+              Delete
             </Button>
           </div>
         </DialogContent>
@@ -239,7 +205,7 @@ function UsersPanel() {
 const HELP = [
   {
     title: 'Adding an Asset',
-    body: 'Go to Inventory and tap Add Asset in the top right. Pick the type, choose an icon, give it a label (e.g. BIN-04), and add a size if it applies. Hit Save and it\'ll show up in the yard.',
+    body: 'Go to Settings and tap Asset Manager, then hit Add Asset in the top right. Pick the type, choose an icon, give it a label (e.g. BIN-04), and add a size if it applies. Hit Save and it\'ll show up in Inventory.',
   },
   {
     title: 'Deploying an Asset',
@@ -294,6 +260,7 @@ function HelpSection() {
 export default function Settings() {
   const navigate = useNavigate()
   const { dark, toggle } = useTheme()
+  const { supported: pushSupported, permission, subscribed, loading: pushLoading, subscribe, unsubscribe } = usePushNotifications()
   const [fontSize, setFontSize] = useState(() => localStorage.getItem('fontSize') ?? 'md')
 
   function applyFontSize(size) {
@@ -355,17 +322,17 @@ export default function Settings() {
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 pb-8 space-y-6">
-        {isAdmin && <UsersPanel />}
-
         {isAdmin && (
           <button
             onClick={() => navigate('/asset-manager')}
-            className="w-full text-left bg-card border rounded-xl px-4 py-3 flex items-center justify-between hover:bg-accent transition-colors"
+            className="w-full text-left bg-primary/10 border border-primary/30 rounded-xl px-4 py-3 flex items-center justify-between hover:bg-primary/15 transition-colors"
           >
-            <span className="text-sm font-medium">Asset Manager</span>
-            <ChevronRight size={16} className="text-muted-foreground" />
+            <span className="text-sm font-medium text-primary">Asset Manager</span>
+            <ChevronRight size={16} className="text-primary" />
           </button>
         )}
+
+        {isAdmin && <UsersPanel />}
 
         <HelpSection />
 
@@ -385,6 +352,17 @@ export default function Settings() {
             {dark ? <Sun size={16} /> : <Moon size={16} />}
             {dark ? 'Light Mode' : 'Dark Mode'}
           </Button>
+          {pushSupported && permission !== 'denied' && (
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={subscribed ? unsubscribe : subscribe}
+              disabled={pushLoading}
+            >
+              {subscribed ? <BellOff size={16} /> : <Bell size={16} />}
+              {pushLoading ? '…' : subscribed ? 'Disable Notifications' : 'Enable Notifications'}
+            </Button>
+          )}
           <Button variant="outline" className="w-full" onClick={() => setShowFeedback(true)}>
             <MessageSquare size={16} />
             Send Feedback

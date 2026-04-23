@@ -9,8 +9,11 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.js',
       registerType: 'autoUpdate',
-      workbox: { maximumFileSizeToCacheInBytes: 3 * 1024 * 1024 },
+      injectManifest: { maximumFileSizeToCacheInBytes: 3 * 1024 * 1024 },
       manifest: {
         name: 'Timberfell',
         short_name: 'Timberfell',
