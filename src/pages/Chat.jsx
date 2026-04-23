@@ -69,10 +69,6 @@ export default function Chat() {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="px-4 pt-5 pb-3 border-b flex-shrink-0">
-        <h1 className="text-xl font-semibold">Team Chat</h1>
-      </div>
-
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-2">
         {messages.length === 0 && (
           <p className="text-sm text-muted-foreground text-center pt-8">No messages yet. Say something!</p>
