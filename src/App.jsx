@@ -14,6 +14,7 @@ import History from '@/pages/History'
 import Chat from '@/pages/Chat'
 import Calendar from '@/pages/Calendar'
 import AssetManager from '@/pages/AssetManager'
+import Storage from '@/pages/Storage'
 
 export default function App() {
   const [session, setSession] = useState(undefined)
@@ -25,6 +26,7 @@ export default function App() {
     supabase.auth.getSession().then(({ data: { session } }) => setSession(session))
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setSession(session)
+      if (event === 'SIGNED_IN') window.history.replaceState(null, '', '/')
       if (event === 'USER_UPDATED') { sessionStorage.removeItem('pendingInvite'); setNeedsPassword(false) }
     })
     return () => subscription.unsubscribe()
@@ -51,6 +53,7 @@ export default function App() {
           <Route path="/calendar" element={<Calendar />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/asset-manager" element={<AssetManager />} />
+          <Route path="/storage" element={<Storage />} />
         </Route>
       </Routes>
     </BrowserRouter>
