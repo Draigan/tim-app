@@ -1,5 +1,5 @@
 import { NavLink, useLocation } from 'react-router-dom'
-import { Map, Package, Settings, CalendarDays, Warehouse } from 'lucide-react'
+import { Map, Package, Settings, Warehouse, Users } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useIsAdmin } from '@/lib/useIsAdmin'
 
@@ -10,8 +10,8 @@ export default function BottomNav() {
   const navItems = [
     { to: '/', icon: Map, label: 'Map' },
     { to: '/inventory', icon: Package, label: 'Inventory' },
-    ...(isAdmin ? [{ to: '/calendar', icon: CalendarDays, label: 'Calendar' }] : []),
     ...(isAdmin ? [{ to: '/storage', icon: Warehouse, label: 'Storage' }] : []),
+    ...(isAdmin ? [{ to: '/customers', icon: Users, label: 'Customers' }] : []),
     { to: '/settings', icon: Settings, label: 'Settings' },
   ]
 
