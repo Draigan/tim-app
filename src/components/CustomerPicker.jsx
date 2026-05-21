@@ -36,9 +36,9 @@ export default function CustomerPicker({ value, onChange }) {
   }, [open])
 
   const q = query.trim().toLowerCase()
-  const filtered = customers.filter(c =>
-    !q || [c.name, c.phone].some(f => f?.toLowerCase().includes(q))
-  )
+  const filtered = q
+    ? customers.filter(c => [c.name, c.phone].some(f => f?.toLowerCase().includes(q)))
+    : []
 
   function select(customer) {
     onChange(customer)
