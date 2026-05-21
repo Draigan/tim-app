@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { geocodeAddress } from '@/lib/mapbox'
@@ -6,26 +6,21 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { ArrowLeft, Calendar, MapPin, Plus, TriangleAlert, X } from 'lucide-react'
+import { ArrowLeft, MapPin, TriangleAlert, X } from 'lucide-react'
+import CustomerPicker from '@/components/CustomerPicker'
 
 export default function DeployAsset() {
   const { assetId } = useParams()
   const navigate = useNavigate()
   const [asset, setAsset] = useState(null)
   const [reservations, setReservations] = useState([])
-  const [form, setForm] = useState({
-    address: '', customer_name: '', customer_phone: '', expires_at: '', notes: ''
-  })
+  const [form, setForm] = useState({ address: '', expires_at: '', notes: '' })
+  const [selectedCustomer, setSelectedCustomer] = useState(null)
   const [suggestions, setSuggestions] = useState([])
   const [selectedCoords, setSelectedCoords] = useState(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const geocodeTimer = useRef(null)
-  const pickupRef = useRef(null)
-
-  function formatPickupDate(iso) {
-    return new Date(iso + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-  }
 
   useEffect(() => {
     const today = new Date().toISOString().slice(0, 10)
@@ -63,6 +58,7 @@ export default function DeployAsset() {
     e.preventDefault()
     if (!selectedCoords) { setError('Please select an address from the suggestions.'); return }
     if (!form.address.trim()) { setError('Address is required.'); return }
+    if (!selectedCustomer) { setError('Please select or create a customer.'); return }
     setSaving(true)
     const { data: { user } } = await supabase.auth.getUser()
     const { error } = await supabase.from('deployments').insert({
@@ -70,8 +66,9 @@ export default function DeployAsset() {
       address: form.address,
       lat: selectedCoords.lat,
       lng: selectedCoords.lng,
-      customer_name: form.customer_name || null,
-      customer_phone: form.customer_phone || null,
+      customer_id: selectedCustomer.id,
+      customer_name: selectedCustomer.name || null,
+      customer_phone: selectedCustomer.phone || null,
       notes: form.notes || null,
       expires_at: form.expires_at || null,
       dropped_at: new Date().toISOString(),
@@ -91,7 +88,7 @@ export default function DeployAsset() {
         headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title: `${label} deployed`,
-          body: form.address + (form.customer_name ? ` · ${form.customer_name}` : ''),
+          body: form.address + (selectedCustomer?.name ? ` · ${selectedCustomer.name}` : ''),
           url: '/',
           exclude_user_id: session.user.id,
         }),
@@ -171,57 +168,27 @@ export default function DeployAsset() {
         </div>
 
         <div className="space-y-2">
-          <Label htmlFor="customer_name">Customer Name</Label>
-          <Input
-            id="customer_name"
-            placeholder="John Smith"
-            value={form.customer_name}
-            onChange={e => set('customer_name', e.target.value)}
-          />
+          <Label>Customer</Label>
+          <CustomerPicker value={selectedCustomer} onChange={setSelectedCustomer} />
         </div>
 
         <div className="space-y-2">
-          <Label htmlFor="customer_phone">Customer Phone</Label>
-          <Input
-            id="customer_phone"
-            type="tel"
-            placeholder="(555) 000-0000"
-            value={form.customer_phone}
-            onChange={e => set('customer_phone', e.target.value)}
-          />
-        </div>
-
-        <div className="space-y-2">
-          <Label>Expected Pick Up</Label>
-          <input
-            ref={pickupRef}
-            type="date"
-            value={form.expires_at}
-            onChange={e => set('expires_at', e.target.value)}
-            className="sr-only"
-          />
-          {form.expires_at ? (
-            <div className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-primary/10 border border-primary/20 text-sm font-medium text-primary">
-              <Calendar size={14} />
-              <span>{formatPickupDate(form.expires_at)}</span>
-              <button
-                type="button"
-                onClick={() => set('expires_at', '')}
-                className="ml-1 hover:text-destructive transition-colors"
-              >
-                <X size={14} />
+          <Label htmlFor="expires_at">Expected Pick Up</Label>
+          <div className="flex items-center gap-2">
+            <input
+              id="expires_at"
+              type="date"
+              value={form.expires_at}
+              onChange={e => set('expires_at', e.target.value)}
+              min={new Date().toISOString().slice(0, 10)}
+              className="flex-1 border border-input rounded-lg px-3 py-2 text-sm bg-background"
+            />
+            {form.expires_at && (
+              <button type="button" onClick={() => set('expires_at', '')} className="text-muted-foreground hover:text-destructive transition-colors">
+                <X size={16} />
               </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => { try { pickupRef.current?.showPicker() } catch {} }}
-              className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground border border-dashed rounded-lg px-3 py-2 transition-colors"
-            >
-              <Plus size={14} />
-              Set expected pickup
-            </button>
-          )}
+            )}
+          </div>
         </div>
 
         <div className="space-y-2">
