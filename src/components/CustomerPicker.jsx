@@ -23,7 +23,7 @@ export default function CustomerPicker({ value, onChange }) {
   const inputRef = useRef(null)
 
   useEffect(() => {
-    supabase.from('customers').select('id, name, phone').order('name').then(({ data }) => {
+    supabase.from('customers').select('*').order('name').then(({ data }) => {
       if (data) setCustomers(data)
     })
   }, [])

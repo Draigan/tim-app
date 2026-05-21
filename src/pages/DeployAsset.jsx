@@ -170,6 +170,28 @@ export default function DeployAsset() {
         <div className="space-y-2">
           <Label>Customer</Label>
           <CustomerPicker value={selectedCustomer} onChange={setSelectedCustomer} />
+          {selectedCustomer && (
+            <div className="space-y-2 pt-1">
+              {selectedCustomer.phone && (
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1.5">Phone</p>
+                  <Input value={selectedCustomer.phone} readOnly className="text-muted-foreground" />
+                </div>
+              )}
+              {selectedCustomer.email && (
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1.5">Email</p>
+                  <Input value={selectedCustomer.email} readOnly className="text-muted-foreground" />
+                </div>
+              )}
+              {selectedCustomer.address && (
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1.5">Customer Address</p>
+                  <Input value={selectedCustomer.address} readOnly className="text-muted-foreground" />
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="space-y-2">
