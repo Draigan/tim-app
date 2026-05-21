@@ -19,7 +19,7 @@ function fmtPhone(p) {
   return p
 }
 
-const EMPTY_FORM = { first_name: '', last_name: '', phone: '', email: '', notes: '' }
+const EMPTY_FORM = { first_name: '', last_name: '', phone: '', email: '', address: '', notes: '' }
 
 // ─── customer card ────────────────────────────────────────────────────────────
 
@@ -47,7 +47,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
   const [saving, setSaving]     = useState(false)
   const [form, setForm]         = useState(
     customer
-      ? { first_name: customer.first_name ?? '', last_name: customer.last_name ?? '', phone: customer.phone ?? '', email: customer.email ?? '', notes: customer.notes ?? '' }
+      ? { first_name: customer.first_name ?? '', last_name: customer.last_name ?? '', phone: customer.phone ?? '', email: customer.email ?? '', address: customer.address ?? '', notes: customer.notes ?? '' }
       : EMPTY_FORM
   )
   const [active, setActive]   = useState([])
@@ -81,10 +81,11 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
     setSaving(true)
     const payload = {
       first_name: form.first_name.trim(),
-      last_name:  form.last_name.trim()  || null,
-      phone:      form.phone.trim()      || null,
-      email:      form.email.trim()      || null,
-      notes:      form.notes.trim()      || null,
+      last_name:  form.last_name.trim()   || null,
+      phone:      form.phone.trim()       || null,
+      email:      form.email.trim()       || null,
+      address:    form.address.trim()     || null,
+      notes:      form.notes.trim()       || null,
     }
     if (isNew) {
       await supabase.from('customers').insert(payload)
@@ -135,6 +136,10 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
               <div>
                 <p className="text-xs text-muted-foreground mb-1.5">Email</p>
                 <Input value={form.email} onChange={e => set('email', e.target.value)} placeholder="email@example.com" type="email" />
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground mb-1.5">Address</p>
+                <Input value={form.address} onChange={e => set('address', e.target.value)} placeholder="123 Main St, Kitchener ON" />
               </div>
               <div>
                 <p className="text-xs text-muted-foreground mb-1.5">Notes</p>
