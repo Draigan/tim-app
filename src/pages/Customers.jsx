@@ -8,10 +8,6 @@ import { useRealtime } from '@/lib/useRealtime'
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-function fullName(c) {
-  return [c.first_name, c.last_name].filter(Boolean).join(' ')
-}
-
 function fmtPhone(p) {
   if (!p) return ''
   const d = p.replace(/\D/g, '')
@@ -19,7 +15,7 @@ function fmtPhone(p) {
   return p
 }
 
-const EMPTY_FORM = { first_name: '', last_name: '', phone: '', email: '', address: '', notes: '' }
+const EMPTY_FORM = { name: '', phone: '', email: '', address: '', notes: '' }
 
 // ─── customer card ────────────────────────────────────────────────────────────
 
@@ -32,7 +28,7 @@ function CustomerCard({ customer, onTap }) {
       onClick={() => onTap(customer)}
     >
       <div className="min-w-0 flex-1">
-        <p className="font-medium">{fullName(customer)}</p>
+        <p className="font-medium">{customer.name}</p>
         {contact && <p className="text-xs text-muted-foreground mt-0.5 truncate">{contact}</p>}
       </div>
       <ChevronRight size={16} className="text-muted-foreground flex-shrink-0" />
@@ -47,7 +43,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
   const [saving, setSaving]     = useState(false)
   const [form, setForm]         = useState(
     customer
-      ? { first_name: customer.first_name ?? '', last_name: customer.last_name ?? '', phone: customer.phone ?? '', email: customer.email ?? '', address: customer.address ?? '', notes: customer.notes ?? '' }
+      ? { name: customer.name ?? '', phone: customer.phone ?? '', email: customer.email ?? '', address: customer.address ?? '', notes: customer.notes ?? '' }
       : EMPTY_FORM
   )
   const [active, setActive]   = useState([])
@@ -77,15 +73,14 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
   }
 
   async function handleSave() {
-    if (!form.first_name.trim()) return
+    if (!form.name.trim()) return
     setSaving(true)
     const payload = {
-      first_name: form.first_name.trim(),
-      last_name:  form.last_name.trim()   || null,
-      phone:      form.phone.trim()       || null,
-      email:      form.email.trim()       || null,
-      address:    form.address.trim()     || null,
-      notes:      form.notes.trim()       || null,
+      name:    form.name.trim()    || null,
+      phone:   form.phone.trim()   || null,
+      email:   form.email.trim()   || null,
+      address: form.address.trim() || null,
+      notes:   form.notes.trim()   || null,
     }
     if (isNew) {
       await supabase.from('customers').insert(payload)
@@ -98,7 +93,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
     else setEditing(false)
   }
 
-  const title = isNew ? 'New Customer' : fullName(customer)
+  const title = isNew ? 'New Customer' : customer?.name
 
   return (
     <Sheet open onOpenChange={v => !v && onClose()}>
@@ -119,15 +114,9 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
           {/* Fields */}
           {editing ? (
             <div className="space-y-3">
-              <div className="flex gap-2">
-                <div className="flex-1">
-                  <p className="text-xs text-muted-foreground mb-1.5">First name</p>
-                  <Input value={form.first_name} onChange={e => set('first_name', e.target.value)} placeholder="First" autoFocus={isNew} />
-                </div>
-                <div className="flex-1">
-                  <p className="text-xs text-muted-foreground mb-1.5">Last name</p>
-                  <Input value={form.last_name} onChange={e => set('last_name', e.target.value)} placeholder="Last" />
-                </div>
+              <div>
+                <p className="text-xs text-muted-foreground mb-1.5">Name</p>
+                <Input value={form.name} onChange={e => set('name', e.target.value)} placeholder="Tim Horton" autoFocus={isNew} />
               </div>
               <div>
                 <p className="text-xs text-muted-foreground mb-1.5">Phone</p>
@@ -147,7 +136,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
               </div>
               <div className="flex gap-2 pt-1">
                 {!isNew && <Button variant="outline" className="flex-1" onClick={() => setEditing(false)}>Cancel</Button>}
-                <Button className="flex-1" disabled={!form.first_name.trim() || saving} onClick={handleSave}>
+                <Button className="flex-1" disabled={!form.name.trim() || saving} onClick={handleSave}>
                   {saving ? 'Saving…' : isNew ? 'Add Customer' : 'Save'}
                 </Button>
               </div>
@@ -238,8 +227,7 @@ export default function Customers() {
     const { data } = await supabase
       .from('customers')
       .select('*')
-      .order('last_name', { ascending: true, nullsFirst: false })
-      .order('first_name')
+      .order('name')
     if (data) setCustomers(data)
     if (!silent) setLoading(false)
   }, [])
@@ -251,7 +239,7 @@ export default function Customers() {
 
   const q = query.trim().toLowerCase()
   const filtered = customers.filter(c =>
-    !q || [c.first_name, c.last_name, c.phone, c.email].some(f => f?.toLowerCase().includes(q))
+    !q || [c.name, c.phone, c.email].some(f => f?.toLowerCase().includes(q))
   )
 
   function handleSaved() {
