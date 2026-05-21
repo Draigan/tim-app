@@ -1,46 +1,26 @@
-import { useState } from 'react'
-import { Search, X, Phone, ChevronRight, CheckCircle2, Send, DoorOpen } from 'lucide-react'
+import { useState, useEffect, useCallback } from 'react'
+import { Search, X, Phone, ChevronRight, CheckCircle2, Send } from 'lucide-react'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Button } from '@/components/ui/button'
-import { cn } from '@/lib/utils'
-
-// ─── mock data (replace with Supabase queries) ────────────────────────────────
+import { Input } from '@/components/ui/input'
+import { supabase } from '@/lib/supabase'
+import CustomerPicker from '@/components/CustomerPicker'
+import { cn, formatPhone } from '@/lib/utils'
 
 const TODAY_DAY = new Date().getDate()
-const THIS_MONTH = new Date().toISOString().slice(0, 7)
-
-const MOCK_FIXED = [
-  { id: '1', unit_number: 'A1', tenant_name: 'John Smith',  tenant_phone: '5195551234', monthly_rate: 120, billing_day: 1,  payment_frequency: 'monthly', move_in_date: '2025-01-15', notes: '', sms_opt_in: true },
-  { id: '2', unit_number: 'A2', tenant_name: 'Sarah Jones', tenant_phone: '5195555678', monthly_rate: 150, billing_day: 15, payment_frequency: 'monthly', move_in_date: '2024-06-01', notes: '', sms_opt_in: true },
-  { id: '3', unit_number: 'B1', tenant_name: 'Mike Davis',  tenant_phone: '5195559012', monthly_rate: 200, billing_day: 23, payment_frequency: 'monthly', move_in_date: '2025-03-01', notes: 'Extra lock on door', sms_opt_in: false },
-  { id: '4', unit_number: 'B2', tenant_name: null,          tenant_phone: null,          monthly_rate: null, billing_day: null, payment_frequency: null,    move_in_date: null,         notes: '', sms_opt_in: false },
-]
-
-const MOCK_PORTABLE = [
-  { id: 'p1', label: 'PS-01', address: '123 Main St, Kitchener ON', customer_name: 'Bob Wilson', customer_phone: '5195554321', monthly_rate: 180, billing_day: 5,  payment_frequency: 'monthly', sms_opt_in: true },
-  { id: 'p2', label: 'PS-02', address: '456 Oak Ave, Waterloo ON',  customer_name: 'Lisa Chen',  customer_phone: '5195557890', monthly_rate: 180, billing_day: 22, payment_frequency: 'monthly', sms_opt_in: true },
-]
-
-const MOCK_PAID_IDS = new Set(['2', 'p2'])
-
-const MOCK_HISTORY = {
-  '1': [
-    { period_label: '2026-04', paid_at: '2026-04-02T10:00:00Z', amount: 120 },
-    { period_label: '2026-03', paid_at: '2026-03-01T09:00:00Z', amount: 120 },
-    { period_label: '2026-02', paid_at: '2026-02-04T11:00:00Z', amount: 120 },
-  ],
-  '2': [
-    { period_label: '2026-05', paid_at: '2026-05-15T08:00:00Z', amount: 150 },
-    { period_label: '2026-04', paid_at: '2026-04-15T09:00:00Z', amount: 150 },
-    { period_label: '2026-03', paid_at: '2026-03-16T10:00:00Z', amount: 150 },
-  ],
-  'p1': [
-    { period_label: '2026-04', paid_at: '2026-04-05T08:00:00Z', amount: 180 },
-    { period_label: '2026-03', paid_at: '2026-03-05T08:00:00Z', amount: 180 },
-  ],
-}
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
+
+// Returns the billing-cycle period label for a given billing day.
+// If today is before the billing day, we're still in last month's cycle.
+function currentPeriodLabel(billingDay) {
+  const today = new Date()
+  if (!billingDay || today.getDate() >= billingDay) {
+    return today.toISOString().slice(0, 7)
+  }
+  const d = new Date(today.getFullYear(), today.getMonth() - 1, 1)
+  return d.toISOString().slice(0, 7)
+}
 
 function paymentStatus(billingDay, frequency, isPaid) {
   if (!billingDay || !frequency || frequency === 'one_time' || frequency === 'other') {
@@ -56,13 +36,6 @@ function ordinal(n) {
   const s = ['th', 'st', 'nd', 'rd']
   const v = n % 100
   return n + (s[(v - 20) % 10] || s[v] || s[0])
-}
-
-function fmtPhone(p) {
-  if (!p) return ''
-  const d = p.replace(/\D/g, '')
-  if (d.length === 10) return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`
-  return p
 }
 
 const STATUS_ORDER = { overdue: 0, due_soon: 1, upcoming: 2, unpaid: 2, paid: 3 }
@@ -105,7 +78,7 @@ function FixedUnitCard({ unit, isPaid, onTap }) {
         {!vacant && (
           <div className="flex items-center gap-3 mt-0.5">
             {unit.monthly_rate && <span className="text-xs text-muted-foreground">${unit.monthly_rate}/mo</span>}
-            {unit.tenant_phone && <span className="text-xs text-muted-foreground">{fmtPhone(unit.tenant_phone)}</span>}
+            {unit.tenant_phone && <span className="text-xs text-muted-foreground">{formatPhone(unit.tenant_phone)}</span>}
           </div>
         )}
       </div>
@@ -115,65 +88,133 @@ function FixedUnitCard({ unit, isPaid, onTap }) {
   )
 }
 
-function PortableCard({ unit, isPaid, onTap }) {
-  const status = paymentStatus(unit.billing_day, unit.payment_frequency, isPaid)
-
-  return (
-    <button
-      className={cn('w-full text-left bg-card border rounded-xl p-4 flex items-center gap-3 hover:bg-accent transition-colors', cardBorder(status))}
-      onClick={() => onTap(unit)}
-    >
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="font-semibold">{unit.label}</span>
-          {unit.customer_name && <span className="text-sm text-muted-foreground truncate">{unit.customer_name}</span>}
-        </div>
-        <p className="text-xs text-muted-foreground mt-0.5 truncate">{unit.address}</p>
-      </div>
-      <StatusBadge status={status} billingDay={unit.billing_day} />
-      <ChevronRight size={16} className="text-muted-foreground flex-shrink-0" />
-    </button>
-  )
-}
-
 // ─── bottom sheet ─────────────────────────────────────────────────────────────
 
-function StorageSheet({ item, type, isPaid, onClose, onTogglePaid }) {
+const FREQ_LABELS = { monthly: 'Monthly', weekly: 'Weekly', one_time: 'One-time' }
+const EMPTY_ASSIGN = { monthly_rate: '', billing_day: '', payment_frequency: 'monthly', move_in_date: '', notes: '' }
+
+function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }) {
+  const [history, setHistory] = useState([])
+  const [assign, setAssign] = useState(EMPTY_ASSIGN)
+  const [customer, setCustomer] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const [confirmVacate, setConfirmVacate] = useState(false)
+
+  useEffect(() => {
+    if (!item) return
+    if (item.tenant_name) {
+      supabase
+        .from('storage_payments')
+        .select('*')
+        .eq('unit_id', item.id)
+        .order('period_label', { ascending: false })
+        .limit(12)
+        .then(({ data }) => { if (data) setHistory(data) })
+    } else {
+      setAssign(EMPTY_ASSIGN)
+      setCustomer(null)
+    }
+    setConfirmVacate(false)
+  }, [item?.id])
+
+  async function handleVacate() {
+    setSaving(true)
+    await supabase.from('storage_units').update({
+      customer_id: null, tenant_name: null, tenant_phone: null,
+      monthly_rate: null, billing_day: null, payment_frequency: null,
+      move_in_date: null, notes: null,
+    }).eq('id', item.id)
+    setSaving(false)
+    onAssigned()
+    onClose()
+  }
+
+  async function handleAssign() {
+    if (!customer) return
+    setSaving(true)
+    await supabase.from('storage_units').update({
+      customer_id:       customer.id,
+      tenant_name:       customer.name  || null,
+      tenant_phone:      customer.phone || null,
+      monthly_rate:      assign.monthly_rate ? Number(assign.monthly_rate) : null,
+      billing_day:       assign.billing_day  ? Number(assign.billing_day)  : null,
+      payment_frequency: assign.payment_frequency || null,
+      move_in_date:      assign.move_in_date  || null,
+      notes:             assign.notes.trim()  || null,
+    }).eq('id', item.id)
+    setSaving(false)
+    onAssigned()
+    onClose()
+  }
+
   if (!item) return null
 
-  const vacant = type === 'fixed' && !item.tenant_name
+  const vacant = !item.tenant_name
   const status = vacant ? null : paymentStatus(item.billing_day, item.payment_frequency, isPaid)
-  const history = MOCK_HISTORY[item.id] || []
-  const phone = type === 'fixed' ? item.tenant_phone : item.customer_phone
-  const name  = type === 'fixed' ? item.tenant_name  : item.customer_name
-  const title = type === 'fixed' ? `Unit ${item.unit_number}` : item.label
 
   return (
     <Sheet open={!!item} onOpenChange={v => !v && onClose()}>
       <SheetContent side="bottom" className="max-h-[85vh] overflow-y-auto">
         <SheetHeader className="mb-5">
           <SheetTitle className="flex items-center justify-between pr-6">
-            <span>{title}</span>
+            <span>Unit {item.unit_number}</span>
             {status && <StatusBadge status={status} billingDay={item.billing_day} />}
           </SheetTitle>
         </SheetHeader>
 
         {vacant ? (
-          <div className="text-center py-8 text-muted-foreground">
-            <DoorOpen size={32} className="mx-auto mb-2 opacity-40" />
-            <p className="text-sm">This unit is vacant</p>
-            <Button className="mt-4" size="sm">Assign tenant</Button>
+          <div className="space-y-3">
+            <div>
+              <p className="text-xs text-muted-foreground mb-1.5">Customer</p>
+              <CustomerPicker value={customer} onChange={setCustomer} />
+            </div>
+            <div className="flex gap-3">
+              <div className="flex-1">
+                <p className="text-xs text-muted-foreground mb-1.5">Monthly Rate ($)</p>
+                <Input value={assign.monthly_rate} onChange={e => setAssign(a => ({ ...a, monthly_rate: e.target.value }))} placeholder="120" type="number" min="0" />
+              </div>
+              <div className="flex-1">
+                <p className="text-xs text-muted-foreground mb-1.5">Billing Day</p>
+                <Input value={assign.billing_day} onChange={e => setAssign(a => ({ ...a, billing_day: e.target.value }))} placeholder="1" type="number" min="1" max="31" />
+              </div>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground mb-1.5">Payment Frequency</p>
+              <div className="flex gap-1.5">
+                {Object.entries(FREQ_LABELS).map(([val, label]) => (
+                  <button key={val} type="button"
+                    onClick={() => setAssign(a => ({ ...a, payment_frequency: val }))}
+                    className={`flex-1 text-xs py-2 rounded-lg border transition-colors ${assign.payment_frequency === val ? 'bg-primary text-primary-foreground border-primary' : 'text-muted-foreground hover:text-foreground'}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground mb-1.5">Move-in Date</p>
+              <Input value={assign.move_in_date} onChange={e => setAssign(a => ({ ...a, move_in_date: e.target.value }))} type="date" />
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground mb-1.5">Notes</p>
+              <Input value={assign.notes} onChange={e => setAssign(a => ({ ...a, notes: e.target.value }))} placeholder="Extra lock, access info…" />
+            </div>
+            <div className="flex gap-2 pt-1">
+              <Button variant="outline" className="flex-1" onClick={onClose}>Cancel</Button>
+              <Button className="flex-1" disabled={!customer || saving} onClick={handleAssign}>
+                {saving ? 'Saving…' : 'Assign'}
+              </Button>
+            </div>
           </div>
         ) : (
           <div className="space-y-5">
 
-            {/* Info */}
             <div className="space-y-1">
-              {name && <p className="font-medium">{name}</p>}
-              {phone && (
-                <a href={`tel:${phone}`} className="flex items-center gap-1.5 text-sm text-primary">
+              {item.tenant_name && <p className="font-medium">{item.tenant_name}</p>}
+              {item.tenant_phone && (
+                <a href={`tel:${item.tenant_phone}`} className="flex items-center gap-1.5 text-sm text-primary">
                   <Phone size={13} />
-                  {fmtPhone(phone)}
+                  {formatPhone(item.tenant_phone)}
                 </a>
               )}
               {item.monthly_rate && item.billing_day && (
@@ -187,10 +228,9 @@ function StorageSheet({ item, type, isPaid, onClose, onTogglePaid }) {
               {item.notes && <p className="text-xs text-muted-foreground mt-1">{item.notes}</p>}
             </div>
 
-            {/* Paid toggle */}
             <div className="flex items-center justify-between rounded-xl border bg-card p-4">
               <div>
-                <p className="text-sm font-medium">{THIS_MONTH} payment</p>
+                <p className="text-sm font-medium">{currentPeriodLabel(item.billing_day)} payment</p>
                 <p className="text-xs text-muted-foreground">{isPaid ? 'Marked as paid' : 'Not yet received'}</p>
               </div>
               <Button size="sm" variant={isPaid ? 'secondary' : 'default'} onClick={onTogglePaid}>
@@ -198,15 +238,30 @@ function StorageSheet({ item, type, isPaid, onClose, onTogglePaid }) {
               </Button>
             </div>
 
-            {/* Send reminder */}
-            {!isPaid && phone && (
+            {!isPaid && item.tenant_phone && (
               <Button variant="outline" className="w-full gap-2">
                 <Send size={14} />
                 Send reminder
               </Button>
             )}
 
-            {/* Payment history */}
+            {!confirmVacate ? (
+              <Button variant="outline" className="w-full text-destructive hover:text-destructive" onClick={() => setConfirmVacate(true)}>
+                Mark Vacant
+              </Button>
+            ) : (
+              <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-4 space-y-3">
+                <p className="text-sm font-medium">Mark this unit as vacant?</p>
+                <p className="text-xs text-muted-foreground">This clears the tenant and billing info. Payment history is kept.</p>
+                <div className="flex gap-2">
+                  <Button variant="outline" className="flex-1" onClick={() => setConfirmVacate(false)}>Cancel</Button>
+                  <Button variant="destructive" className="flex-1" disabled={saving} onClick={handleVacate}>
+                    {saving ? 'Saving…' : 'Confirm'}
+                  </Button>
+                </div>
+              </div>
+            )}
+
             <div>
               <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
                 Payment history
@@ -215,8 +270,8 @@ function StorageSheet({ item, type, isPaid, onClose, onTogglePaid }) {
                 <p className="text-xs text-muted-foreground text-center py-4">No payments recorded yet</p>
               ) : (
                 <div className="space-y-0">
-                  {history.map((p, i) => (
-                    <div key={i} className="flex items-center justify-between py-2.5 border-b last:border-0 text-sm">
+                  {history.map(p => (
+                    <div key={p.id} className="flex items-center justify-between py-2.5 border-b last:border-0 text-sm">
                       <span className="text-muted-foreground">{p.period_label}</span>
                       <div className="flex items-center gap-3">
                         {p.amount && <span>${p.amount}</span>}
@@ -241,14 +296,41 @@ function StorageSheet({ item, type, isPaid, onClose, onTogglePaid }) {
 // ─── page ─────────────────────────────────────────────────────────────────────
 
 export default function Storage() {
-  const [query, setQuery]     = useState('')
-  const [selected, setSelected] = useState(null) // { item, type }
-  const [paidIds, setPaidIds] = useState(MOCK_PAID_IDS)
+  const [query, setQuery]       = useState('')
+  const [units, setUnits]       = useState([])
+  const [paidIds, setPaidIds]   = useState(new Set())
+  const [selected, setSelected] = useState(null)
+  const [loading, setLoading]   = useState(true)
+
+  const fetchAll = useCallback(async () => {
+    const cutoff = (() => {
+      const d = new Date(); d.setMonth(d.getMonth() - 2); return d.toISOString().slice(0, 7)
+    })()
+    const [{ data: unitData }, { data: paymentData }] = await Promise.all([
+      supabase.from('storage_units').select('*').order('unit_number'),
+      supabase.from('storage_payments').select('unit_id, period_label').gte('period_label', cutoff),
+    ])
+    if (unitData && paymentData) {
+      setUnits(unitData)
+      const paid = new Set(
+        paymentData
+          .filter(p => {
+            const unit = unitData.find(u => u.id === p.unit_id)
+            return p.period_label === currentPeriodLabel(unit?.billing_day)
+          })
+          .map(p => p.unit_id)
+      )
+      setPaidIds(paid)
+    }
+    setLoading(false)
+  }, [])
+
+  useEffect(() => { fetchAll() }, [fetchAll])
 
   const q = query.trim().toLowerCase()
   const match = (...fields) => fields.some(f => f?.toLowerCase().includes(q))
 
-  const fixedFiltered = MOCK_FIXED
+  const filtered = units
     .filter(u => !q || match(u.unit_number, u.tenant_name, u.tenant_phone))
     .sort((a, b) => {
       if (!a.tenant_name && b.tenant_name) return 1
@@ -258,17 +340,22 @@ export default function Storage() {
       return (STATUS_ORDER[sa] ?? 4) - (STATUS_ORDER[sb] ?? 4)
     })
 
-  const portableFiltered = MOCK_PORTABLE.filter(u =>
-    !q || match(u.label, u.customer_name, u.customer_phone, u.address)
-  )
-
-  function handleTogglePaid() {
-    const id = selected.item.id
-    setPaidIds(prev => {
-      const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
-      return next
-    })
+  async function handleTogglePaid() {
+    const id = selected.id
+    const period = currentPeriodLabel(selected.billing_day)
+    const marking = !paidIds.has(id)
+    if (marking) {
+      await supabase.from('storage_payments').upsert({
+        unit_id: id,
+        period_label: period,
+        amount: selected.monthly_rate ?? null,
+      }, { onConflict: 'unit_id,period_label' })
+      setPaidIds(prev => new Set([...prev, id]))
+    } else {
+      await supabase.from('storage_payments').delete().eq('unit_id', id).eq('period_label', period)
+      setPaidIds(prev => { const next = new Set(prev); next.delete(id); return next })
+    }
+    setSelected(null)
   }
 
   return (
@@ -296,51 +383,39 @@ export default function Storage() {
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-6">
-        <div>
-          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-            Fixed Units ({fixedFiltered.length})
-          </h2>
-          <div className="space-y-2">
-            {fixedFiltered.map(u => (
-              <FixedUnitCard
-                key={u.id}
-                unit={u}
-                isPaid={paidIds.has(u.id)}
-                onTap={item => setSelected({ item, type: 'fixed' })}
-              />
-            ))}
-          </div>
-        </div>
+        {loading && <p className="text-muted-foreground text-sm mt-8 text-center">Loading…</p>}
 
-        {portableFiltered.length > 0 && (
+        {!loading && (
           <div>
             <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-              Portable Storage ({portableFiltered.length})
+              Fixed Units ({filtered.length})
             </h2>
             <div className="space-y-2">
-              {portableFiltered.map(u => (
-                <PortableCard
+              {filtered.map(u => (
+                <FixedUnitCard
                   key={u.id}
                   unit={u}
                   isPaid={paidIds.has(u.id)}
-                  onTap={item => setSelected({ item, type: 'portable' })}
+                  onTap={setSelected}
                 />
               ))}
+              {!loading && units.length === 0 && (
+                <p className="text-muted-foreground text-sm text-center mt-8">No storage units yet — add them in Settings → Storage Manager</p>
+              )}
+              {q && filtered.length === 0 && units.length > 0 && (
+                <p className="text-muted-foreground text-sm text-center mt-8">No units match "{query}"</p>
+              )}
             </div>
           </div>
-        )}
-
-        {q && fixedFiltered.length === 0 && portableFiltered.length === 0 && (
-          <p className="text-muted-foreground text-sm text-center mt-12">No units match "{query}"</p>
         )}
       </div>
 
       <StorageSheet
-        item={selected?.item}
-        type={selected?.type}
-        isPaid={selected ? paidIds.has(selected.item.id) : false}
+        item={selected}
+        isPaid={selected ? paidIds.has(selected.id) : false}
         onClose={() => setSelected(null)}
         onTogglePaid={handleTogglePaid}
+        onAssigned={fetchAll}
       />
     </div>
   )

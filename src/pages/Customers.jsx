@@ -4,24 +4,19 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sh
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { supabase } from '@/lib/supabase'
+import { formatPhone } from '@/lib/utils'
 import { useRealtime } from '@/lib/useRealtime'
 import { geocodeAddress } from '@/lib/mapbox'
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-function fmtPhone(p) {
-  if (!p) return ''
-  const d = p.replace(/\D/g, '')
-  if (d.length === 10) return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`
-  return p
-}
 
 const EMPTY_FORM = { name: '', phone: '', email: '', address: '', notes: '' }
 
 // ─── customer card ────────────────────────────────────────────────────────────
 
 function CustomerCard({ customer, onTap }) {
-  const contact = [customer.phone && fmtPhone(customer.phone), customer.email].filter(Boolean).join(' · ')
+  const contact = [customer.phone && formatPhone(customer.phone), customer.email].filter(Boolean).join(' · ')
 
   return (
     <button
@@ -186,7 +181,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
               {form.phone && (
                 <a href={`tel:${form.phone}`} className="flex items-center gap-2.5 text-sm text-primary">
                   <Phone size={14} />
-                  {fmtPhone(form.phone)}
+                  {formatPhone(form.phone)}
                 </a>
               )}
               {form.email && (

@@ -22,16 +22,24 @@ export default function AssetManager() {
   const [confirmDeleteAsset, setConfirmDeleteAsset] = useState(null)
   const [deletingId, setDeletingId] = useState(null)
   const [deleteError, setDeleteError] = useState('')
+  const [storageUnits, setStorageUnits] = useState([])
+  const [showAddUnit, setShowAddUnit] = useState(false)
+  const [newUnitNumber, setNewUnitNumber] = useState('')
+  const [newUnitSize, setNewUnitSize] = useState('')
+  const [newUnitNotes, setNewUnitNotes] = useState('')
+  const [confirmDeleteUnit, setConfirmDeleteUnit] = useState(null)
 
   const fetchAll = useCallback(async () => {
-    const [{ data: assetData }, { data: deployments }, { data: typeData }] = await Promise.all([
+    const [{ data: assetData }, { data: deployments }, { data: typeData }, { data: unitData }] = await Promise.all([
       supabase.from('assets').select('*, asset_types(name, icon)').order('label'),
       supabase.from('active_deployments').select('asset_id'),
       supabase.from('asset_types').select('*').order('name'),
+      supabase.from('storage_units').select('id, unit_number, size, tenant_name').order('unit_number'),
     ])
     if (assetData) setAssets(assetData)
     if (deployments) setDeployedIds(new Set(deployments.map(d => d.asset_id)))
     if (typeData) setTypes(typeData)
+    if (unitData) setStorageUnits(unitData)
   }, [])
 
   useEffect(() => { fetchAll() }, [fetchAll])
@@ -68,6 +76,26 @@ export default function AssetManager() {
       return
     }
     setConfirmDeleteAsset(null)
+    fetchAll()
+  }
+
+  async function addStorageUnit() {
+    if (!newUnitNumber.trim()) return
+    await supabase.from('storage_units').insert({
+      unit_number: newUnitNumber.trim(),
+      size:  newUnitSize.trim()  || null,
+      notes: newUnitNotes.trim() || null,
+    })
+    setNewUnitNumber('')
+    setNewUnitSize('')
+    setNewUnitNotes('')
+    setShowAddUnit(false)
+    fetchAll()
+  }
+
+  async function deleteStorageUnit() {
+    await supabase.from('storage_units').delete().eq('id', confirmDeleteUnit.id)
+    setConfirmDeleteUnit(null)
     fetchAll()
   }
 
@@ -157,6 +185,35 @@ export default function AssetManager() {
             ))}
           </div>
         </div>
+
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Fixed Storage Units</p>
+            <Button size="sm" variant="outline" onClick={() => { setNewUnitNumber(''); setNewUnitSize(''); setNewUnitNotes(''); setShowAddUnit(true) }}>
+              <Plus size={14} />
+              Add Unit
+            </Button>
+          </div>
+          <div className="space-y-2">
+            {storageUnits.map(unit => (
+              <div key={unit.id} className="bg-card border rounded-xl px-4 py-3 flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium">{unit.unit_number}{unit.size ? ` · ${unit.size}` : ''}</p>
+                  <p className="text-xs text-muted-foreground">{unit.tenant_name ?? 'Vacant'}</p>
+                </div>
+                <button
+                  onClick={() => setConfirmDeleteUnit(unit)}
+                  className="text-muted-foreground hover:text-destructive transition-colors"
+                >
+                  <Trash2 size={15} />
+                </button>
+              </div>
+            ))}
+            {storageUnits.length === 0 && (
+              <p className="text-xs text-muted-foreground text-center py-3">No storage units yet</p>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Delete asset dialog */}
@@ -217,6 +274,41 @@ export default function AssetManager() {
               <Button variant="outline" className="flex-1" onClick={() => setShowAddType(false)}>Cancel</Button>
               <Button className="flex-1" onClick={addType} disabled={!newTypeName.trim()}>Add Type</Button>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showAddUnit} onOpenChange={v => !v && setShowAddUnit(false)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle>New Storage Unit</DialogTitle></DialogHeader>
+          <div className="space-y-3 mt-2">
+            <div>
+              <p className="text-xs text-muted-foreground mb-1.5">Unit Number</p>
+              <Input placeholder="A1" value={newUnitNumber} onChange={e => setNewUnitNumber(e.target.value)} autoFocus />
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground mb-1.5">Size</p>
+              <Input placeholder='e.g. 10x20, 8ft' value={newUnitSize} onChange={e => setNewUnitSize(e.target.value)} />
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground mb-1.5">Notes</p>
+              <Input placeholder="Location, access info…" value={newUnitNotes} onChange={e => setNewUnitNotes(e.target.value)} />
+            </div>
+            <div className="flex gap-2 pt-1">
+              <Button variant="outline" className="flex-1" onClick={() => setShowAddUnit(false)}>Cancel</Button>
+              <Button className="flex-1" onClick={addStorageUnit} disabled={!newUnitNumber.trim()}>Add Unit</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!confirmDeleteUnit} onOpenChange={open => !open && setConfirmDeleteUnit(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle>Delete unit "{confirmDeleteUnit?.unit_number}"?</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground mt-1">This permanently removes the unit and all its payment history.</p>
+          <div className="flex gap-2 mt-4">
+            <Button variant="outline" className="flex-1" onClick={() => setConfirmDeleteUnit(null)}>Cancel</Button>
+            <Button variant="destructive" className="flex-1" onClick={deleteStorageUnit}>Delete</Button>
           </div>
         </DialogContent>
       </Dialog>
