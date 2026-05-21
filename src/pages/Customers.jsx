@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Search, X, Plus, Phone, Mail, ChevronRight, Pencil, Truck, Warehouse } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { Search, X, Plus, Phone, Mail, ChevronRight, Pencil, Truck, Warehouse, MapPin } from 'lucide-react'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { supabase } from '@/lib/supabase'
 import { useRealtime } from '@/lib/useRealtime'
+import { geocodeAddress } from '@/lib/mapbox'
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -39,8 +40,10 @@ function CustomerCard({ customer, onTap }) {
 // ─── customer sheet ───────────────────────────────────────────────────────────
 
 function CustomerSheet({ customer, isNew, onClose, onSaved }) {
-  const [editing, setEditing]   = useState(isNew)
-  const [saving, setSaving]     = useState(false)
+  const [editing, setEditing]       = useState(isNew)
+  const [saving, setSaving]         = useState(false)
+  const [addrSuggestions, setAddrSuggestions] = useState([])
+  const addrTimer = useRef(null)
   const [form, setForm]         = useState(
     customer
       ? { name: customer.name ?? '', phone: customer.phone ?? '', email: customer.email ?? '', address: customer.address ?? '', notes: customer.notes ?? '' }
@@ -70,6 +73,21 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
 
   function set(field, value) {
     setForm(f => ({ ...f, [field]: value }))
+  }
+
+  function handleAddressChange(value) {
+    set('address', value)
+    clearTimeout(addrTimer.current)
+    if (value.length < 4) { setAddrSuggestions([]); return }
+    addrTimer.current = setTimeout(async () => {
+      const results = await geocodeAddress(value)
+      setAddrSuggestions(results)
+    }, 350)
+  }
+
+  function selectAddress(feature) {
+    set('address', feature.place_name)
+    setAddrSuggestions([])
   }
 
   async function handleSave() {
@@ -128,7 +146,29 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
               </div>
               <div>
                 <p className="text-xs text-muted-foreground mb-1.5">Address</p>
-                <Input value={form.address} onChange={e => set('address', e.target.value)} placeholder="123 Main St, Kitchener ON" />
+                <div className="relative">
+                  <Input
+                    value={form.address}
+                    onChange={e => handleAddressChange(e.target.value)}
+                    placeholder="123 Main St, Kitchener ON"
+                    autoComplete="off"
+                  />
+                  {addrSuggestions.length > 0 && (
+                    <div className="absolute top-full left-0 right-0 z-20 mt-1 bg-popover border rounded-lg shadow-lg overflow-hidden">
+                      {addrSuggestions.map(s => (
+                        <button
+                          key={s.id}
+                          type="button"
+                          className="w-full text-left px-3 py-2.5 text-sm hover:bg-accent flex items-start gap-2"
+                          onClick={() => selectAddress(s)}
+                        >
+                          <MapPin size={14} className="text-muted-foreground mt-0.5 flex-shrink-0" />
+                          {s.place_name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
               <div>
                 <p className="text-xs text-muted-foreground mb-1.5">Notes</p>
