@@ -33,6 +33,15 @@ export default function DeployAsset() {
     })
   }, [assetId])
 
+  useEffect(() => {
+    if (!selectedCustomer?.address) return
+    set('address', selectedCustomer.address)
+    setSelectedCoords(null)
+    geocodeAddress(selectedCustomer.address).then(results => {
+      if (results[0]) setSelectedCoords({ lng: results[0].center[0], lat: results[0].center[1] })
+    })
+  }, [selectedCustomer?.id])
+
   function set(field, value) {
     setForm(f => ({ ...f, [field]: value }))
   }
@@ -135,7 +144,28 @@ export default function DeployAsset() {
         })()}
 
         <div className="space-y-2">
-          <Label htmlFor="address">Address</Label>
+          <Label>Customer</Label>
+          <CustomerPicker value={selectedCustomer} onChange={setSelectedCustomer} />
+          {selectedCustomer && (
+            <div className="space-y-2 pt-1">
+              {selectedCustomer.phone && (
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1.5">Phone</p>
+                  <Input value={selectedCustomer.phone} readOnly className="text-muted-foreground" />
+                </div>
+              )}
+              {selectedCustomer.email && (
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1.5">Email</p>
+                  <Input value={selectedCustomer.email} readOnly className="text-muted-foreground" />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="address">Deployment Address</Label>
           <div className="relative">
             <Input
               id="address"
@@ -164,33 +194,6 @@ export default function DeployAsset() {
             <p className="text-xs text-green-600 flex items-center gap-1">
               <MapPin size={12} /> Location confirmed
             </p>
-          )}
-        </div>
-
-        <div className="space-y-2">
-          <Label>Customer</Label>
-          <CustomerPicker value={selectedCustomer} onChange={setSelectedCustomer} />
-          {selectedCustomer && (
-            <div className="space-y-2 pt-1">
-              {selectedCustomer.phone && (
-                <div>
-                  <p className="text-xs text-muted-foreground mb-1.5">Phone</p>
-                  <Input value={selectedCustomer.phone} readOnly className="text-muted-foreground" />
-                </div>
-              )}
-              {selectedCustomer.email && (
-                <div>
-                  <p className="text-xs text-muted-foreground mb-1.5">Email</p>
-                  <Input value={selectedCustomer.email} readOnly className="text-muted-foreground" />
-                </div>
-              )}
-              {selectedCustomer.address && (
-                <div>
-                  <p className="text-xs text-muted-foreground mb-1.5">Customer Address</p>
-                  <Input value={selectedCustomer.address} readOnly className="text-muted-foreground" />
-                </div>
-              )}
-            </div>
           )}
         </div>
 
