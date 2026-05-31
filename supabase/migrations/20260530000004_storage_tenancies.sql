@@ -74,7 +74,10 @@ alter table storage_payments
   add constraint storage_payments_tenancy_id_period_label_key
   unique (tenancy_id, period_label);
 
--- ── 7. Drop the tenant columns that have moved to storage_tenancies ────────────
+-- ── 7. Allow unit_id to be null now that tenancy_id is the primary reference ──
+alter table storage_payments alter column unit_id drop not null;
+
+-- ── 8. Drop the tenant columns that have moved to storage_tenancies ────────────
 alter table storage_units
   drop column if exists customer_id,
   drop column if exists tenant_name,
