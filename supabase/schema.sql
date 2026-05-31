@@ -7,10 +7,10 @@ create table asset_types (
 );
 
 insert into asset_types (name, icon) values
-  ('Dumpster', '🗑️'),
-  ('Portable Storage', '📦'),
-  ('Portable Toilet', '🚽'),
-  ('Trailer', '🚛');
+  ('Dumpster', 'trash'),
+  ('Portable Storage', 'package'),
+  ('Fencing', 'fence'),
+  ('Trailer', 'car');
 
 -- Physical asset inventory
 create table assets (

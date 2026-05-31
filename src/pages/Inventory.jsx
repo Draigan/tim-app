@@ -23,8 +23,8 @@ export default function Inventory() {
   const navigate = useNavigate()
   const isAdmin = useIsAdmin()
 
-  const fetchAll = useCallback(async () => {
-    setLoading(true)
+  const fetchAll = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true)
     const today = new Date().toISOString().slice(0, 10)
     const [{ data: yard }, { data: deployed }, { data: resData }] = await Promise.all([
       supabase.from('yard_assets').select('*').order('created_at', { ascending: false }),
@@ -41,11 +41,13 @@ export default function Inventory() {
       })
       setReservationMap(map)
     }
-    setLoading(false)
+    if (!silent) setLoading(false)
   }, [])
 
+  const refreshSilent = useCallback(() => fetchAll(true), [fetchAll])
+
   useEffect(() => { fetchAll() }, [fetchAll])
-  useRealtime(['deployments', 'assets', 'asset_types', 'reservations'], fetchAll)
+  useRealtime(['deployments', 'assets', 'asset_types', 'reservations'], refreshSilent)
 
   const q = query.trim().toLowerCase()
 
@@ -158,7 +160,12 @@ export default function Inventory() {
                 <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
                   In Yard ({filteredYard.length})
                 </h2>
-                {Object.entries(grouped).map(([type, items]) => (
+                {Object.entries(grouped).sort(([a], [b]) => {
+                    const rank = t => t.toLowerCase().startsWith('dumpster') ? 0 : t.toLowerCase().startsWith('portable storage') ? 1 : 2
+                    const ra = rank(a), rb = rank(b)
+                    if (ra !== rb) return ra - rb
+                    return a.localeCompare(b)
+                  }).map(([type, items]) => (
                   <div key={type} className="mb-5">
                     <h3 className="text-xs text-muted-foreground mb-2 ml-0.5">{type} ({items.length})</h3>
                     <div className="space-y-2">

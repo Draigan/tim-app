@@ -1,5 +1,8 @@
+import { clientsClaim, skipWaiting } from 'workbox-core'
 import { precacheAndRoute } from 'workbox-precaching'
 
+skipWaiting()
+clientsClaim()
 precacheAndRoute(self.__WB_MANIFEST)
 
 self.addEventListener('push', event => {
@@ -7,7 +10,7 @@ self.addEventListener('push', event => {
   const targetUrl = data.url ?? '/'
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then(windowClients => {
-      const alreadyThere = windowClients.some(c =>
+      const alreadyThere = data.url && windowClients.some(c =>
         c.visibilityState === 'visible' && new URL(c.url).pathname === targetUrl
       )
       if (alreadyThere) return

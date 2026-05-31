@@ -46,10 +46,12 @@ Deno.serve(async (req) => {
 
     if (event.type === 'payment_intent.succeeded') {
       const pi = event.data.object as Stripe.PaymentIntent
-      const { unit_id, period_label } = pi.metadata ?? {}
+      const { unit_id, period_label, months } = pi.metadata ?? {}
       if (unit_id && period_label) {
+        const labels = period_label.split(',').map((l: string) => l.trim()).filter(Boolean)
+        const perMonth = labels.length > 1 ? pi.amount / 100 / labels.length : pi.amount / 100
         await supabase.from('storage_payments').upsert(
-          { unit_id, period_label, paid_at: new Date().toISOString(), amount: pi.amount / 100 },
+          labels.map((label: string) => ({ unit_id, period_label: label, paid_at: new Date().toISOString(), amount: perMonth })),
           { onConflict: 'unit_id,period_label' }
         )
       }

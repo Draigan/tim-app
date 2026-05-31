@@ -16,3 +16,15 @@ enabled = true
 verify_jwt = false
 import_map = "./functions/send-push/deno.json"
 entrypoint = "./functions/send-push/index.ts"
+
+[functions.daily-alerts]
+enabled = true
+verify_jwt = false
+import_map = "./functions/daily-alerts/deno.json"
+entrypoint = "./functions/daily-alerts/index.ts"
+
+[functions.storage-reminders]
+enabled = true
+verify_jwt = false
+import_map = "./functions/storage-reminders/deno.json"
+entrypoint = "./functions/storage-reminders/index.ts"

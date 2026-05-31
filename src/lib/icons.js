@@ -4,7 +4,7 @@ export const ICON_OPTIONS = [
   { key: 'car',      label: 'Vehicle'         },
   { key: 'stairs',   label: 'Bleachers'       },
   { key: 'tool',     label: 'Equipment'       },
-  { key: 'toilet-paper', label: 'Portable Toilet' },
+  { key: 'fence',        label: 'Fencing'         },
 ]
 
 const iconCache = {}

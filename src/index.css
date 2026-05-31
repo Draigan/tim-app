@@ -56,11 +56,7 @@
 @keyframes splash-rise {
   0%   { opacity: 0; transform: translateY(28px) scale(0.92); filter: invert(1) brightness(1); }
   40%  { opacity: 1; transform: translateY(0) scale(1);       filter: invert(1) brightness(1); }
-  52%  { filter: invert(1) brightness(2.8) drop-shadow(0 0 12px rgba(255,255,255,0.8)); }
-  62%  { filter: invert(1) brightness(1); }
-  72%  { filter: invert(1) brightness(2.2) drop-shadow(0 0 8px rgba(255,255,255,0.6)); }
-  82%  { filter: invert(1) brightness(1); }
-  90%  { filter: invert(1) brightness(1.6) drop-shadow(0 0 5px rgba(255,255,255,0.3)); }
+  60%  { filter: invert(1) brightness(2.2) drop-shadow(0 0 14px rgba(255,255,255,0.7)); }
   100% { filter: invert(1) brightness(1); }
 }
 @keyframes splash-fade {

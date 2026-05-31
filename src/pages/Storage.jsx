@@ -444,10 +444,11 @@ if (data.status === 'charged') {
     }
     if (!assignCustomer) { setSaving(false); return }
     const billingDay = assign.billing_day ? Number(assign.billing_day) : null
-    // Clear any payment record from a previous tenant for the current period
+    // Clear only manually-marked (no real charge) payments from a previous tenant for the current period
     if (billingDay) {
       const period = currentPeriodLabel(billingDay)
-      await supabase.from('storage_payments').delete().eq('unit_id', item.id).eq('period_label', period)
+      await supabase.from('storage_payments').delete()
+        .eq('unit_id', item.id).eq('period_label', period).is('amount', null)
     }
     await supabase.from('storage_units').update({
       customer_id:       assignCustomer.id,
@@ -679,7 +680,14 @@ if (data.status === 'charged') {
                   <div>
                     <p className="text-sm font-medium text-left">Billing</p>
                     <p className="text-xs text-muted-foreground">
-                      {isPaid ? 'Paid up to date' : behindCount > 0 ? `${behindCount} month${behindCount !== 1 ? 's' : ''} behind` : 'View payments'}
+                      {(() => {
+                        const recent = history.slice(0, 3).map(p => {
+                          const [y, m] = p.period_label.split('-').map(Number)
+                          return new Date(y, m - 1, 1).toLocaleDateString('en-CA', { month: 'short', year: 'numeric' })
+                        })
+                        if (recent.length > 0) return recent.join(' · ')
+                        return behindCount > 0 ? `${behindCount} month${behindCount !== 1 ? 's' : ''} behind` : 'No payments yet'
+                      })()}
                     </p>
                   </div>
                   <ChevronRight size={16} className="text-muted-foreground" />

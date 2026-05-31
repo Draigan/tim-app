@@ -8,7 +8,7 @@ import { supabase } from '@/lib/supabase'
 import { geocodeAddress } from '@/lib/mapbox'
 import { getMarkerColor, formatPhone } from '@/lib/utils'
 import { Textarea } from '@/components/ui/textarea'
-import { Phone, MapPin, Calendar, User, ChevronLeft, Navigation } from 'lucide-react'
+import { Phone, MapPin, Calendar, User, ChevronLeft, Navigation, Star } from 'lucide-react'
 import { useNavigate, useLocation } from 'react-router-dom'
 
 function expiryBadge(expiresAt) {
@@ -197,7 +197,7 @@ function PickupDialog({ deployment, open, onOpenChange, onConfirm }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-sm">
+      <DialogContent className="max-w-sm" onOpenAutoFocus={e => e.preventDefault()}>
         <DialogHeader>
           <DialogTitle>Confirm Pickup</DialogTitle>
         </DialogHeader>
@@ -226,11 +226,87 @@ function PickupDialog({ deployment, open, onOpenChange, onConfirm }) {
   )
 }
 
+function ReviewRequestDialog({ deployment, open, onOpenChange, onDone }) {
+  const [sending, setSending] = useState(false)
+  const [sent, setSent] = useState(false)
+  const [error, setError] = useState(null)
+  const hasPhone = !!deployment?.customer_phone
+
+  useEffect(() => { if (open) { setSent(false); setError(null) } }, [open])
+
+  async function handleSend() {
+    setSending(true)
+    setError(null)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const phone = deployment.customer_phone.replace(/\D/g, '')
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-review-request`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          phone,
+          customerName: deployment.customer_name || undefined,
+          deploymentId: deployment.id,
+        }),
+      })
+      if (!res.ok) throw new Error('Request failed')
+      setSent(true)
+    } catch {
+      setError('Failed to send — try again.')
+    }
+    setSending(false)
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-sm" onOpenAutoFocus={e => e.preventDefault()}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Star size={16} className="text-yellow-500" />
+            {sent ? 'Review Request Sent!' : 'Request a Review?'}
+          </DialogTitle>
+        </DialogHeader>
+        {sent ? (
+          <div className="space-y-3 mt-2">
+            <p className="text-sm text-muted-foreground">
+              A review request was sent to {deployment.customer_name || 'the customer'} at {formatPhone(deployment.customer_phone)}.
+            </p>
+            <Button className="w-full" onClick={onDone}>Done</Button>
+          </div>
+        ) : (
+          <div className="space-y-3 mt-2">
+            {hasPhone ? (
+              <p className="text-sm text-muted-foreground">
+                Send a review request to <span className="text-foreground font-medium">{deployment.customer_name || 'the customer'}</span> at {formatPhone(deployment.customer_phone)}?
+              </p>
+            ) : (
+              <p className="text-sm text-muted-foreground">No customer phone number on file for this deployment.</p>
+            )}
+            {error && <p className="text-sm text-destructive">{error}</p>}
+            <div className="flex gap-2 pt-1">
+              <Button variant="outline" className="flex-1" onClick={onDone}>Skip</Button>
+              {hasPhone && (
+                <Button className="flex-1" onClick={handleSend} disabled={sending}>
+                  {sending ? 'Sending…' : 'Send Request'}
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function SingleAsset({ deployment, onBack, onClose, onPickup, readOnly = false }) {
   const navigate = useNavigate()
   const location = useLocation()
   const [showUpdate, setShowUpdate] = useState(false)
   const [showPickup, setShowPickup] = useState(false)
+  const [showReview, setShowReview] = useState(false)
   const badge = expiryBadge(deployment.expires_at)
 
   return (
@@ -325,7 +401,13 @@ function SingleAsset({ deployment, onBack, onClose, onPickup, readOnly = false }
             deployment={deployment}
             open={showPickup}
             onOpenChange={setShowPickup}
-            onConfirm={() => { setShowPickup(false); onPickup() }}
+            onConfirm={() => { setShowPickup(false); setShowReview(true) }}
+          />
+          <ReviewRequestDialog
+            deployment={deployment}
+            open={showReview}
+            onOpenChange={setShowReview}
+            onDone={() => { setShowReview(false); onPickup() }}
           />
         </>
       )}

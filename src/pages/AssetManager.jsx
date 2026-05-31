@@ -6,7 +6,7 @@ import { useIsAdmin } from '@/lib/useIsAdmin'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Plus, Trash2, ChevronRight, ArrowLeft } from 'lucide-react'
+import { Plus, Trash2, ChevronRight, Pencil, Warehouse } from 'lucide-react'
 import { ICON_OPTIONS, iconImgUrl } from '@/lib/icons'
 
 export default function AssetManager() {
@@ -28,10 +28,13 @@ export default function AssetManager() {
   const [newUnitSize, setNewUnitSize] = useState('')
   const [newUnitNotes, setNewUnitNotes] = useState('')
   const [confirmDeleteUnit, setConfirmDeleteUnit] = useState(null)
+  const [renameAsset, setRenameAsset] = useState(null)
+  const [renameLabel, setRenameLabel] = useState('')
+  const [renameSize, setRenameSize] = useState('')
 
   const fetchAll = useCallback(async () => {
     const [{ data: assetData }, { data: deployments }, { data: typeData }, { data: unitData }] = await Promise.all([
-      supabase.from('assets').select('*, asset_types(name, icon)').order('label'),
+      supabase.from('assets').select('*, asset_types(name, icon)').eq('archived', false).order('label'),
       supabase.from('active_deployments').select('asset_id'),
       supabase.from('asset_types').select('*').order('name'),
       supabase.from('storage_units').select('id, unit_number, size, tenant_name').order('unit_number'),
@@ -67,14 +70,20 @@ export default function AssetManager() {
     fetchAll()
   }
 
-  async function deleteAsset() {
+  async function saveRename() {
+    if (!renameLabel.trim()) { setRenameAsset(null); return }
+    await supabase.from('assets').update({
+      label: renameLabel.trim(),
+      size: renameSize.trim() || null,
+    }).eq('id', renameAsset.id)
+    setRenameAsset(null)
+    fetchAll()
+  }
+
+  async function archiveAsset() {
     setDeletingId(confirmDeleteAsset.id)
-    const { error } = await supabase.from('assets').delete().eq('id', confirmDeleteAsset.id)
+    await supabase.from('assets').update({ archived: true }).eq('id', confirmDeleteAsset.id)
     setDeletingId(null)
-    if (error) {
-      setDeleteError('Could not delete this asset. It may have active deployments or history.')
-      return
-    }
     setConfirmDeleteAsset(null)
     fetchAll()
   }
@@ -111,12 +120,7 @@ export default function AssetManager() {
   return (
     <div className="h-full flex flex-col">
       <div className="flex items-center justify-between px-4 pt-5 pb-3 flex-shrink-0">
-        <div className="flex items-center gap-2">
-          <button onClick={() => navigate('/settings')} className="text-muted-foreground hover:text-foreground -ml-1">
-            <ArrowLeft size={20} />
-          </button>
-          <h1 className="text-xl font-semibold">Asset Manager</h1>
-        </div>
+        <h1 className="text-xl font-semibold">Asset Manager</h1>
         <Button size="sm" onClick={() => navigate('/assets/new', { state: { from: '/asset-manager' } })}>
           <Plus size={16} />
           Add Asset
@@ -146,12 +150,20 @@ export default function AssetManager() {
                         <ChevronRight size={16} className="text-muted-foreground" />
                       </div>
                     </button>
-                    <button
-                      onClick={() => { setDeleteError(''); setConfirmDeleteAsset(asset) }}
-                      className="ml-3 flex-shrink-0 text-muted-foreground hover:text-destructive transition-colors"
-                    >
-                      <Trash2 size={15} />
-                    </button>
+                    <div className="ml-3 flex items-center gap-2 flex-shrink-0">
+                      <button
+                        onClick={() => { setRenameLabel(asset.label); setRenameSize(asset.size ?? ''); setRenameAsset(asset) }}
+                        className="text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        <Pencil size={14} />
+                      </button>
+                      <button
+                        onClick={() => { setDeleteError(''); setConfirmDeleteAsset(asset) }}
+                        className="text-muted-foreground hover:text-destructive transition-colors"
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -174,13 +186,25 @@ export default function AssetManager() {
                   {type.icon && <img src={iconImgUrl(type.icon, 18)} width="18" height="18" alt={type.name} />}
                   <span className="text-sm font-medium">{type.name}</span>
                 </div>
-                <button
-                  className="text-muted-foreground hover:text-destructive transition-colors disabled:opacity-40"
-                  onClick={() => { setDeleteError(''); setConfirmDeleteType(type) }}
-                  disabled={deletingId === type.id}
-                >
-                  <Trash2 size={16} />
-                </button>
+                <div className="flex items-center gap-3">
+                  <button
+                    title={type.is_storage ? 'Shown on Storage tab' : 'Not on Storage tab'}
+                    className={`transition-colors ${type.is_storage ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}`}
+                    onClick={async () => {
+                      await supabase.from('asset_types').update({ is_storage: !type.is_storage }).eq('id', type.id)
+                      fetchAll()
+                    }}
+                  >
+                    <Warehouse size={15} />
+                  </button>
+                  <button
+                    className="text-muted-foreground hover:text-destructive transition-colors disabled:opacity-40"
+                    onClick={() => { setDeleteError(''); setConfirmDeleteType(type) }}
+                    disabled={deletingId === type.id}
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -216,16 +240,46 @@ export default function AssetManager() {
         </div>
       </div>
 
+      {/* Rename asset dialog */}
+      <Dialog open={!!renameAsset} onOpenChange={open => !open && setRenameAsset(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle>Edit Asset</DialogTitle></DialogHeader>
+          <div className="space-y-3 mt-2">
+            <div>
+              <p className="text-xs text-muted-foreground mb-1.5">Name</p>
+              <Input
+                value={renameLabel}
+                onChange={e => setRenameLabel(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), saveRename())}
+                autoFocus
+              />
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground mb-1.5">Size</p>
+              <Input
+                value={renameSize}
+                onChange={e => setRenameSize(e.target.value)}
+                placeholder="e.g. 10ft, 20x8"
+                onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), saveRename())}
+              />
+            </div>
+            <div className="flex gap-2 pt-1">
+              <Button variant="outline" className="flex-1" onClick={() => setRenameAsset(null)}>Cancel</Button>
+              <Button className="flex-1" onClick={saveRename} disabled={!renameLabel.trim()}>Save</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Delete asset dialog */}
       <Dialog open={!!confirmDeleteAsset} onOpenChange={open => { if (!open) { setConfirmDeleteAsset(null); setDeleteError('') } }}>
         <DialogContent className="max-w-sm">
-          <DialogHeader><DialogTitle>Delete "{confirmDeleteAsset?.label}"?</DialogTitle></DialogHeader>
-          <p className="text-sm text-muted-foreground mt-1">This permanently removes the asset and cannot be undone.</p>
-          {deleteError && <p className="text-sm text-destructive mt-2">{deleteError}</p>}
+          <DialogHeader><DialogTitle>Remove "{confirmDeleteAsset?.label}"?</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground mt-1">This hides the asset from the app. All history is kept.</p>
           <div className="flex gap-2 mt-4">
             <Button variant="outline" className="flex-1" onClick={() => { setConfirmDeleteAsset(null); setDeleteError('') }}>Cancel</Button>
-            <Button variant="destructive" className="flex-1" onClick={deleteAsset} disabled={!!deletingId}>
-              {deletingId ? 'Deleting…' : 'Delete'}
+            <Button variant="destructive" className="flex-1" onClick={archiveAsset} disabled={!!deletingId}>
+              {deletingId ? 'Removing…' : 'Remove'}
             </Button>
           </div>
         </DialogContent>

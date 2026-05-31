@@ -165,7 +165,7 @@ export default function Calendar() {
     const [{ data: evts }, { data: resvs }, { data: assetList }] = await Promise.all([
       supabase.from('calendar_events').select('*').lte('from_date', rangeEnd).gte('to_date', rangeStart),
       supabase.from('reservations').select('*').gte('from_date', rangeStart).lte('from_date', rangeEnd),
-      supabase.from('assets').select('id, label'),
+      supabase.from('assets').select('id, label').eq('archived', false),
     ])
     if (evts) setEvents(evts)
     if (resvs) setReservations(resvs)

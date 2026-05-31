@@ -27,10 +27,20 @@ export function usePushNotifications() {
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    if (!supported) return
-    navigator.serviceWorker.ready.then(reg =>
-      reg.pushManager.getSubscription().then(sub => setSubscribed(!!sub))
-    )
+    if (!supported || !VAPID_PUBLIC_KEY) return
+    navigator.serviceWorker.ready.then(async reg => {
+      let sub = await reg.pushManager.getSubscription()
+      if (!sub && Notification.permission === 'granted') {
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+        }).catch(() => null)
+      }
+      if (sub) {
+        setSubscribed(true)
+        pushFetch({ action: 'subscribe', subscription: sub.toJSON() }).catch(() => {})
+      }
+    })
   }, [supported])
 
   async function subscribe() {

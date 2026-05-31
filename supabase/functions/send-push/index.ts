@@ -33,12 +33,16 @@ async function sendToSubs(subs: any[], payload: string) {
       )
     )
   )
-  const expired = subs.filter((_, i) => {
-    const r = results[i]
-    return r.status === 'rejected' && (r.reason as any)?.statusCode === 410
+  const stale: string[] = []
+  results.forEach((r, i) => {
+    if (r.status === 'rejected') {
+      const code = (r.reason as any)?.statusCode
+      console.error(`push failed endpoint=${subs[i].endpoint.slice(0, 60)} status=${code}`, r.reason?.message)
+      if (code === 410 || code === 404) stale.push(subs[i].endpoint)
+    }
   })
-  if (expired.length > 0) {
-    await supabaseAdmin.from('push_subscriptions').delete().in('endpoint', expired.map(s => s.endpoint))
+  if (stale.length > 0) {
+    await supabaseAdmin.from('push_subscriptions').delete().in('endpoint', stale)
   }
   return results.filter(r => r.status === 'fulfilled').length
 }
@@ -51,10 +55,17 @@ Deno.serve(async (req) => {
   const { data: { user } } = await supabaseAdmin.auth.getUser(token)
   if (!user) return json({ error: 'Unauthorized' }, 401)
 
-  const { title, body, url, exclude_user_id, to_all } = await req.json()
+  const { title, body, url, exclude_user_id, to_all, to_self } = await req.json()
   if (!title || !body) return json({ error: 'title and body required' }, 400)
 
   const payload = JSON.stringify({ title, body, url: url ?? '/' })
+
+  if (to_self) {
+    const { data: subs } = await supabaseAdmin.from('push_subscriptions').select('*').eq('user_id', user.id)
+    if (!subs?.length) return json({ ok: true, sent: 0 })
+    const sent = await sendToSubs(subs, payload)
+    return json({ ok: true, sent })
+  }
 
   if (to_all) {
     // Send to every subscriber except the sender — used for chat messages

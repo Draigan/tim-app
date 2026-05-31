@@ -6,9 +6,10 @@ import { useRealtime } from '@/lib/useRealtime'
 import { supabase } from '@/lib/supabase'
 import { getMarkerColor } from '@/lib/utils'
 import AssetBottomSheet from '@/components/AssetBottomSheet'
+import DeploySheet from '@/components/DeploySheet'
 import { Button } from '@/components/ui/button'
-import { Plus, LocateFixed, Layers } from 'lucide-react'
-import { useNavigate, useLocation } from 'react-router-dom'
+import { Plus, LocateFixed, Layers, Search, X, SlidersHorizontal } from 'lucide-react'
+import { useLocation } from 'react-router-dom'
 
 mapboxgl.accessToken = MAPBOX_TOKEN
 
@@ -248,12 +249,19 @@ export default function MapView() {
   const deploymentsRef = useRef([])
   const [deployments, setDeployments] = useState([])
   const [selected, setSelected] = useState(null)
+  const [showDeploy, setShowDeploy] = useState(false)
   const [showStyles, setShowStyles] = useState(false)
+  const [showSearch, setShowSearch] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const searchRef = useRef(null)
+  const [showFilter, setShowFilter] = useState(false)
+  const [filterUrgency, setFilterUrgency] = useState('all')
+  const [filterTypes, setFilterTypes] = useState(new Set())
+  const filterRef = useRef(null)
   const [activeStyle, setActiveStyle] = useState(
     () => localStorage.getItem('mapStyle') ?? 'mapbox://styles/mapbox/streets-v12'
   )
   const stylesRef = useRef(null)
-  const navigate = useNavigate()
   const location = useLocation()
   const pendingFlyTo = useRef(location.state?.flyTo ?? null)
 
@@ -333,29 +341,89 @@ export default function MapView() {
   useEffect(() => {
     if (!mapReady.current || !map.current) return
     const source = map.current.getSource('deployments')
-    if (source) source.setData(toGeoJSON(deployments))
-  }, [deployments])
+    if (!source) return
+    const visible = deployments.filter(d => {
+      if (filterTypes.size > 0 && !filterTypes.has(d.type_name)) return false
+      if (filterUrgency === 'all') return true
+      const daysLeft = d.expires_at
+        ? Math.ceil((new Date(d.expires_at) - new Date()) / (1000 * 60 * 60 * 24))
+        : null
+      if (filterUrgency === 'expiring') return daysLeft !== null && daysLeft >= 0 && daysLeft <= 7
+      if (filterUrgency === 'expired') return daysLeft !== null && daysLeft < 0
+      return true
+    })
+    source.setData(toGeoJSON(visible))
+  }, [deployments, filterUrgency, filterTypes])
 
   useEffect(() => {
     if (!showStyles) return
     function handleClickOutside(e) {
-      if (stylesRef.current && !stylesRef.current.contains(e.target)) {
-        setShowStyles(false)
-      }
+      if (stylesRef.current && !stylesRef.current.contains(e.target)) setShowStyles(false)
     }
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [showStyles])
 
+  useEffect(() => {
+    if (!showSearch) return
+    function handleClickOutside(e) {
+      if (searchRef.current && !searchRef.current.contains(e.target)) {
+        setShowSearch(false)
+        setSearchQuery('')
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [showSearch])
+
+  useEffect(() => {
+    if (!showFilter) return
+    function handleClickOutside(e) {
+      if (filterRef.current && !filterRef.current.contains(e.target)) setShowFilter(false)
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [showFilter])
+
+  const allTypes = [...new Set(deployments.map(d => d.type_name).filter(Boolean))].sort()
+  const filtersActive = filterUrgency !== 'all' || filterTypes.size > 0
+
+  function toggleType(t) {
+    setFilterTypes(prev => {
+      const next = new Set(prev)
+      next.has(t) ? next.delete(t) : next.add(t)
+      return next
+    })
+  }
+
+  function clearFilters() {
+    setFilterUrgency('all')
+    setFilterTypes(new Set())
+  }
+
+  const q = searchQuery.trim().toLowerCase()
+  const searchResults = q
+    ? deployments.filter(d =>
+        [d.label, d.type_name, d.customer_name, d.address].some(f => f?.toLowerCase().includes(q))
+      ).slice(0, 6)
+    : []
+
+  function selectSearchResult(dep) {
+    setShowSearch(false)
+    setSearchQuery('')
+    map.current?.flyTo({ center: [dep.lng, dep.lat], zoom: 16 })
+    setSelected([dep])
+  }
+
   return (
     <div className="relative h-full">
       <div ref={mapContainer} className="h-full w-full" />
 
-      <div className="absolute top-4 left-4 z-10 flex gap-2">
-        <Button size="sm" variant="secondary" className="shadow-md" onClick={() => yardCoords.current && map.current.flyTo({ center: yardCoords.current, zoom: 12, bearing: 0, pitch: 0 })}>
+      <div className="absolute top-4 left-4 z-10 flex gap-2 items-start">
+        <Button size="sm" variant="secondary" className="shadow-md flex-shrink-0" onClick={() => yardCoords.current && map.current.flyTo({ center: yardCoords.current, zoom: 12, bearing: 0, pitch: 0 })}>
           <LocateFixed size={15} />
         </Button>
-        <div className="relative" ref={stylesRef}>
+        <div className="relative flex-shrink-0" ref={stylesRef}>
           <Button size="sm" variant="secondary" className="shadow-md" onClick={() => setShowStyles(s => !s)}>
             <Layers size={15} />
           </Button>
@@ -373,15 +441,103 @@ export default function MapView() {
             </div>
           )}
         </div>
+        <div className="relative flex-shrink-0" ref={filterRef}>
+          <Button
+            size="sm"
+            variant={filtersActive ? 'default' : 'secondary'}
+            className="shadow-md relative"
+            onClick={() => setShowFilter(s => !s)}
+          >
+            <SlidersHorizontal size={15} />
+            {filtersActive && <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-primary-foreground" />}
+          </Button>
+          {showFilter && (
+            <div className="absolute top-10 left-0 bg-background border rounded-lg shadow-lg z-20 w-52 p-3 space-y-3">
+              <div>
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">Urgency</p>
+                {[
+                  { value: 'all', label: 'All' },
+                  { value: 'expiring', label: 'Expiring soon (≤7d)' },
+                  { value: 'expired', label: 'Expired' },
+                ].map(({ value, label }) => (
+                  <button
+                    key={value}
+                    onClick={() => setFilterUrgency(value)}
+                    className={`w-full text-left px-2 py-1.5 rounded-md text-sm transition-colors ${filterUrgency === value ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {allTypes.length > 0 && (
+                <div>
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">Type</p>
+                  {allTypes.map(t => (
+                    <button
+                      key={t}
+                      onClick={() => toggleType(t)}
+                      className={`w-full text-left px-2 py-1.5 rounded-md text-sm transition-colors ${filterTypes.has(t) ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'}`}
+                    >
+                      {t}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {filtersActive && (
+                <button onClick={clearFilters} className="w-full text-xs text-muted-foreground hover:text-foreground text-center pt-1 border-t">
+                  Clear filters
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+        <Button size="sm" variant="secondary" className="shadow-md" onClick={() => setShowSearch(true)}>
+          <Search size={15} />
+        </Button>
       </div>
+
+      {showSearch && (
+        <div ref={searchRef} className="absolute top-4 left-4 right-4 z-20">
+          <div className="flex items-center gap-1.5 bg-background border rounded-lg shadow-md px-2 h-9">
+            <Search size={14} className="text-muted-foreground flex-shrink-0" />
+            <input
+              autoFocus
+              type="search"
+              placeholder="Search deployed assets…"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              className="flex-1 text-sm bg-transparent outline-none min-w-0"
+            />
+            <button onClick={() => { setShowSearch(false); setSearchQuery('') }} className="text-muted-foreground hover:text-foreground flex-shrink-0">
+              <X size={13} />
+            </button>
+          </div>
+          {searchResults.length > 0 && (
+            <div className="mt-1 bg-background border rounded-lg shadow-lg overflow-hidden">
+              {searchResults.map(dep => (
+                <button
+                  key={dep.id}
+                  className="w-full text-left px-3 py-2.5 hover:bg-accent transition-colors border-b last:border-0"
+                  onClick={() => selectSearchResult(dep)}
+                >
+                  <p className="text-sm font-medium truncate">{dep.label} <span className="font-normal text-muted-foreground">{dep.type_name}</span></p>
+                  <p className="text-xs text-muted-foreground truncate">{dep.customer_name ? `${dep.customer_name} · ` : ''}{dep.address}</p>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <Button
         className="absolute bottom-6 right-4 z-10 shadow-lg rounded-full h-14 w-14"
         size="icon"
-        onClick={() => navigate('/inventory')}
+        onClick={() => setShowDeploy(true)}
       >
         <Plus size={22} />
       </Button>
+
+      <DeploySheet open={showDeploy} onClose={() => setShowDeploy(false)} />
 
       <AssetBottomSheet
         deployments={selected}

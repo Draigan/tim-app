@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useRealtime } from '@/lib/useRealtime'
-import { getMarkerColor } from '@/lib/utils'
-import { Search, X, ChevronDown, ChevronUp, MapPin, User, Calendar, ClipboardList, FileText } from 'lucide-react'
+import { getMarkerColor, formatPhone } from '@/lib/utils'
+import { Search, X, ChevronDown, ChevronUp } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import AssetBottomSheet from '@/components/AssetBottomSheet'
 
@@ -18,6 +18,9 @@ function fmt(iso) {
 }
 
 export default function History() {
+  const [activeTab, setActiveTab] = useState('deployments') // 'deployments' | 'sms' | 'reviews'
+
+  // Deployments state
   const [records, setRecords] = useState([])
   const [types, setTypes] = useState([])
   const [loading, setLoading] = useState(true)
@@ -31,6 +34,16 @@ export default function History() {
   const [typeFilter, setTypeFilter] = useState('all')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
+
+  // SMS log state
+  const [smsLogs, setSmsLogs] = useState([])
+  const [smsLoading, setSmsLoading] = useState(false)
+  const [smsQuery, setSmsQuery] = useState('')
+
+  // Reviews log state
+  const [reviews, setReviews] = useState([])
+  const [reviewsLoading, setReviewsLoading] = useState(false)
+  const [reviewsQuery, setReviewsQuery] = useState('')
 
   const PAGE = 50
 
@@ -48,6 +61,38 @@ export default function History() {
     if (assetTypes) setTypes(assetTypes)
     setLoading(false)
   }, [])
+
+  const fetchSmsLogs = useCallback(async () => {
+    setSmsLoading(true)
+    const { data } = await supabase
+      .from('sms_reminder_log')
+      .select('*')
+      .order('sent_date', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(200)
+    if (data) setSmsLogs(data)
+    setSmsLoading(false)
+  }, [])
+
+  useEffect(() => {
+    if (activeTab === 'sms' && smsLogs.length === 0) fetchSmsLogs()
+  }, [activeTab, fetchSmsLogs, smsLogs.length])
+
+  const fetchReviews = useCallback(async () => {
+    setReviewsLoading(true)
+    const { data } = await supabase
+      .from('deployments')
+      .select('id, customer_name, address, review_requested_at, assets(label, asset_types(name))')
+      .not('review_requested_at', 'is', null)
+      .order('review_requested_at', { ascending: false })
+      .limit(200)
+    if (data) setReviews(data)
+    setReviewsLoading(false)
+  }, [])
+
+  useEffect(() => {
+    if (activeTab === 'reviews' && reviews.length === 0) fetchReviews()
+  }, [activeTab, fetchReviews, reviews.length])
 
   const loadMore = useCallback(async () => {
     setLoadingMore(true)
@@ -88,170 +133,299 @@ export default function History() {
     setDateTo('')
   }
 
+  const filteredSms = smsLogs.filter(log => {
+    if (!smsQuery.trim()) return true
+    const q = smsQuery.trim().toLowerCase()
+    return [log.phone, log.message].some(f => f?.toLowerCase().includes(q))
+  })
+
+  const filteredReviews = reviews.filter(r => {
+    if (!reviewsQuery.trim()) return true
+    const q = reviewsQuery.trim().toLowerCase()
+    return [r.customer_name, r.address, r.assets?.label].some(f => f?.toLowerCase().includes(q))
+  })
+
   return (
     <div className="h-full flex flex-col">
       <div className="px-4 pt-5 pb-3">
         <h1 className="text-xl font-semibold">History</h1>
       </div>
 
-      <div className="px-4 pb-2 space-y-2">
-        <div className="relative">
-          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
-          <input
-            type="search"
-            placeholder="Search by asset, customer, address…"
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            className="w-full rounded-lg border border-input bg-background pl-8 pr-8 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-          />
-          {query && (
-            <button onClick={() => setQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
-              <X size={14} />
-            </button>
-          )}
-        </div>
+      <div className="px-4 pb-3 flex gap-2">
+        {[['deployments', 'Deployments'], ['sms', 'SMS Reminders'], ['reviews', 'Reviews']].map(([val, label]) => (
+          <button key={val} onClick={() => setActiveTab(val)}
+            className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${activeTab === val ? 'bg-primary text-primary-foreground border-primary' : 'text-muted-foreground hover:text-foreground'}`}>
+            {label}
+          </button>
+        ))}
+      </div>
 
-        <button
-          className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-          onClick={() => setShowFilters(v => !v)}
-        >
-          {showFilters ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-          Filters
-          {hasFilters && <span className="ml-1 w-2 h-2 rounded-full bg-primary inline-block" />}
-        </button>
-
-        {showFilters && (
-          <div className="space-y-3 pt-1">
-            <div className="flex gap-2">
-              {['all', 'active', 'completed'].map(s => (
-                <button
-                  key={s}
-                  onClick={() => setStatusFilter(s)}
-                  className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${statusFilter === s ? 'bg-primary text-primary-foreground border-primary' : 'border-input text-muted-foreground hover:text-foreground'}`}
-                >
-                  {s.charAt(0).toUpperCase() + s.slice(1)}
+      {activeTab === 'deployments' && (
+        <>
+          <div className="px-4 pb-2 space-y-2">
+            <div className="relative">
+              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+              <input
+                type="search"
+                placeholder="Search by asset, customer, address…"
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                className="w-full rounded-lg border border-input bg-background pl-8 pr-8 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+              />
+              {query && (
+                <button onClick={() => setQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                  <X size={14} />
                 </button>
-              ))}
+              )}
             </div>
 
-            <div>
-              <p className="text-xs text-muted-foreground mb-1.5">Asset Type</p>
-              <select
-                value={typeFilter}
-                onChange={e => setTypeFilter(e.target.value)}
-                className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-              >
-                <option value="all">All types</option>
-                {types.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}
-              </select>
-            </div>
+            <button
+              className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+              onClick={() => setShowFilters(v => !v)}
+            >
+              {showFilters ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+              Filters
+              {hasFilters && <span className="ml-1 w-2 h-2 rounded-full bg-primary inline-block" />}
+            </button>
 
-            <div className="flex gap-2">
-              <div className="flex-1">
-                <p className="text-xs text-muted-foreground mb-1.5">From</p>
-                <input
-                  type="date"
-                  value={dateFrom}
-                  onChange={e => setDateFrom(e.target.value)}
-                  onClick={e => { try { e.target.showPicker() } catch {} }}
-                  className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring cursor-pointer"
-                />
+            {showFilters && (
+              <div className="space-y-3 pt-1">
+                <div className="flex gap-2">
+                  {['all', 'active', 'completed'].map(s => (
+                    <button
+                      key={s}
+                      onClick={() => setStatusFilter(s)}
+                      className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${statusFilter === s ? 'bg-primary text-primary-foreground border-primary' : 'border-input text-muted-foreground hover:text-foreground'}`}
+                    >
+                      {s.charAt(0).toUpperCase() + s.slice(1)}
+                    </button>
+                  ))}
+                </div>
+
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1.5">Asset Type</p>
+                  <select
+                    value={typeFilter}
+                    onChange={e => setTypeFilter(e.target.value)}
+                    className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    <option value="all">All types</option>
+                    {types.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}
+                  </select>
+                </div>
+
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    <p className="text-xs text-muted-foreground mb-1.5">From</p>
+                    <input
+                      type="date"
+                      value={dateFrom}
+                      onChange={e => setDateFrom(e.target.value)}
+                      onClick={e => { try { e.target.showPicker() } catch {} }}
+                      className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring cursor-pointer"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-xs text-muted-foreground mb-1.5">To</p>
+                    <input
+                      type="date"
+                      value={dateTo}
+                      onChange={e => setDateTo(e.target.value)}
+                      onClick={e => { try { e.target.showPicker() } catch {} }}
+                      className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring cursor-pointer"
+                    />
+                  </div>
+                </div>
+
+                {hasFilters && (
+                  <Button variant="outline" size="sm" onClick={clearFilters}>Clear filters</Button>
+                )}
               </div>
-              <div className="flex-1">
-                <p className="text-xs text-muted-foreground mb-1.5">To</p>
-                <input
-                  type="date"
-                  value={dateTo}
-                  onChange={e => setDateTo(e.target.value)}
-                  onClick={e => { try { e.target.showPicker() } catch {} }}
-                  className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring cursor-pointer"
-                />
-              </div>
-            </div>
-
-            {hasFilters && (
-              <Button variant="outline" size="sm" onClick={clearFilters}>Clear filters</Button>
             )}
           </div>
-        )}
-      </div>
 
-      <div className="flex-1 overflow-y-auto px-4 pb-4">
-        {loading && <p className="text-muted-foreground text-sm mt-8 text-center">Loading…</p>}
+          <div className="flex-1 overflow-y-auto px-4 pb-4">
+            {loading && <p className="text-muted-foreground text-sm mt-8 text-center">Loading…</p>}
 
-        {!loading && filtered.length === 0 && (
-          <p className="text-muted-foreground text-sm text-center mt-16">No records found</p>
-        )}
+            {!loading && filtered.length === 0 && (
+              <p className="text-muted-foreground text-sm text-center mt-16">No records found</p>
+            )}
 
-        {!loading && (
-          <div className="space-y-2 pb-2">
-            {filtered.map(r => {
-              const isActive = !r.picked_up_at
-              const dot = isActive ? getMarkerColor(r.expires_at) : '#9ca3af'
-              const flat = {
-                ...r,
-                label: r.assets?.label,
-                size: r.assets?.size,
-                type_name: r.assets?.asset_types?.name,
-              }
-              return (
-                <button key={r.id} onClick={() => setSelected([flat])} className="w-full text-left bg-card border rounded-xl p-4 hover:bg-accent transition-colors space-y-3">
-
-                  {/* Asset + status */}
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full flex-shrink-0 mt-0.5" style={{ backgroundColor: dot }} />
-                        <span className="font-semibold truncate">{r.assets?.label}</span>
+            {!loading && (
+              <div className="space-y-2 pb-2">
+                {filtered.map(r => {
+                  const isActive = !r.picked_up_at
+                  const dot = isActive ? getMarkerColor(r.expires_at) : '#9ca3af'
+                  const flat = {
+                    ...r,
+                    label: r.assets?.label,
+                    size: r.assets?.size,
+                    type_name: r.assets?.asset_types?.name,
+                  }
+                  return (
+                    <button key={r.id} onClick={() => setSelected([flat])} className="w-full text-left bg-card border rounded-xl p-4 hover:bg-accent transition-colors space-y-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full flex-shrink-0 mt-0.5" style={{ backgroundColor: dot }} />
+                            <span className="font-semibold truncate">{r.assets?.label}</span>
+                          </div>
+                          <p className="text-xs text-muted-foreground mt-0.5 ml-4">{r.assets?.asset_types?.name}{r.assets?.size ? ` · ${r.assets.size}` : ''}</p>
+                        </div>
+                        <span className={`text-xs px-2 py-0.5 rounded-full flex-shrink-0 ${isActive ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`}>
+                          {isActive ? 'Active' : 'Completed'}
+                        </span>
                       </div>
-                      <p className="text-xs text-muted-foreground mt-0.5 ml-4">{r.assets?.asset_types?.name}{r.assets?.size ? ` · ${r.assets.size}` : ''}</p>
-                    </div>
-                    <span className={`text-xs px-2 py-0.5 rounded-full flex-shrink-0 ${isActive ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`}>
-                      {isActive ? 'Active' : 'Completed'}
-                    </span>
-                  </div>
+                      <div className="space-y-1">
+                        <p className="text-sm font-medium truncate">{r.address}</p>
+                        {r.customer_name && <p className="text-sm text-muted-foreground">{r.customer_name}</p>}
+                      </div>
+                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <span>{fmt(r.dropped_at)}</span>
+                        <span>→</span>
+                        <span>{r.picked_up_at ? fmt(r.picked_up_at) : 'Present'}</span>
+                        <span className="text-muted-foreground/50">· {duration(r.dropped_at, r.picked_up_at)}</span>
+                      </div>
+                      {(r.notes || r.pickup_notes) && (
+                        <div className="space-y-1">
+                          {r.notes && <p className="text-xs text-muted-foreground bg-muted rounded-lg px-3 py-2">{r.notes}</p>}
+                          {r.pickup_notes && <p className="text-xs text-muted-foreground bg-muted rounded-lg px-3 py-2">Pickup: {r.pickup_notes}</p>}
+                        </div>
+                      )}
+                      {(r.deployed_by || r.picked_up_by) && (
+                        <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground/70 border-t border-border/50 pt-2">
+                          {r.deployed_by && <span>Deployed by {r.deployed_by}</span>}
+                          {r.picked_up_by && <span>Picked up by {r.picked_up_by}</span>}
+                        </div>
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
 
-                  {/* Address + customer */}
-                  <div className="space-y-1">
-                    <p className="text-sm font-medium truncate">{r.address}</p>
-                    {r.customer_name && <p className="text-sm text-muted-foreground">{r.customer_name}</p>}
-                  </div>
-
-                  {/* Dates */}
-                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <span>{fmt(r.dropped_at)}</span>
-                    <span>→</span>
-                    <span>{r.picked_up_at ? fmt(r.picked_up_at) : 'Present'}</span>
-                    <span className="text-muted-foreground/50">· {duration(r.dropped_at, r.picked_up_at)}</span>
-                  </div>
-
-                  {/* Notes */}
-                  {(r.notes || r.pickup_notes) && (
-                    <div className="space-y-1">
-                      {r.notes && <p className="text-xs text-muted-foreground bg-muted rounded-lg px-3 py-2">{r.notes}</p>}
-                      {r.pickup_notes && <p className="text-xs text-muted-foreground bg-muted rounded-lg px-3 py-2">Pickup: {r.pickup_notes}</p>}
-                    </div>
-                  )}
-
-                  {/* Staff attribution */}
-                  {(r.deployed_by || r.picked_up_by) && (
-                    <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground/70 border-t border-border/50 pt-2">
-                      {r.deployed_by && <span>Deployed by {r.deployed_by}</span>}
-                      {r.picked_up_by && <span>Picked up by {r.picked_up_by}</span>}
-                    </div>
-                  )}
-                </button>
-              )
-            })}
+            {!loading && hasMore && !q && statusFilter === 'all' && typeFilter === 'all' && !dateFrom && !dateTo && (
+              <Button variant="outline" className="w-full mt-2" onClick={loadMore} disabled={loadingMore}>
+                {loadingMore ? 'Loading…' : 'Load more'}
+              </Button>
+            )}
           </div>
-        )}
+        </>
+      )}
 
-        {!loading && hasMore && !q && statusFilter === 'all' && typeFilter === 'all' && !dateFrom && !dateTo && (
-          <Button variant="outline" className="w-full mt-2" onClick={loadMore} disabled={loadingMore}>
-            {loadingMore ? 'Loading…' : 'Load more'}
-          </Button>
-        )}
-      </div>
+      {activeTab === 'sms' && (
+        <>
+          <div className="px-4 pb-2">
+            <div className="relative">
+              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+              <input
+                type="search"
+                placeholder="Search by phone or message…"
+                value={smsQuery}
+                onChange={e => setSmsQuery(e.target.value)}
+                className="w-full rounded-lg border border-input bg-background pl-8 pr-8 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+              />
+              {smsQuery && (
+                <button onClick={() => setSmsQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-4 pb-4">
+            {smsLoading && <p className="text-muted-foreground text-sm mt-8 text-center">Loading…</p>}
+
+            {!smsLoading && filteredSms.length === 0 && (
+              <p className="text-muted-foreground text-sm text-center mt-16">No SMS reminders sent yet</p>
+            )}
+
+            {!smsLoading && (
+              <div className="space-y-2 pb-2">
+                {filteredSms.map(log => (
+                  <div key={log.id} className="bg-card border rounded-xl p-4 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-medium">{formatPhone(log.phone)}</span>
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                        {log.unit_type === 'fixed' ? 'Fixed unit' : 'Portable'}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                      <span>{fmt(log.sent_date)}</span>
+                      {log.days_overdue === 0
+                        ? <span className="text-amber-500">Due today</span>
+                        : <span className="text-destructive">{log.days_overdue} day{log.days_overdue !== 1 ? 's' : ''} overdue</span>
+                      }
+                    </div>
+                    {log.message && <p className="text-xs text-muted-foreground line-clamp-2">{log.message}</p>}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {!smsLoading && filteredSms.length > 0 && (
+              <Button variant="outline" size="sm" className="w-full mt-2" onClick={fetchSmsLogs} disabled={smsLoading}>
+                Refresh
+              </Button>
+            )}
+          </div>
+        </>
+      )}
+
+      {activeTab === 'reviews' && (
+        <>
+          <div className="px-4 pb-2">
+            <div className="relative">
+              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+              <input
+                type="search"
+                placeholder="Search by customer, asset, address…"
+                value={reviewsQuery}
+                onChange={e => setReviewsQuery(e.target.value)}
+                className="w-full rounded-lg border border-input bg-background pl-8 pr-8 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+              />
+              {reviewsQuery && (
+                <button onClick={() => setReviewsQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-4 pb-4">
+            {reviewsLoading && <p className="text-muted-foreground text-sm mt-8 text-center">Loading…</p>}
+
+            {!reviewsLoading && filteredReviews.length === 0 && (
+              <p className="text-muted-foreground text-sm text-center mt-16">No review requests sent yet</p>
+            )}
+
+            {!reviewsLoading && (
+              <div className="space-y-2 pb-2">
+                {filteredReviews.map(r => (
+                  <div key={r.id} className="bg-card border rounded-xl p-4 space-y-1.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="font-medium text-sm">{r.customer_name || 'Unknown customer'}</span>
+                      <span className="text-xs text-muted-foreground flex-shrink-0">{fmt(r.review_requested_at)}</span>
+                    </div>
+                    {r.assets?.label && (
+                      <p className="text-xs text-muted-foreground">
+                        {r.assets.label}{r.assets.asset_types?.name ? ` · ${r.assets.asset_types.name}` : ''}
+                      </p>
+                    )}
+                    {r.address && <p className="text-xs text-muted-foreground truncate">{r.address}</p>}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {!reviewsLoading && filteredReviews.length > 0 && (
+              <Button variant="outline" size="sm" className="w-full mt-2" onClick={fetchReviews} disabled={reviewsLoading}>
+                Refresh
+              </Button>
+            )}
+          </div>
+        </>
+      )}
 
       <AssetBottomSheet
         deployments={selected}

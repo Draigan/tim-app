@@ -25,6 +25,7 @@ export default function Chat() {
   const inputRef = useRef(null)
   const scrollRef = useRef(null)
   const sessionRef = useRef(null)
+  const initializedRef = useRef(false)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -55,8 +56,13 @@ export default function Chat() {
     return () => supabase.removeChannel(channel)
   }, [])
 
-  // Scroll to bottom on initial load and new messages
   useEffect(() => {
+    if (!messages.length) return
+    if (!initializedRef.current) {
+      initializedRef.current = true
+      if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+      return
+    }
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages.length > 0 && messages[messages.length - 1]?.id])
 
@@ -91,9 +97,10 @@ export default function Chat() {
     const text = input.trim()
     if (!text) return
     setInput('')
-    const session = sessionRef.current
+    const { data: { session } } = await supabase.auth.getSession()
     const user = session?.user
     const senderName = user?.user_metadata?.full_name ?? user?.email ?? 'Unknown'
+    const firstName = senderName.split(' ')[0]
     await supabase.from('messages').insert({
       user_id: user.id,
       sender_name: senderName,
@@ -102,7 +109,7 @@ export default function Chat() {
     fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-push`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: senderName, body: text, url: '/chat', to_all: true, exclude_user_id: user.id }),
+      body: JSON.stringify({ title: firstName, body: text, url: '/chat', to_all: true, exclude_user_id: user.id }),
     }).catch(() => {})
     inputRef.current?.focus()
   }
@@ -128,16 +135,16 @@ export default function Chat() {
           const isOwn = msg.user_id === userId
           const prevMsg = messages[i - 1]
           const nextMsg = messages[i + 1]
-          const showName = msg.sender_name !== prevMsg?.sender_name
+          const showName = !isOwn && msg.sender_name !== prevMsg?.sender_name
           const isLastInRun = nextMsg?.sender_name !== msg.sender_name
           return (
-            <div key={msg.id} className="flex flex-col items-start">
+            <div key={msg.id} className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'}`}>
               {showName && (
-                <p className={`text-xs font-medium mb-1 px-1 ${isOwn ? 'text-primary' : 'text-muted-foreground'}`}>
-                  {isOwn ? 'You' : msg.sender_name}
+                <p className="text-xs font-medium mb-1 px-1 text-muted-foreground">
+                  {msg.sender_name}
                 </p>
               )}
-              <div className={`max-w-[80%] px-3.5 py-2.5 rounded-2xl ${isOwn ? 'bg-primary/15 text-foreground' : 'bg-muted'}`}>
+              <div className={`max-w-[80%] px-3.5 py-2.5 rounded-2xl ${isOwn ? 'bg-primary text-primary-foreground' : 'bg-muted'}`}>
                 <p className="text-sm leading-relaxed break-words">{msg.content}</p>
               </div>
               {isLastInRun && (
@@ -161,6 +168,8 @@ export default function Chat() {
           placeholder="Message the team…"
           className="flex-1 bg-muted rounded-full px-4 py-2 text-sm outline-none"
           autoComplete="off"
+          onFocus={() => window.dispatchEvent(new CustomEvent('chat-keyboard', { detail: true }))}
+          onBlur={() => window.dispatchEvent(new CustomEvent('chat-keyboard', { detail: false }))}
         />
         <Button type="submit" size="icon" disabled={!input.trim()} className="rounded-full flex-shrink-0">
           <Send size={16} />
