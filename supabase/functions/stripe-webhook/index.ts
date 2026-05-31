@@ -33,7 +33,6 @@ Deno.serve(async (req) => {
       const setupIntent = await stripe.setupIntents.retrieve(session.setup_intent as string)
       const paymentMethodId = setupIntent.payment_method as string
 
-      // Set as default payment method on the Stripe customer
       await stripe.customers.update(session.customer as string, {
         invoice_settings: { default_payment_method: paymentMethodId },
       })
@@ -46,22 +45,42 @@ Deno.serve(async (req) => {
 
     if (event.type === 'payment_intent.succeeded') {
       const pi = event.data.object as Stripe.PaymentIntent
-      const { unit_id, period_label, months } = pi.metadata ?? {}
-      if (unit_id && period_label) {
+      const { tenancy_id, unit_id, period_label } = pi.metadata ?? {}
+
+      if (period_label) {
         const labels = period_label.split(',').map((l: string) => l.trim()).filter(Boolean)
         const perMonth = labels.length > 1 ? pi.amount / 100 / labels.length : pi.amount / 100
-        await supabase.from('storage_payments').upsert(
-          labels.map((label: string) => ({ unit_id, period_label: label, paid_at: new Date().toISOString(), amount: perMonth })),
-          { onConflict: 'unit_id,period_label' }
-        )
+
+        // Resolve tenancy_id — prefer explicit, fall back to looking up active tenancy by unit_id
+        let resolvedTenancyId = tenancy_id || null
+        if (!resolvedTenancyId && unit_id) {
+          const { data: t } = await supabase
+            .from('storage_tenancies')
+            .select('id')
+            .eq('unit_id', unit_id)
+            .is('end_date', null)
+            .maybeSingle()
+          resolvedTenancyId = t?.id ?? null
+        }
+
+        if (resolvedTenancyId) {
+          await supabase.from('storage_payments').upsert(
+            labels.map((label: string) => ({
+              tenancy_id: resolvedTenancyId,
+              period_label: label,
+              paid_at: new Date().toISOString(),
+              amount: perMonth,
+            })),
+            { onConflict: 'tenancy_id,period_label' }
+          )
+        }
       }
     }
 
     if (event.type === 'payment_intent.payment_failed') {
       const pi = event.data.object as Stripe.PaymentIntent
-      const { unit_id } = pi.metadata ?? {}
-      console.error(`Charge failed for unit ${unit_id}: ${pi.last_payment_error?.message}`)
-      // Future: push notification to admin
+      const { unit_id, tenancy_id } = pi.metadata ?? {}
+      console.error(`Charge failed for unit ${unit_id ?? ''} tenancy ${tenancy_id ?? ''}: ${pi.last_payment_error?.message}`)
     }
 
     return new Response(JSON.stringify({ received: true }), {

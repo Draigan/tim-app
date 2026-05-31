@@ -23,8 +23,8 @@ function lastDayOfCurrentMonth(): number {
   return new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
 }
 
-async function chargeUnit(unit: any, period: string) {
-  const customer = unit.customers as { stripe_customer_id: string | null; stripe_payment_method_id: string | null } | null
+async function chargeUnit(tenancy: any, period: string) {
+  const customer = tenancy.customers as { stripe_customer_id: string | null; stripe_payment_method_id: string | null } | null
   if (!customer?.stripe_payment_method_id || !customer?.stripe_customer_id) {
     return { status: 'skipped', reason: 'no_card' }
   }
@@ -32,25 +32,30 @@ async function chargeUnit(unit: any, period: string) {
   const { data: existing } = await supabase
     .from('storage_payments')
     .select('id')
-    .eq('unit_id', unit.id)
+    .eq('tenancy_id', tenancy.id)
     .eq('period_label', period)
     .maybeSingle()
 
   if (existing) return { status: 'skipped', reason: 'already_paid' }
 
   const pi = await stripe.paymentIntents.create({
-    amount: Math.round(unit.monthly_rate * 100),
+    amount: Math.round(tenancy.monthly_rate * 100),
     currency: 'cad',
     customer: customer.stripe_customer_id,
     payment_method: customer.stripe_payment_method_id,
     off_session: true,
     confirm: true,
-    metadata: { unit_id: unit.id, period_label: period, unit_number: unit.unit_number },
+    metadata: {
+      unit_id: tenancy.unit_id,
+      tenancy_id: tenancy.id,
+      period_label: period,
+      unit_number: tenancy.unit_number ?? '',
+    },
   })
 
   await supabase.from('storage_payments').upsert(
-    { unit_id: unit.id, period_label: period, paid_at: new Date().toISOString(), amount: pi.amount / 100 },
-    { onConflict: 'unit_id,period_label' }
+    { tenancy_id: tenancy.id, period_label: period, paid_at: new Date().toISOString(), amount: pi.amount / 100 },
+    { onConflict: 'tenancy_id,period_label' }
   )
 
   return { status: 'charged' }
@@ -65,31 +70,35 @@ Deno.serve(async (req) => {
 
     // ── single unit charge (manual "Charge now" or one-time) ─────────────────
     if (body.unit_id) {
-      const { data: unit, error } = await supabase
-        .from('storage_units')
-        .select('id, unit_number, monthly_rate, customer_id, customers(stripe_customer_id, stripe_payment_method_id)')
-        .eq('id', body.unit_id)
-        .single()
+      // Look up the active tenancy for this unit
+      const { data: tenancy, error } = await supabase
+        .from('storage_tenancies')
+        .select('*, customers(stripe_customer_id, stripe_payment_method_id), storage_units(unit_number)')
+        .eq('unit_id', body.unit_id)
+        .is('end_date', null)
+        .maybeSingle()
 
-      if (error || !unit) return new Response(JSON.stringify({ error: 'unit not found' }), { status: 404, headers: CORS })
-      if (!unit.monthly_rate) return new Response(JSON.stringify({ error: 'no rate set' }), { status: 400, headers: CORS })
+      if (error || !tenancy) return new Response(JSON.stringify({ error: 'no active tenancy for unit' }), { status: 404, headers: CORS })
+      if (!tenancy.monthly_rate) return new Response(JSON.stringify({ error: 'no rate set' }), { status: 400, headers: CORS })
+
+      // Flatten unit_number for metadata
+      tenancy.unit_number = (tenancy.storage_units as any)?.unit_number ?? ''
 
       const months: number = body.months && body.months > 1 ? Math.min(body.months, 24) : 1
 
       if (months === 1) {
-        const result = await chargeUnit(unit, period)
+        const result = await chargeUnit(tenancy, period)
         return new Response(JSON.stringify({ ok: true, period, ...result }), {
           headers: { ...CORS, 'Content-Type': 'application/json' },
         })
       }
 
       // Multi-month one-time charge
-      const customer = unit.customers as { stripe_customer_id: string | null; stripe_payment_method_id: string | null } | null
+      const customer = tenancy.customers as { stripe_customer_id: string | null; stripe_payment_method_id: string | null } | null
       if (!customer?.stripe_payment_method_id || !customer?.stripe_customer_id) {
         return new Response(JSON.stringify({ status: 'skipped', reason: 'no_card' }), { headers: CORS })
       }
 
-      // Find the next N unpaid periods starting from current period
       const [y, m] = period.split('-').map(Number)
       const candidatePeriods = Array.from({ length: months + 24 }, (_, i) => {
         return new Date(y, m - 1 + i, 1).toISOString().slice(0, 7)
@@ -98,31 +107,42 @@ Deno.serve(async (req) => {
       const { data: existing } = await supabase
         .from('storage_payments')
         .select('period_label')
-        .eq('unit_id', unit.id)
+        .eq('tenancy_id', tenancy.id)
         .in('period_label', candidatePeriods)
 
       const paidSet = new Set((existing ?? []).map((p: any) => p.period_label))
       const unpaidPeriods = candidatePeriods.filter(p => !paidSet.has(p)).slice(0, months)
 
       if (unpaidPeriods.length === 0) {
-        return new Response(JSON.stringify({ ok: true, status: 'skipped', reason: 'already_paid', periods }), {
+        return new Response(JSON.stringify({ ok: true, status: 'skipped', reason: 'already_paid', periods: [] }), {
           headers: { ...CORS, 'Content-Type': 'application/json' },
         })
       }
 
       const extraAmount = typeof body.extra_amount === 'number' ? body.extra_amount : 0
       const pi = await stripe.paymentIntents.create({
-        amount: Math.round((unit.monthly_rate * unpaidPeriods.length + extraAmount) * 100),
+        amount: Math.round((tenancy.monthly_rate * unpaidPeriods.length + extraAmount) * 100),
         currency: 'cad',
         customer: customer.stripe_customer_id,
         payment_method: customer.stripe_payment_method_id,
         off_session: true,
         confirm: true,
-        metadata: { unit_id: unit.id, period_label: unpaidPeriods.join(','), unit_number: unit.unit_number, months: String(unpaidPeriods.length) },
+        metadata: {
+          unit_id: tenancy.unit_id,
+          tenancy_id: tenancy.id,
+          period_label: unpaidPeriods.join(','),
+          unit_number: tenancy.unit_number ?? '',
+          months: String(unpaidPeriods.length),
+        },
       })
 
-      const inserts = unpaidPeriods.map(p => ({ unit_id: unit.id, period_label: p, paid_at: new Date().toISOString(), amount: pi.amount / 100 / unpaidPeriods.length }))
-      await supabase.from('storage_payments').upsert(inserts, { onConflict: 'unit_id,period_label' })
+      const inserts = unpaidPeriods.map(p => ({
+        tenancy_id: tenancy.id,
+        period_label: p,
+        paid_at: new Date().toISOString(),
+        amount: pi.amount / 100 / unpaidPeriods.length,
+      }))
+      await supabase.from('storage_payments').upsert(inserts, { onConflict: 'tenancy_id,period_label' })
 
       return new Response(JSON.stringify({ ok: true, status: 'charged', periods: unpaidPeriods }), {
         headers: { ...CORS, 'Content-Type': 'application/json' },
@@ -142,25 +162,27 @@ Deno.serve(async (req) => {
     const todayDay = new Date().getDate()
     const lastDay  = lastDayOfCurrentMonth()
 
-    const { data: units, error } = await supabase
-      .from('storage_units')
-      .select('id, unit_number, monthly_rate, billing_day, customer_id, customers(stripe_customer_id, stripe_payment_method_id)')
+    const { data: tenancies, error } = await supabase
+      .from('storage_tenancies')
+      .select('*, customers(stripe_customer_id, stripe_payment_method_id), storage_units(unit_number)')
       .eq('payment_frequency', 'monthly')
       .not('monthly_rate', 'is', null)
       .not('customer_id', 'is', null)
+      .is('end_date', null)
 
     if (error) throw error
 
-    const due = (units ?? []).filter(u => Math.min(u.billing_day, lastDay) === todayDay)
+    const due = (tenancies ?? []).filter(t => Math.min(t.billing_day, lastDay) === todayDay)
     const results = { charged: 0, skipped: 0, failed: 0 }
 
-    for (const unit of due) {
+    for (const tenancy of due) {
+      tenancy.unit_number = (tenancy.storage_units as any)?.unit_number ?? ''
       try {
-        const { status } = await chargeUnit(unit, period)
+        const { status } = await chargeUnit(tenancy, period)
         if (status === 'charged') results.charged++
         else results.skipped++
       } catch (err) {
-        console.error(`Failed to charge unit ${unit.unit_number}:`, err)
+        console.error(`Failed to charge tenancy ${tenancy.id}:`, err)
         results.failed++
       }
     }

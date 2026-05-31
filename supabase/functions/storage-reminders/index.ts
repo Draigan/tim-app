@@ -22,7 +22,6 @@ function lastDayOf(year: number, month0: number): number {
   return new Date(year, month0 + 1, 0).getDate()
 }
 
-// Positive = days overdue, 0 = due today, negative = not due yet
 function daysOverdue(billingDay: number): number {
   const today = new Date()
   const todayDate = today.getDate()
@@ -44,7 +43,6 @@ function shouldSend(overdue: number, settings: Record<string, any>): boolean {
   return false
 }
 
-// Returns all expected periods from move-in to current, newest first
 function generatePeriods(billingDay: number, moveInDate: string | null): string[] {
   const current = currentPeriodLabel(billingDay)
   if (!moveInDate) return [current]
@@ -57,7 +55,6 @@ function generatePeriods(billingDay: number, moveInDate: string | null): string[
     periods.push(`${y}-${String(m + 1).padStart(2, '0')}`)
     if (--m < 0) { m = 11; y-- }
   }
-  // Only include periods whose billing date falls on or after move-in
   const moveIn = new Date(sy, sm, sd)
   return periods.filter(p => {
     const [py, pm] = p.split('-').map(Number)
@@ -130,10 +127,7 @@ Deno.serve(async (req) => {
 
   try {
     const { data: settings } = await supabase
-      .from('sms_settings')
-      .select('*')
-      .eq('id', 1)
-      .single()
+      .from('sms_settings').select('*').eq('id', 1).single()
 
     if (!settings?.enabled) {
       return new Response(JSON.stringify({ ok: true, skipped: 'disabled' }), { headers: { 'Content-Type': 'application/json' } })
@@ -141,38 +135,36 @@ Deno.serve(async (req) => {
 
     const today = new Date().toISOString().slice(0, 10)
 
-    // Avoid duplicate sends — one reminder per unit per day
     const { data: todayLogs } = await supabase
-      .from('sms_reminder_log')
-      .select('ref_id')
-      .eq('sent_date', today)
+      .from('sms_reminder_log').select('ref_id').eq('sent_date', today)
 
     const sentToday = new Set((todayLogs ?? []).map((l: any) => l.ref_id))
 
     let sent = 0
     const errors: string[] = []
 
-    // ── Fixed units ──────────────────────────────────────────────────────────
-    const { data: units } = await supabase
-      .from('storage_units')
-      .select('id, unit_number, tenant_name, tenant_phone, billing_day, monthly_rate, move_in_date')
+    // ── Fixed units — query active tenancies directly ────────────────────────
+    const { data: tenancies } = await supabase
+      .from('storage_tenancies')
+      .select('id, unit_id, tenant_name, tenant_phone, billing_day, monthly_rate, move_in_date, storage_units(unit_number)')
       .eq('payment_frequency', 'monthly')
       .not('billing_day', 'is', null)
       .not('tenant_phone', 'is', null)
       .not('tenant_name', 'is', null)
+      .is('end_date', null)
 
-    for (const unit of units ?? []) {
-      if (sentToday.has(unit.id)) continue
+    for (const tenancy of tenancies ?? []) {
+      if (sentToday.has(tenancy.unit_id)) continue
 
-      const overdue = daysOverdue(unit.billing_day)
+      const overdue = daysOverdue(tenancy.billing_day)
       if (!shouldSend(overdue, settings)) continue
 
-      const expectedPeriods = generatePeriods(unit.billing_day, unit.move_in_date)
+      const expectedPeriods = generatePeriods(tenancy.billing_day, tenancy.move_in_date)
 
       const { data: payments } = await supabase
         .from('storage_payments')
         .select('period_label')
-        .eq('unit_id', unit.id)
+        .eq('tenancy_id', tenancy.id)
         .in('period_label', expectedPeriods)
 
       const paidSet = new Set((payments ?? []).map((p: any) => p.period_label))
@@ -180,28 +172,29 @@ Deno.serve(async (req) => {
 
       if (unpaidPeriods.length === 0) continue
 
+      const unitNumber = (tenancy.storage_units as any)?.unit_number ?? tenancy.unit_id
       const message = buildMessage(
-        unit.tenant_name,
-        'storage unit',
+        tenancy.tenant_name,
+        `storage unit ${unitNumber}`,
         unpaidPeriods,
-        unit.monthly_rate,
+        tenancy.monthly_rate,
         overdue,
         settings.business_name
       )
 
       try {
-        await sendTwilio(unit.tenant_phone, message)
+        await sendTwilio(tenancy.tenant_phone, message)
         await supabase.from('sms_reminder_log').insert({
-          ref_id: unit.id, unit_type: 'fixed', phone: unit.tenant_phone,
+          ref_id: tenancy.unit_id, unit_type: 'fixed', phone: tenancy.tenant_phone,
           sent_date: today, days_overdue: overdue, message,
         })
         sent++
       } catch (e) {
-        errors.push(`unit ${unit.unit_number}: ${e}`)
+        errors.push(`unit ${unitNumber}: ${e}`)
       }
     }
 
-    // ── Portable units ───────────────────────────────────────────────────────
+    // ── Portable units (unchanged) ───────────────────────────────────────────
     const { data: rentals } = await supabase
       .from('portable_storage_rentals')
       .select('asset_id, tenant_name, tenant_phone, billing_day, monthly_rate, move_in_date, assets(label)')
@@ -230,7 +223,6 @@ Deno.serve(async (req) => {
       if (unpaidPeriods.length === 0) continue
 
       const label = (rental.assets as any)?.label ?? 'portable unit'
-
       const message = buildMessage(
         rental.tenant_name,
         'portable storage',

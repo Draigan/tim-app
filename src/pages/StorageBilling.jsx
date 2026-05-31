@@ -61,7 +61,6 @@ function ordinal(n) {
 // ─── sub-components ───────────────────────────────────────────────────────────
 
 function StatusHero({ behindCount, monthlyRate, history, billingDay }) {
-  const current = currentPeriodLabel(billingDay)
   const lastPaid = history[0]
 
   if (behindCount === 0 && history.length > 0) {
@@ -113,7 +112,6 @@ function StatusHero({ behindCount, monthlyRate, history, billingDay }) {
 
 function PaymentTimeline({ periods, paidSet, billingDay }) {
   const current = currentPeriodLabel(billingDay)
-  // Include future paid periods not in the normal range
   const futurePaid = [...paidSet].filter(p => p > current && !periods.includes(p)).sort()
   const all = [...[...periods].reverse(), ...futurePaid]
   if (!all.length) return null
@@ -152,7 +150,8 @@ export default function StorageBilling() {
   const { unitId } = useParams()
   const navigate   = useNavigate()
 
-  const [unit, setUnit]           = useState(null)
+  const [unit, setUnit]           = useState(null)   // unit_number only
+  const [tenancy, setTenancy]     = useState(null)   // active tenancy row
   const [history, setHistory]     = useState([])
   const [loading, setLoading]     = useState(true)
   const [freqTab, setFreqTab]     = useState('monthly')
@@ -162,20 +161,36 @@ export default function StorageBilling() {
   const [payingAll, setPayingAll] = useState(false)
 
   const fetchUnit = useCallback(async () => {
-    const [{ data: u }, { data: payments }] = await Promise.all([
-      supabase.from('storage_units')
+    const [{ data: u }, { data: t }] = await Promise.all([
+      supabase.from('storage_units').select('id, unit_number').eq('id', unitId).single(),
+      supabase.from('storage_tenancies')
         .select('*, customers(name, stripe_payment_method_id)')
-        .eq('id', unitId).single(),
-      supabase.from('storage_payments')
-        .select('*').eq('unit_id', unitId).order('period_label', { ascending: false }),
+        .eq('unit_id', unitId)
+        .is('end_date', null)
+        .maybeSingle(),
     ])
-    if (u) { setUnit(u); setFreqTab(u.payment_frequency === 'one_time' ? 'one_time' : 'monthly') }
-    if (payments) setHistory(payments)
+
+    if (u) setUnit(u)
+    if (t) {
+      setTenancy(t)
+      setFreqTab(t.payment_frequency === 'one_time' ? 'one_time' : 'monthly')
+
+      const { data: payments } = await supabase
+        .from('storage_payments')
+        .select('*')
+        .eq('tenancy_id', t.id)
+        .order('period_label', { ascending: false })
+      if (payments) setHistory(payments)
+    } else {
+      setTenancy(null)
+      setHistory([])
+    }
+
     setLoading(false)
   }, [unitId])
 
   useEffect(() => { fetchUnit() }, [fetchUnit])
-  useRealtime(['storage_payments'], fetchUnit)
+  useRealtime(['storage_payments', 'storage_tenancies'], fetchUnit)
 
   if (loading || !unit) return (
     <div className="h-full flex flex-col">
@@ -187,20 +202,32 @@ export default function StorageBilling() {
     </div>
   )
 
-  const hasCard       = !!unit.customers?.stripe_payment_method_id
-  const periods       = generatePeriods(unit.billing_day, unit.move_in_date)
-  const moveInPeriod  = unit.move_in_date ? unit.move_in_date.substring(0, 7) : null
-  const tenancyHistory = moveInPeriod ? history.filter(p => p.period_label >= moveInPeriod) : history
-  const paidSet       = new Set(tenancyHistory.map(p => p.period_label))
+  if (!tenancy) return (
+    <div className="h-full flex flex-col">
+      <div className="px-4 pt-5 pb-3 flex items-center gap-3 border-b">
+        <button onClick={() => navigate('/storage')} className="text-muted-foreground hover:text-foreground transition-colors">
+          <ArrowLeft size={20} />
+        </button>
+        <h1 className="text-lg font-semibold">Unit {unit.unit_number}</h1>
+      </div>
+      <div className="flex-1 flex items-center justify-center">
+        <p className="text-sm text-muted-foreground">No active tenant</p>
+      </div>
+    </div>
+  )
+
+  const hasCard       = !!tenancy.customers?.stripe_payment_method_id
+  const periods       = generatePeriods(tenancy.billing_day, tenancy.move_in_date)
+  const paidSet       = new Set(history.map(p => p.period_label))
   const unpaidPeriods = periods.filter(p => !paidSet.has(p))
   const paidPeriods   = periods.filter(p => paidSet.has(p))
   const behindCount   = unpaidPeriods.length
-  const tenantName    = unit.customers?.name || unit.tenant_name
-  const current       = currentPeriodLabel(unit.billing_day)
+  const tenantName    = tenancy.customers?.name || tenancy.tenant_name
+  const current       = currentPeriodLabel(tenancy.billing_day)
 
   function oneTimePeriods(months) {
     if (months === 0) return []
-    const start = currentPeriodLabel(unit.billing_day)
+    const start = currentPeriodLabel(tenancy.billing_day)
     const [y, m] = start.split('-').map(Number)
     let offset = 0
     while (offset < 100) {
@@ -218,20 +245,20 @@ export default function StorageBilling() {
 
   async function handleMarkOnePaid(period) {
     const { data } = await supabase.from('storage_payments')
-      .upsert({ unit_id: unit.id, period_label: period }, { onConflict: 'unit_id,period_label' })
+      .upsert({ tenancy_id: tenancy.id, period_label: period }, { onConflict: 'tenancy_id,period_label' })
       .select().single()
     if (data) setHistory(prev => [data, ...prev].sort((a, b) => b.period_label.localeCompare(a.period_label)))
   }
 
   async function handleUnmarkPaid(period) {
-    await supabase.from('storage_payments').delete().eq('unit_id', unit.id).eq('period_label', period)
+    await supabase.from('storage_payments').delete().eq('tenancy_id', tenancy.id).eq('period_label', period)
     setHistory(prev => prev.filter(p => p.period_label !== period))
   }
 
   async function handlePayAll() {
     setPayingAll(true)
-    const inserts = unpaidPeriods.map(p => ({ unit_id: unit.id, period_label: p }))
-    const { data } = await supabase.from('storage_payments').upsert(inserts, { onConflict: 'unit_id,period_label' }).select()
+    const inserts = unpaidPeriods.map(p => ({ tenancy_id: tenancy.id, period_label: p }))
+    const { data } = await supabase.from('storage_payments').upsert(inserts, { onConflict: 'tenancy_id,period_label' }).select()
     setHistory(prev => [...(data ?? []), ...prev].sort((a, b) => b.period_label.localeCompare(a.period_label)))
     setPayingAll(false)
   }
@@ -240,7 +267,7 @@ export default function StorageBilling() {
     const toMark = oneTimePeriods(oneTimeMonths).filter(p => !p.alreadyPaid).map(p => p.label)
     if (!toMark.length) return
     const { data } = await supabase.from('storage_payments')
-      .upsert(toMark.map(p => ({ unit_id: unit.id, period_label: p })), { onConflict: 'unit_id,period_label' })
+      .upsert(toMark.map(p => ({ tenancy_id: tenancy.id, period_label: p })), { onConflict: 'tenancy_id,period_label' })
       .select()
     setHistory(prev => [...(data ?? []), ...prev].sort((a, b) => b.period_label.localeCompare(a.period_label)))
   }
@@ -252,19 +279,19 @@ export default function StorageBilling() {
       const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-billing-run`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ unit_id: unit.id }),
+        body: JSON.stringify({ unit_id: unitId }),
       })
       const data = await res.json()
       if (data.status === 'charged') {
         const { data: payment } = await supabase.from('storage_payments').select('*')
-          .eq('unit_id', unit.id).eq('period_label', data.period).maybeSingle()
+          .eq('tenancy_id', tenancy.id).eq('period_label', data.period).maybeSingle()
         if (payment) setHistory(prev => [payment, ...prev.filter(p => p.period_label !== data.period)])
       }
     } finally { setCharging(false) }
   }
 
   const extrasTotal = extras.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0)
-  const baseTotal   = (unit.monthly_rate || 0) * oneTimeMonths
+  const baseTotal   = (tenancy.monthly_rate || 0) * oneTimeMonths
   const grandTotal  = baseTotal + extrasTotal
 
   async function handleChargeOneTime() {
@@ -274,12 +301,12 @@ export default function StorageBilling() {
       const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-billing-run`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ unit_id: unit.id, months: oneTimeMonths, extra_amount: extrasTotal }),
+        body: JSON.stringify({ unit_id: unitId, months: oneTimeMonths, extra_amount: extrasTotal }),
       })
       const data = await res.json()
       if (data.status === 'charged' && data.periods) {
         const { data: payments } = await supabase.from('storage_payments').select('*')
-          .eq('unit_id', unit.id).in('period_label', data.periods)
+          .eq('tenancy_id', tenancy.id).in('period_label', data.periods)
         if (payments?.length) setHistory(prev => [...payments, ...prev.filter(p => !data.periods.includes(p.period_label))].sort((a, b) => b.period_label.localeCompare(a.period_label)))
       }
     } finally { setCharging(false) }
@@ -297,24 +324,22 @@ export default function StorageBilling() {
           <h1 className="text-lg font-semibold">Unit {unit.unit_number}</h1>
           {tenantName && <p className="text-xs text-muted-foreground truncate">{tenantName}</p>}
         </div>
-        {unit.monthly_rate && (
-          <p className="text-sm text-muted-foreground flex-shrink-0">${unit.monthly_rate}/mo</p>
+        {tenancy.monthly_rate && (
+          <p className="text-sm text-muted-foreground flex-shrink-0">${tenancy.monthly_rate}/mo</p>
         )}
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
 
-        {/* Status hero */}
         <StatusHero
           behindCount={behindCount}
-          monthlyRate={unit.monthly_rate}
-          history={tenancyHistory}
-          billingDay={unit.billing_day}
+          monthlyRate={tenancy.monthly_rate}
+          history={history}
+          billingDay={tenancy.billing_day}
         />
 
-        {/* Month timeline */}
-        {(periods.length > 0 || tenancyHistory.length > 0) && (
-          <PaymentTimeline periods={periods} paidSet={paidSet} billingDay={unit.billing_day} />
+        {(periods.length > 0 || history.length > 0) && (
+          <PaymentTimeline periods={periods} paidSet={paidSet} billingDay={tenancy.billing_day} />
         )}
 
         {/* Tabs */}
@@ -334,7 +359,6 @@ export default function StorageBilling() {
           periods.length > 0 ? (
             <div className="space-y-4">
 
-              {/* Outstanding */}
               {unpaidPeriods.length > 0 && (
                 <div className="space-y-1">
                   <div className="flex items-center justify-between mb-2">
@@ -350,7 +374,7 @@ export default function StorageBilling() {
                       <div key={period} className={cn('flex items-center justify-between px-4 py-3 text-sm', i < unpaidPeriods.length - 1 && 'border-b border-destructive/20')}>
                         <div>
                           <span className="font-medium">{formatPeriod(period)}</span>
-                          {unit.monthly_rate && <span className="text-xs text-muted-foreground ml-2">${parseFloat(unit.monthly_rate).toFixed(2)}</span>}
+                          {tenancy.monthly_rate && <span className="text-xs text-muted-foreground ml-2">${parseFloat(tenancy.monthly_rate).toFixed(2)}</span>}
                         </div>
                         <div className="flex items-center gap-2">
                           {hasCard && period === current && (
@@ -369,13 +393,12 @@ export default function StorageBilling() {
                 </div>
               )}
 
-              {/* Payment history — current tenancy only */}
-              {tenancyHistory.length > 0 && (
+              {history.length > 0 && (
                 <div className="space-y-1">
                   <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Payment History</p>
                   <div className="rounded-xl border overflow-hidden">
-                    {tenancyHistory.map((payment, i) => (
-                      <div key={payment.id} className={cn('flex items-center justify-between px-4 py-3 text-sm', i < tenancyHistory.length - 1 && 'border-b')}>
+                    {history.map((payment, i) => (
+                      <div key={payment.id} className={cn('flex items-center justify-between px-4 py-3 text-sm', i < history.length - 1 && 'border-b')}>
                         <div className="flex items-center gap-2.5">
                           <CheckCircle2 size={14} className="text-green-500 flex-shrink-0" />
                           <div>
@@ -401,9 +424,9 @@ export default function StorageBilling() {
                 <p className="text-sm text-muted-foreground text-center py-4">No payment periods yet</p>
               )}
             </div>
-          ) : unit.move_in_date ? (
+          ) : tenancy.move_in_date ? (
             <p className="text-sm text-muted-foreground">
-              No payment due yet · first billing {ordinal(unit.billing_day)} of{' '}
+              No payment due yet · first billing {ordinal(tenancy.billing_day)} of{' '}
               {new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1).toLocaleDateString('en-CA', { month: 'long' })}
             </p>
           ) : (
@@ -420,7 +443,7 @@ export default function StorageBilling() {
                   onChange={e => setOneTimeMonths(Math.max(0, parseInt(e.target.value) || 0))} />
               </div>
               <div className="flex-1 pt-5">
-                {oneTimeMonths > 0 && <p className="text-xs text-muted-foreground">${(unit.monthly_rate || 0).toFixed(2)} × {oneTimeMonths}</p>}
+                {oneTimeMonths > 0 && <p className="text-xs text-muted-foreground">${(tenancy.monthly_rate || 0).toFixed(2)} × {oneTimeMonths}</p>}
                 <p className="text-sm font-medium">${baseTotal.toFixed(2)}</p>
               </div>
             </div>
