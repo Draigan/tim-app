@@ -1,11 +1,10 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Plus, Trash2, LogOut, Sun, Moon, MessageSquare, ChevronRight, Bell, BellOff } from 'lucide-react'
+import { Plus, Trash2, LogOut, Sun, Moon, MessageSquare, Bell, BellOff } from 'lucide-react'
 import { ICON_OPTIONS, iconImgUrl } from '@/lib/icons'
 import { useTheme } from '@/lib/theme'
 import { usePushNotifications } from '@/lib/usePushNotifications'
@@ -202,6 +201,128 @@ function UsersPanel() {
   )
 }
 
+function BillingSettingsPanel() {
+  const [enabled, setEnabled] = useState(null)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    supabase.from('billing_settings').select('auto_charge_enabled').eq('id', 1).single()
+      .then(({ data }) => { if (data) setEnabled(data.auto_charge_enabled) })
+  }, [])
+
+  async function toggle() {
+    const next = !enabled
+    setSaving(true)
+    await supabase.from('billing_settings').update({ auto_charge_enabled: next }).eq('id', 1)
+    setEnabled(next)
+    setSaving(false)
+  }
+
+  if (enabled === null) return null
+
+  return (
+    <div>
+      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Billing</p>
+      <div className="bg-card border rounded-xl overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3">
+          <div>
+            <p className="text-sm font-medium">Daily auto-charge</p>
+            <p className="text-xs text-muted-foreground mt-0.5">Automatically charge cards on billing day each month</p>
+          </div>
+          <button
+            onClick={toggle}
+            disabled={saving}
+            className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${enabled ? 'bg-primary' : 'bg-muted'}`}
+          >
+            <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition duration-200 ${enabled ? 'translate-x-5' : 'translate-x-0'}`} />
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SmsSettingsPanel() {
+  const [settings, setSettings] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    supabase.from('sms_settings').select('*').eq('id', 1).single()
+      .then(({ data }) => { if (data) setSettings(data) })
+  }, [])
+
+  async function handleSave() {
+    setSaving(true)
+    await supabase.from('sms_settings').update({
+      enabled:                   settings.enabled,
+      remind_on_due_day:         settings.remind_on_due_day,
+      first_reminder_days_after: Number(settings.first_reminder_days_after),
+      repeat_interval_days:      Number(settings.repeat_interval_days),
+      business_name:             settings.business_name,
+    }).eq('id', 1)
+    setSaving(false)
+    setSaved(true)
+    setTimeout(() => setSaved(false), 2000)
+  }
+
+  if (!settings) return null
+
+  return (
+    <div>
+      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Storage Settings</p>
+      <div className="bg-card border rounded-xl overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3">
+          <div>
+            <p className="text-sm font-medium">SMS Reminders</p>
+            <p className="text-xs text-muted-foreground mt-0.5">Auto-text tenants when payment is overdue</p>
+          </div>
+          <button
+            onClick={() => setSettings(s => ({ ...s, enabled: !s.enabled }))}
+            className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${settings.enabled ? 'bg-primary' : 'bg-muted'}`}
+          >
+            <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition duration-200 ${settings.enabled ? 'translate-x-5' : 'translate-x-0'}`} />
+          </button>
+        </div>
+
+        {settings.enabled && (
+          <div className="px-4 pb-4 space-y-4 border-t pt-4">
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-muted-foreground">Remind on due day</p>
+              <button
+                onClick={() => setSettings(s => ({ ...s, remind_on_due_day: !s.remind_on_due_day }))}
+                className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ${settings.remind_on_due_day ? 'bg-primary' : 'bg-muted'}`}
+              >
+                <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition duration-200 ${settings.remind_on_due_day ? 'translate-x-5' : 'translate-x-0'}`} />
+              </button>
+            </div>
+            <div className="flex gap-3">
+              <div className="flex-1">
+                <p className="text-xs text-muted-foreground mb-1.5">First reminder (days overdue)</p>
+                <Input type="number" min="1" value={settings.first_reminder_days_after}
+                  onChange={e => setSettings(s => ({ ...s, first_reminder_days_after: e.target.value }))} />
+              </div>
+              <div className="flex-1">
+                <p className="text-xs text-muted-foreground mb-1.5">Repeat every (days)</p>
+                <Input type="number" min="1" value={settings.repeat_interval_days}
+                  onChange={e => setSettings(s => ({ ...s, repeat_interval_days: e.target.value }))} />
+              </div>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground mb-1.5">Business name (shown in SMS)</p>
+              <Input value={settings.business_name}
+                onChange={e => setSettings(s => ({ ...s, business_name: e.target.value }))} />
+            </div>
+            <Button className="w-full" disabled={saving} onClick={handleSave}>
+              {saved ? 'Saved!' : saving ? 'Saving…' : 'Save'}
+            </Button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 const HELP = [
   {
     title: 'Adding an Asset',
@@ -264,7 +385,6 @@ function HelpSection({ isAdmin }) {
 
 
 export default function Settings() {
-  const navigate = useNavigate()
   const { dark, toggle } = useTheme()
   const { supported: pushSupported, permission, subscribed, loading: pushLoading, subscribe, unsubscribe } = usePushNotifications()
   const [testingPush, setTestingPush] = useState(false)
@@ -341,33 +461,12 @@ export default function Settings() {
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 pb-8 space-y-6">
-        {isAdmin && (
-          <div className="space-y-2">
-            <button
-              onClick={() => navigate('/asset-manager')}
-              className="w-full text-left bg-primary/10 border border-primary/30 rounded-xl px-4 py-3 flex items-center justify-between hover:bg-primary/15 transition-colors"
-            >
-              <span className="text-sm font-medium text-primary">Asset Manager</span>
-              <ChevronRight size={16} className="text-primary" />
-            </button>
-            <button
-              onClick={() => navigate('/history')}
-              className="w-full text-left bg-primary/10 border border-primary/30 rounded-xl px-4 py-3 flex items-center justify-between hover:bg-primary/15 transition-colors"
-            >
-              <span className="text-sm font-medium text-primary">History</span>
-              <ChevronRight size={16} className="text-primary" />
-            </button>
-            <button
-              onClick={() => navigate('/calendar')}
-              className="w-full text-left bg-primary/10 border border-primary/30 rounded-xl px-4 py-3 flex items-center justify-between hover:bg-primary/15 transition-colors"
-            >
-              <span className="text-sm font-medium text-primary">Calendar</span>
-              <ChevronRight size={16} className="text-primary" />
-            </button>
-          </div>
-        )}
 
         {isAdmin && <UsersPanel />}
+
+        {isAdmin && <BillingSettingsPanel />}
+
+        {isAdmin && <SmsSettingsPanel />}
 
         <HelpSection isAdmin={isAdmin} />
 

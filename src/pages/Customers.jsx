@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Search, X, Plus, Phone, Mail, ChevronRight, Pencil, Truck, Warehouse, MapPin } from 'lucide-react'
+import { Search, X, Plus, Phone, Mail, ChevronRight, Pencil, Truck, Trash2, MapPin, Star, CreditCard, CheckCircle2, Send, Eye, EyeOff } from 'lucide-react'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -12,6 +12,13 @@ import { geocodeAddress } from '@/lib/mapbox'
 
 
 const EMPTY_FORM = { name: '', phone: '', email: '', address: '', notes: '' }
+
+function formatPhoneInput(value) {
+  const digits = value.replace(/\D/g, '').slice(0, 10)
+  if (digits.length <= 3) return digits
+  if (digits.length <= 6) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`
+  return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`
+}
 
 // ─── customer card ────────────────────────────────────────────────────────────
 
@@ -44,9 +51,17 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
       ? { name: customer.name ?? '', phone: customer.phone ?? '', email: customer.email ?? '', address: customer.address ?? '', notes: customer.notes ?? '' }
       : EMPTY_FORM
   )
-  const [active, setActive]   = useState([])
-  const [past, setPast]       = useState([])
+  const [active, setActive]         = useState([])
+  const [past, setPast]             = useState([])
   const [historyLoading, setHistoryLoading] = useState(false)
+  const [storageCount, setStorageCount] = useState(0)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting]     = useState(false)
+  const [savingCard, setSavingCard]     = useState(false)
+  const [cardSaved, setCardSaved]       = useState(!!customer?.stripe_payment_method_id)
+  const [sendingInvite, setSendingInvite] = useState(false)
+  const [inviteSent, setInviteSent]     = useState(false)
+  const [showPin, setShowPin]           = useState(false)
 
   useEffect(() => {
     if (!customer) return
@@ -54,17 +69,28 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
     Promise.all([
       supabase.from('active_deployments').select('*').eq('customer_id', customer.id),
       supabase.from('deployments')
-        .select('id, address, picked_up_at, assets(label, asset_types(name))')
+        .select('id, address, picked_up_at, review_requested_at, assets(label, asset_types(name))')
         .eq('customer_id', customer.id)
         .not('picked_up_at', 'is', null)
         .order('picked_up_at', { ascending: false })
         .limit(10),
-    ]).then(([{ data: a }, { data: p }]) => {
+      supabase.from('storage_units').select('id', { count: 'exact', head: true }).eq('customer_id', customer.id),
+      supabase.from('portable_storage_rentals').select('asset_id', { count: 'exact', head: true }).eq('customer_id', customer.id),
+    ]).then(([{ data: a }, { data: p }, { count: sc }, { count: pc }]) => {
       if (a) setActive(a)
       if (p) setPast(p)
+      setStorageCount((sc ?? 0) + (pc ?? 0))
       setHistoryLoading(false)
     })
   }, [customer?.id])
+
+  async function handleDelete() {
+    setDeleting(true)
+    await supabase.from('customers').delete().eq('id', customer.id)
+    setDeleting(false)
+    onSaved()
+    onClose()
+  }
 
   function set(field, value) {
     setForm(f => ({ ...f, [field]: value }))
@@ -96,7 +122,8 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
       notes:   form.notes.trim()   || null,
     }
     if (isNew) {
-      await supabase.from('customers').insert(payload)
+      const pin = String(Math.floor(1000 + Math.random() * 9000))
+      await supabase.from('customers').insert({ ...payload, pin })
     } else {
       await supabase.from('customers').update(payload).eq('id', customer.id)
     }
@@ -106,11 +133,48 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
     else setEditing(false)
   }
 
+  async function handleSaveCard() {
+    setSavingCard(true)
+    const tab = window.open('', '_blank')
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-setup-session`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customer_id: customer.id, origin: window.location.origin }),
+      })
+      const { url } = await res.json()
+      if (url && tab) tab.location.href = url
+      else if (tab) tab.close()
+    } catch (err) {
+      console.error('stripe-setup-session error:', err)
+      if (tab) tab.close()
+    } finally {
+      setSavingCard(false)
+    }
+  }
+
+  async function handleSendInvite() {
+    setSendingInvite(true)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-card-invite`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customer_id: customer.id }),
+      })
+      setInviteSent(true)
+      setTimeout(() => setInviteSent(false), 3000)
+    } finally {
+      setSendingInvite(false)
+    }
+  }
+
   const title = isNew ? 'New Customer' : customer?.name
 
   return (
     <Sheet open onOpenChange={v => !v && onClose()}>
-      <SheetContent side="bottom" className="max-h-[90vh] overflow-y-auto">
+      <SheetContent side="bottom" className="max-h-[90vh] overflow-y-auto" aria-describedby={undefined}>
         <SheetHeader className="mb-5">
           <SheetTitle className="flex items-center justify-between pr-6">
             <span>{title}</span>
@@ -133,7 +197,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
               </div>
               <div>
                 <p className="text-xs text-muted-foreground mb-1.5">Phone</p>
-                <Input value={form.phone} onChange={e => set('phone', e.target.value)} placeholder="(519) 555-0000" type="tel" />
+                <Input value={form.phone} onChange={e => set('phone', formatPhoneInput(e.target.value))} placeholder="(519) 555-0000" type="tel" />
               </div>
               <div>
                 <p className="text-xs text-muted-foreground mb-1.5">Email</p>
@@ -191,6 +255,35 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
                 </a>
               )}
               {form.notes && <p className="text-sm text-muted-foreground">{form.notes}</p>}
+              {customer?.pin && (
+                <button onClick={() => setShowPin(v => !v)} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
+                  PIN <span className="font-mono font-semibold text-foreground tracking-widest">{showPin ? customer.pin : '••••'}</span>
+                  {showPin ? <EyeOff size={11} /> : <Eye size={11} />}
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Card on file */}
+          {!isNew && !editing && (
+            <div className="flex items-center gap-2 flex-wrap">
+              {cardSaved ? (
+                <div className="flex items-center gap-2 text-sm text-green-600">
+                  <CheckCircle2 size={15} />
+                  Card on file
+                </div>
+              ) : (
+                <Button variant="outline" size="sm" className="gap-2" disabled={savingCard} onClick={handleSaveCard}>
+                  <CreditCard size={14} />
+                  {savingCard ? 'Opening…' : 'Save card'}
+                </Button>
+              )}
+              {form.phone && (
+                <Button variant="outline" size="sm" className="gap-2" disabled={sendingInvite} onClick={handleSendInvite}>
+                  <Send size={14} />
+                  {inviteSent ? 'Sent!' : sendingInvite ? 'Sending…' : 'Send card invite'}
+                </Button>
+              )}
             </div>
           )}
 
@@ -222,13 +315,16 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
                     {past.map(d => (
                       <div key={d.id} className="flex items-center gap-3 bg-card border rounded-xl px-4 py-3 opacity-60">
                         <Truck size={14} className="text-muted-foreground flex-shrink-0" />
-                        <div className="min-w-0">
+                        <div className="min-w-0 flex-1">
                           <p className="text-sm font-medium">
                             {d.assets?.label}
                             <span className="font-normal text-muted-foreground"> · {d.assets?.asset_types?.name}</span>
                           </p>
                           <p className="text-xs text-muted-foreground truncate">{d.address}</p>
                         </div>
+                        {d.review_requested_at && (
+                          <Star size={13} className="text-yellow-500 fill-yellow-500 flex-shrink-0" title="Review requested" />
+                        )}
                       </div>
                     ))}
                   </div>
@@ -240,6 +336,33 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
 
           {!isNew && !historyLoading && active.length === 0 && past.length === 0 && (
             <p className="text-xs text-muted-foreground text-center py-4">No deployments yet</p>
+          )}
+
+          {!isNew && !editing && !historyLoading && (
+            confirmDelete ? (
+              <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-4 space-y-3">
+                <p className="text-sm font-medium">Delete {customer.name}?</p>
+                <p className="text-xs text-muted-foreground">Their contact info will be removed. Deployment history is kept.</p>
+                <div className="flex gap-2">
+                  <Button variant="outline" className="flex-1" onClick={() => setConfirmDelete(false)}>Cancel</Button>
+                  <Button variant="destructive" className="flex-1" disabled={deleting} onClick={handleDelete}>
+                    {deleting ? 'Deleting…' : 'Delete'}
+                  </Button>
+                </div>
+              </div>
+            ) : active.length > 0 || storageCount > 0 ? (
+              <p className="text-xs text-muted-foreground text-center">
+                Remove active assignments before deleting
+              </p>
+            ) : (
+              <button
+                onClick={() => setConfirmDelete(true)}
+                className="w-full flex items-center justify-center gap-2 text-sm text-muted-foreground hover:text-destructive transition-colors py-2"
+              >
+                <Trash2 size={14} />
+                Delete customer
+              </button>
+            )
           )}
 
         </div>

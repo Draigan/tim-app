@@ -15,7 +15,9 @@ import Chat from '@/pages/Chat'
 import Calendar from '@/pages/Calendar'
 import AssetManager from '@/pages/AssetManager'
 import Storage from '@/pages/Storage'
+import StorageBilling from '@/pages/StorageBilling'
 import Customers from '@/pages/Customers'
+import ReviewRequest from '@/pages/ReviewRequest'
 
 export default function App() {
   const [session, setSession] = useState(undefined)
@@ -55,7 +57,9 @@ export default function App() {
           <Route path="/settings" element={<Settings />} />
           <Route path="/asset-manager" element={<AssetManager />} />
           <Route path="/storage" element={<Storage />} />
+          <Route path="/storage/:unitId/billing" element={<StorageBilling />} />
           <Route path="/customers" element={<Customers />} />
+          <Route path="/review-request" element={<ReviewRequest />} />
         </Route>
       </Routes>
     </BrowserRouter>
