@@ -7,15 +7,32 @@ entrypoint = "./functions/admin-users/index.ts"
 
 [functions.push-subscribe]
 enabled = true
-verify_jwt = false
+verify_jwt = true
 import_map = "./functions/push-subscribe/deno.json"
 entrypoint = "./functions/push-subscribe/index.ts"
 
 [functions.send-push]
 enabled = true
-verify_jwt = false
+verify_jwt = true
 import_map = "./functions/send-push/deno.json"
 entrypoint = "./functions/send-push/index.ts"
+
+[functions.send-sms]
+enabled = true
+verify_jwt = true
+import_map = "./functions/send-sms/deno.json"
+entrypoint = "./functions/send-sms/index.ts"
+
+[functions.send-review-request]
+enabled = true
+verify_jwt = true
+entrypoint = "./functions/send-review-request/index.ts"
+
+[functions.send-card-invite]
+enabled = true
+verify_jwt = true
+import_map = "./functions/send-card-invite/deno.json"
+entrypoint = "./functions/send-card-invite/index.ts"
 
 [functions.daily-alerts]
 enabled = true
@@ -28,3 +45,21 @@ enabled = true
 verify_jwt = false
 import_map = "./functions/storage-reminders/deno.json"
 entrypoint = "./functions/storage-reminders/index.ts"
+
+[functions.stripe-billing-run]
+enabled = true
+verify_jwt = false
+import_map = "./functions/stripe-billing-run/deno.json"
+entrypoint = "./functions/stripe-billing-run/index.ts"
+
+[functions.stripe-setup-session]
+enabled = true
+verify_jwt = true
+import_map = "./functions/stripe-setup-session/deno.json"
+entrypoint = "./functions/stripe-setup-session/index.ts"
+
+[functions.stripe-webhook]
+enabled = true
+verify_jwt = false
+import_map = "./functions/stripe-webhook/deno.json"
+entrypoint = "./functions/stripe-webhook/index.ts"

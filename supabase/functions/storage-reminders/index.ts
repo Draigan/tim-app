@@ -7,30 +7,98 @@ const supabase = createClient(
 )
 
 const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+const BUSINESS_TIME_ZONE = 'America/Toronto'
 
-function currentPeriodLabel(billingDay: number): string {
-  const today = new Date()
-  const effectiveDay = Math.min(billingDay, lastDayOf(today.getFullYear(), today.getMonth()))
-  if (today.getDate() >= effectiveDay) {
-    return today.toISOString().slice(0, 7)
-  }
-  const d = new Date(today.getFullYear(), today.getMonth() - 1, 1)
-  return d.toISOString().slice(0, 7)
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'content-type, x-storage-reminders-cron-secret',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
-function lastDayOf(year: number, month0: number): number {
-  return new Date(year, month0 + 1, 0).getDate()
+const json = (data: unknown, status = 200) =>
+  new Response(JSON.stringify(data), {
+    status,
+    headers: { ...CORS, 'Content-Type': 'application/json' },
+  })
+
+function constantTimeEqual(a: string, b: string): boolean {
+  const encoder = new TextEncoder()
+  const left = encoder.encode(a)
+  const right = encoder.encode(b)
+  let diff = left.length ^ right.length
+  const length = Math.max(left.length, right.length)
+
+  for (let i = 0; i < length; i++) {
+    diff |= (left[i] ?? 0) ^ (right[i] ?? 0)
+  }
+
+  return diff === 0
+}
+
+function authorizeCron(req: Request): Response | null {
+  const expected = Deno.env.get('STORAGE_REMINDERS_CRON_SECRET')?.trim()
+  if (!expected) return json({ error: 'Storage reminders cron secret is not configured.' }, 500)
+
+  const supplied = req.headers.get('x-storage-reminders-cron-secret')?.trim() ?? ''
+  if (!supplied || !constantTimeEqual(supplied, expected)) {
+    return json({ error: 'Forbidden' }, 403)
+  }
+
+  return null
+}
+
+function todayParts(): { year: number; month: number; day: number } {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: BUSINESS_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date())
+
+  const value = (type: string) => Number(parts.find(p => p.type === type)?.value)
+  return { year: value('year'), month: value('month'), day: value('day') }
+}
+
+function periodLabel(year: number, month: number): string {
+  return `${year}-${String(month).padStart(2, '0')}`
+}
+
+function dateLabel(year: number, month: number, day: number): string {
+  return `${periodLabel(year, month)}-${String(day).padStart(2, '0')}`
+}
+
+function addMonths(year: number, month: number, offset: number): { year: number; month: number } {
+  const d = new Date(Date.UTC(year, month - 1 + offset, 1))
+  return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1 }
+}
+
+function currentPeriodLabel(billingDay: number): string {
+  const today = todayParts()
+  const effectiveDay = Math.min(billingDay, lastDayOf(today.year, today.month))
+  if (today.day >= effectiveDay) {
+    return periodLabel(today.year, today.month)
+  }
+  const prev = addMonths(today.year, today.month, -1)
+  return periodLabel(prev.year, prev.month)
+}
+
+function lastDayOf(year: number, month: number): number {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate()
 }
 
 function daysOverdue(billingDay: number): number {
-  const today = new Date()
-  const todayDate = today.getDate()
-  const effectiveDay = Math.min(billingDay, lastDayOf(today.getFullYear(), today.getMonth()))
-  const dueDate = todayDate >= effectiveDay
-    ? new Date(today.getFullYear(), today.getMonth(), effectiveDay)
-    : new Date(today.getFullYear(), today.getMonth() - 1, Math.min(billingDay, lastDayOf(today.getFullYear(), today.getMonth() - 1)))
-  const todayMidnight = new Date(today.getFullYear(), today.getMonth(), todayDate)
-  return Math.floor((todayMidnight.getTime() - dueDate.getTime()) / 86400000)
+  const today = todayParts()
+  const effectiveDay = Math.min(billingDay, lastDayOf(today.year, today.month))
+  const due = today.day >= effectiveDay
+    ? { year: today.year, month: today.month, day: effectiveDay }
+    : (() => {
+        const prev = addMonths(today.year, today.month, -1)
+        return { ...prev, day: Math.min(billingDay, lastDayOf(prev.year, prev.month)) }
+      })()
+
+  const todayUtc = Date.UTC(today.year, today.month - 1, today.day)
+  const dueUtc = Date.UTC(due.year, due.month - 1, due.day)
+  return Math.floor((todayUtc - dueUtc) / 86400000)
 }
 
 function shouldSend(overdue: number, settings: Record<string, any>): boolean {
@@ -43,22 +111,27 @@ function shouldSend(overdue: number, settings: Record<string, any>): boolean {
   return false
 }
 
+function isPaidThroughToday(paidThroughDate: string | null | undefined, today: string): boolean {
+  return !!paidThroughDate && paidThroughDate >= today
+}
+
 function generatePeriods(billingDay: number, moveInDate: string | null): string[] {
   const current = currentPeriodLabel(billingDay)
   if (!moveInDate) return [current]
   const [sy, sm_raw, sd] = moveInDate.split('-').map(Number)
-  const sm = sm_raw - 1
+  const sm = sm_raw
   let [y, m] = current.split('-').map(Number)
-  m -= 1
   const periods: string[] = []
   while ((y > sy || (y === sy && m >= sm)) && periods.length < 24) {
-    periods.push(`${y}-${String(m + 1).padStart(2, '0')}`)
-    if (--m < 0) { m = 11; y-- }
+    periods.push(periodLabel(y, m))
+    const prev = addMonths(y, m, -1)
+    y = prev.year
+    m = prev.month
   }
-  const moveIn = new Date(sy, sm, sd)
   return periods.filter(p => {
     const [py, pm] = p.split('-').map(Number)
-    return new Date(py, pm - 1, Math.min(billingDay, lastDayOf(py, pm - 1))) >= moveIn
+    const dueDay = Math.min(billingDay, lastDayOf(py, pm))
+    return dateLabel(py, pm, dueDay) >= moveInDate
   })
 }
 
@@ -123,17 +196,22 @@ async function sendTwilio(to: string, body: string): Promise<void> {
 }
 
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response(null, { headers: { 'Access-Control-Allow-Origin': '*' } })
+  if (req.method === 'OPTIONS') return new Response(null, { headers: CORS })
+  if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405)
+
+  const authorizationError = authorizeCron(req)
+  if (authorizationError) return authorizationError
 
   try {
     const { data: settings } = await supabase
       .from('sms_settings').select('*').eq('id', 1).single()
 
     if (!settings?.enabled) {
-      return new Response(JSON.stringify({ ok: true, skipped: 'disabled' }), { headers: { 'Content-Type': 'application/json' } })
+      return json({ ok: true, skipped: 'disabled' })
     }
 
-    const today = new Date().toISOString().slice(0, 10)
+    const todayLocal = todayParts()
+    const today = dateLabel(todayLocal.year, todayLocal.month, todayLocal.day)
 
     const { data: todayLogs } = await supabase
       .from('sms_reminder_log').select('ref_id').eq('sent_date', today)
@@ -146,7 +224,7 @@ Deno.serve(async (req) => {
     // ── Fixed units — query active tenancies directly ────────────────────────
     const { data: tenancies } = await supabase
       .from('storage_tenancies')
-      .select('id, unit_id, tenant_name, tenant_phone, billing_day, monthly_rate, move_in_date, storage_units(unit_number)')
+      .select('id, unit_id, tenant_name, tenant_phone, billing_day, monthly_rate, move_in_date, paid_through_date, storage_units(unit_number)')
       .eq('payment_frequency', 'monthly')
       .not('billing_day', 'is', null)
       .not('tenant_phone', 'is', null)
@@ -155,6 +233,7 @@ Deno.serve(async (req) => {
 
     for (const tenancy of tenancies ?? []) {
       if (sentToday.has(tenancy.unit_id)) continue
+      if (isPaidThroughToday(tenancy.paid_through_date, today)) continue
 
       const overdue = daysOverdue(tenancy.billing_day)
       if (!shouldSend(overdue, settings)) continue
@@ -244,12 +323,9 @@ Deno.serve(async (req) => {
       }
     }
 
-    return new Response(
-      JSON.stringify({ ok: true, sent, errors }),
-      { headers: { 'Content-Type': 'application/json' } }
-    )
+    return json({ ok: true, sent, errors })
   } catch (err) {
     console.error(err)
-    return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { 'Content-Type': 'application/json' } })
+    return json({ error: String(err) }, 500)
   }
 })

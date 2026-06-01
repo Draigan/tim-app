@@ -6,7 +6,6 @@ import { cn } from '@/lib/utils'
 import { useIsAdmin } from '@/lib/useIsAdmin'
 
 const MORE_ITEMS = [
-  { to: '/customers',      icon: Users,        label: 'Customers',       description: 'Manage customer contacts' },
   { to: '/calendar',       icon: CalendarDays, label: 'Calendar',        description: 'Schedule and reservations' },
   { to: '/asset-manager',  icon: LayoutGrid,   label: 'Asset Manager',   description: 'Add and configure assets' },
   { to: '/history',        icon: History,      label: 'History',         description: 'Deployment history' },
@@ -68,7 +67,7 @@ export default function BottomNav() {
     { to: '/', icon: Map, label: 'Map' },
     { to: '/inventory', icon: Package, label: 'Inventory' },
     ...(isAdmin ? [{ to: '/storage', icon: Warehouse, label: 'Storage' }] : []),
-    ...(!isAdmin ? [{ to: '/customers', icon: Users, label: 'Customers' }] : []),
+    { to: '/customers', icon: Users, label: 'Customers' },
     ...(!isAdmin ? [{ to: '/settings', icon: Settings, label: 'Settings' }] : []),
   ]
 

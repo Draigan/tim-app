@@ -101,15 +101,15 @@ export default function Chat() {
     const user = session?.user
     const senderName = user?.user_metadata?.full_name ?? user?.email ?? 'Unknown'
     const firstName = senderName.split(' ')[0]
-    await supabase.from('messages').insert({
+    const { data: message } = await supabase.from('messages').insert({
       user_id: user.id,
       sender_name: senderName,
       content: text,
-    })
+    }).select('id').single()
     fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-push`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: firstName, body: text, url: '/chat', to_all: true, exclude_user_id: user.id }),
+      body: JSON.stringify({ message_id: message?.id, title: firstName, body: text, url: '/chat', to_all: true, exclude_user_id: user.id }),
     }).catch(() => {})
     inputRef.current?.focus()
   }

@@ -8,8 +8,7 @@ import { Plus, Trash2, LogOut, Sun, Moon, MessageSquare, Bell, BellOff } from 'l
 import { ICON_OPTIONS, iconImgUrl } from '@/lib/icons'
 import { useTheme } from '@/lib/theme'
 import { usePushNotifications } from '@/lib/usePushNotifications'
-
-const ADMIN_EMAILS = ['tim@timberfell.ca']
+import { ADMIN_EMAILS, isAdminUser } from '@/lib/authz'
 
 function validPassword(pw) {
   return pw.length >= 5 && /[A-Z]/.test(pw) && /[0-9]/.test(pw)
@@ -423,7 +422,7 @@ export default function Settings() {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (!session?.user) return
       setCurrentUser(session.user)
-      if (ADMIN_EMAILS.includes(session.user.email)) setIsAdmin(true)
+      setIsAdmin(isAdminUser(session.user))
     })
   }, [])
 

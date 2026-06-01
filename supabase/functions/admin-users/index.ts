@@ -6,7 +6,10 @@ const CORS = {
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
 }
 
-const ADMIN_EMAILS = ['tim@timberfell.ca']
+const ADMIN_EMAILS = (Deno.env.get('ADMIN_EMAILS') ?? 'tim@timberfell.ca')
+  .split(',')
+  .map(email => email.trim().toLowerCase())
+  .filter(Boolean)
 
 const supabaseAdmin = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -14,26 +17,42 @@ const supabaseAdmin = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } }
 )
 
-async function getCallerEmail(req: Request): Promise<string | null> {
+const json = (data: unknown, status = 200) =>
+  new Response(JSON.stringify(data), { status, headers: { ...CORS, 'Content-Type': 'application/json' } })
+
+function userHasAdminRole(user: any): boolean {
+  const appMetadata = user?.app_metadata ?? {}
+  if (appMetadata.role === 'admin') return true
+
+  const roles = appMetadata.roles
+  if (Array.isArray(roles)) return roles.includes('admin')
+  if (roles && typeof roles === 'object') return Boolean(roles.admin)
+
+  return false
+}
+
+async function authorizeAdmin(req: Request): Promise<Response | null> {
   const token = req.headers.get('Authorization')?.replace('Bearer ', '')
-  if (!token) return null
-  const { data: { user } } = await supabaseAdmin.auth.getUser(token)
-  return user?.email ?? null
+  if (!token) return json({ error: 'Unauthorized' }, 401)
+
+  const { data: { user }, error } = await supabaseAdmin.auth.getUser(token)
+  if (error || !user?.email) return json({ error: 'Unauthorized' }, 401)
+
+  if (userHasAdminRole(user) || ADMIN_EMAILS.includes(user.email.toLowerCase())) {
+    return null
+  }
+
+  return json({ error: 'Forbidden' }, 403)
 }
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS })
 
-  const email = await getCallerEmail(req)
-  if (!email || !ADMIN_EMAILS.includes(email)) {
-    return new Response(JSON.stringify({ error: 'Unauthorized' }), { headers: CORS, status: 403 })
-  }
+  const authorizationError = await authorizeAdmin(req)
+  if (authorizationError) return authorizationError
 
   const url = new URL(req.url)
   const action = url.searchParams.get('action')
-
-  const json = (data: unknown, status = 200) =>
-    new Response(JSON.stringify(data), { status, headers: { ...CORS, 'Content-Type': 'application/json' } })
 
   if (req.method === 'GET') {
     const { data: { users }, error } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 })

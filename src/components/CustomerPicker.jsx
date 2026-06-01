@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import { supabase } from '@/lib/supabase'
 import { formatPhone } from '@/lib/utils'
 import { geocodeAddress } from '@/lib/mapbox'
+import { CUSTOMER_SAFE_COLUMNS } from '@/lib/customerFields'
 
 const EMPTY_NEW = { name: '', phone: '', email: '', address: '', notes: '' }
 
@@ -21,7 +22,7 @@ export default function CustomerPicker({ value, onChange }) {
   const addrTimer = useRef(null)
 
   useEffect(() => {
-    supabase.from('customers').select('*').order('name').then(({ data }) => {
+    supabase.from('customers').select(CUSTOMER_SAFE_COLUMNS).order('name').then(({ data }) => {
       if (data) setCustomers(data)
     })
   }, [])
@@ -75,7 +76,7 @@ export default function CustomerPicker({ value, onChange }) {
         address: form.address.trim() || null,
         notes:   form.notes.trim()   || null,
       })
-      .select('*')
+      .select(CUSTOMER_SAFE_COLUMNS)
       .single()
     setCreating(false)
     if (data) {

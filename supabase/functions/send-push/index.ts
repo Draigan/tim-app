@@ -8,6 +8,8 @@ const CORS = {
 }
 
 const ADMIN_EMAIL = 'tim@timberfell.ca'
+const MAX_TITLE_LENGTH = 80
+const MAX_BODY_LENGTH = 180
 
 webpush.setVapidDetails(
   `mailto:${ADMIN_EMAIL}`,
@@ -23,6 +25,23 @@ const supabaseAdmin = createClient(
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { ...CORS, 'Content-Type': 'application/json' } })
+
+function cleanText(value: unknown, maxLength: number): string | null {
+  if (typeof value !== 'string') return null
+  const text = value.trim()
+  if (!text) return null
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text
+}
+
+function safeUrl(value: unknown): string {
+  if (typeof value !== 'string') return '/'
+  if (!value.startsWith('/') || value.startsWith('//')) return '/'
+  return value
+}
+
+function firstName(value: string): string {
+  return value.trim().split(/\s+/)[0] || 'Chat'
+}
 
 async function sendToSubs(subs: any[], payload: string) {
   const results = await Promise.allSettled(
@@ -47,6 +66,44 @@ async function sendToSubs(subs: any[], payload: string) {
   return results.filter(r => r.status === 'fulfilled').length
 }
 
+async function chatPayloadForCaller(userId: string, body: Record<string, unknown>): Promise<string | Response> {
+  const messageId = typeof body.message_id === 'string' ? body.message_id.trim() : ''
+  let message: any = null
+
+  if (messageId) {
+    const { data } = await supabaseAdmin
+      .from('messages')
+      .select('id, user_id, sender_name, content, sent_at')
+      .eq('id', messageId)
+      .eq('user_id', userId)
+      .maybeSingle()
+    message = data
+  } else {
+    const content = cleanText(body.body, 1000)
+    if (!content) return json({ error: 'message_id required' }, 400)
+
+    const since = new Date(Date.now() - 5 * 60 * 1000).toISOString()
+    const { data } = await supabaseAdmin
+      .from('messages')
+      .select('id, user_id, sender_name, content, sent_at')
+      .eq('user_id', userId)
+      .eq('content', content)
+      .gte('sent_at', since)
+      .order('sent_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    message = data
+  }
+
+  if (!message) return json({ error: 'Forbidden' }, 403)
+
+  return JSON.stringify({
+    title: cleanText(firstName(message.sender_name ?? 'Chat'), MAX_TITLE_LENGTH) ?? 'Chat',
+    body: cleanText(message.content, MAX_BODY_LENGTH) ?? 'New message',
+    url: '/chat',
+  })
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS })
 
@@ -55,12 +112,15 @@ Deno.serve(async (req) => {
   const { data: { user } } = await supabaseAdmin.auth.getUser(token)
   if (!user) return json({ error: 'Unauthorized' }, 401)
 
-  const { title, body, url, exclude_user_id, to_all, to_self } = await req.json()
-  if (!title || !body) return json({ error: 'title and body required' }, 400)
+  const requestBody = await req.json()
+  const { title, body, url, exclude_user_id, to_all, to_self } = requestBody
 
-  const payload = JSON.stringify({ title, body, url: url ?? '/' })
+  const cleanedTitle = cleanText(title, MAX_TITLE_LENGTH)
+  const cleanedBody = cleanText(body, MAX_BODY_LENGTH)
 
   if (to_self) {
+    if (!cleanedTitle || !cleanedBody) return json({ error: 'title and body required' }, 400)
+    const payload = JSON.stringify({ title: cleanedTitle, body: cleanedBody, url: safeUrl(url) })
     const { data: subs } = await supabaseAdmin.from('push_subscriptions').select('*').eq('user_id', user.id)
     if (!subs?.length) return json({ ok: true, sent: 0 })
     const sent = await sendToSubs(subs, payload)
@@ -68,14 +128,20 @@ Deno.serve(async (req) => {
   }
 
   if (to_all) {
-    // Send to every subscriber except the sender — used for chat messages
-    let query = supabaseAdmin.from('push_subscriptions').select('*')
-    if (exclude_user_id) query = query.neq('user_id', exclude_user_id)
-    const { data: subs } = await query
+    const payload = await chatPayloadForCaller(user.id, requestBody)
+    if (payload instanceof Response) return payload
+
+    // Broadcast is only for recorded chat messages. Never trust a client-selected exclude target.
+    const { data: subs } = await supabaseAdmin
+      .from('push_subscriptions')
+      .select('*')
+      .neq('user_id', user.id)
     if (!subs?.length) return json({ ok: true, sent: 0 })
     const sent = await sendToSubs(subs, payload)
     return json({ ok: true, sent })
   }
+
+  if (!cleanedTitle || !cleanedBody) return json({ error: 'title and body required' }, 400)
 
   const { data: { users } } = await supabaseAdmin.auth.admin.listUsers({ perPage: 100 })
   const adminUser = users.find(u => u.email === ADMIN_EMAIL)
@@ -83,6 +149,7 @@ Deno.serve(async (req) => {
 
   // Normal mode: notify admin about employee actions
   if (exclude_user_id === adminUser.id) return json({ ok: true, sent: 0 })
+  const payload = JSON.stringify({ title: cleanedTitle, body: cleanedBody, url: safeUrl(url) })
   const { data: subs } = await supabaseAdmin
     .from('push_subscriptions')
     .select('*')

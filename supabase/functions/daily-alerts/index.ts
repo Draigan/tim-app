@@ -15,6 +15,44 @@ const supabase = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } }
 )
 
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'content-type, x-daily-alerts-cron-secret',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+}
+
+const json = (data: unknown, status = 200) =>
+  new Response(JSON.stringify(data), {
+    status,
+    headers: { ...CORS, 'Content-Type': 'application/json' },
+  })
+
+function constantTimeEqual(a: string, b: string): boolean {
+  const encoder = new TextEncoder()
+  const left = encoder.encode(a)
+  const right = encoder.encode(b)
+  let diff = left.length ^ right.length
+  const length = Math.max(left.length, right.length)
+
+  for (let i = 0; i < length; i++) {
+    diff |= (left[i] ?? 0) ^ (right[i] ?? 0)
+  }
+
+  return diff === 0
+}
+
+function authorizeCron(req: Request): Response | null {
+  const expected = Deno.env.get('DAILY_ALERTS_CRON_SECRET')?.trim()
+  if (!expected) return json({ error: 'Daily alerts cron secret is not configured.' }, 500)
+
+  const supplied = req.headers.get('x-daily-alerts-cron-secret')?.trim() ?? ''
+  if (!supplied || !constantTimeEqual(supplied, expected)) {
+    return json({ error: 'Forbidden' }, 403)
+  }
+
+  return null
+}
+
 async function pushToAdmin(title: string, body: string, url: string) {
   const { data: { users } } = await supabase.auth.admin.listUsers({ perPage: 100 })
   const adminUser = users.find(u => u.email === ADMIN_EMAIL)
@@ -50,7 +88,11 @@ function dateStr(d: Date) {
 }
 
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response(null, { headers: { 'Access-Control-Allow-Origin': '*' } })
+  if (req.method === 'OPTIONS') return new Response(null, { headers: CORS })
+  if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405)
+
+  const authorizationError = authorizeCron(req)
+  if (authorizationError) return authorizationError
 
   try {
     const today = new Date()
@@ -96,12 +138,9 @@ Deno.serve(async (req) => {
       )
     }
 
-    return new Response(
-      JSON.stringify({ ok: true, overdue: overdue?.length ?? 0, upcoming: upcoming?.length ?? 0 }),
-      { headers: { 'Content-Type': 'application/json' } }
-    )
+    return json({ ok: true, overdue: overdue?.length ?? 0, upcoming: upcoming?.length ?? 0 })
   } catch (err) {
     console.error(err)
-    return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { 'Content-Type': 'application/json' } })
+    return json({ error: String(err) }, 500)
   }
 })

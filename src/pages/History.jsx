@@ -1,10 +1,17 @@
 import { useEffect, useState, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useRealtime } from '@/lib/useRealtime'
 import { getMarkerColor, formatPhone } from '@/lib/utils'
-import { Search, X, ChevronDown, ChevronUp } from 'lucide-react'
+import { Search, X, ChevronDown, ChevronUp, ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import AssetBottomSheet from '@/components/AssetBottomSheet'
+
+function fmtPeriod(label) {
+  if (!label || !/^\d{4}-\d{2}$/.test(label)) return label || ''
+  const [y, m] = label.split('-').map(Number)
+  return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })
+}
 
 function duration(droppedAt, pickedUpAt) {
   const end = pickedUpAt ? new Date(pickedUpAt) : new Date()
@@ -18,7 +25,8 @@ function fmt(iso) {
 }
 
 export default function History() {
-  const [activeTab, setActiveTab] = useState('deployments') // 'deployments' | 'sms' | 'reviews'
+  const navigate = useNavigate()
+  const [activeTab, setActiveTab] = useState('deployments') // 'deployments' | 'sms' | 'reviews' | 'storage'
 
   // Deployments state
   const [records, setRecords] = useState([])
@@ -44,6 +52,11 @@ export default function History() {
   const [reviews, setReviews] = useState([])
   const [reviewsLoading, setReviewsLoading] = useState(false)
   const [reviewsQuery, setReviewsQuery] = useState('')
+
+  // Storage history state
+  const [storageRecords, setStorageRecords] = useState([])
+  const [storageLoading, setStorageLoading] = useState(false)
+  const [storageQuery, setStorageQuery] = useState('')
 
   const PAGE = 50
 
@@ -93,6 +106,20 @@ export default function History() {
   useEffect(() => {
     if (activeTab === 'reviews' && reviews.length === 0) fetchReviews()
   }, [activeTab, fetchReviews, reviews.length])
+
+  const fetchStorageHistory = useCallback(async () => {
+    setStorageLoading(true)
+    const { data } = await supabase
+      .from('storage_tenancies')
+      .select('id, move_in_date, end_date, monthly_rate, paid_through_date, tenant_name, customers(name), storage_units(id, unit_number), storage_payments(period_label, amount, paid_at)')
+      .order('end_date', { ascending: false, nullsFirst: true })
+    if (data) setStorageRecords(data)
+    setStorageLoading(false)
+  }, [])
+
+  useEffect(() => {
+    if (activeTab === 'storage' && storageRecords.length === 0) fetchStorageHistory()
+  }, [activeTab, fetchStorageHistory, storageRecords.length])
 
   const loadMore = useCallback(async () => {
     setLoadingMore(true)
@@ -151,8 +178,8 @@ export default function History() {
         <h1 className="text-xl font-semibold">History</h1>
       </div>
 
-      <div className="px-4 pb-3 flex gap-2">
-        {[['deployments', 'Deployments'], ['sms', 'SMS Reminders'], ['reviews', 'Reviews']].map(([val, label]) => (
+      <div className="px-4 pb-3 flex gap-2 overflow-x-auto">
+        {[['deployments', 'Deployments'], ['storage', 'Storage'], ['sms', 'SMS'], ['reviews', 'Reviews']].map(([val, label]) => (
           <button key={val} onClick={() => setActiveTab(val)}
             className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${activeTab === val ? 'bg-primary text-primary-foreground border-primary' : 'text-muted-foreground hover:text-foreground'}`}>
             {label}
@@ -423,6 +450,89 @@ export default function History() {
                 Refresh
               </Button>
             )}
+          </div>
+        </>
+      )}
+
+      {activeTab === 'storage' && (
+        <>
+          <div className="px-4 pb-2">
+            <div className="relative">
+              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+              <input
+                type="search"
+                placeholder="Search by unit or tenant…"
+                value={storageQuery}
+                onChange={e => setStorageQuery(e.target.value)}
+                className="w-full rounded-lg border border-input bg-background pl-8 pr-8 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+              />
+              {storageQuery && (
+                <button onClick={() => setStorageQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-4 pb-4">
+            {storageLoading && <p className="text-muted-foreground text-sm mt-8 text-center">Loading…</p>}
+
+            {!storageLoading && storageRecords.length === 0 && (
+              <p className="text-muted-foreground text-sm text-center mt-16">No storage history yet</p>
+            )}
+
+            {!storageLoading && (() => {
+              const q = storageQuery.trim().toLowerCase()
+              const filtered = storageRecords.filter(t => {
+                if (!q) return true
+                const name = t.customers?.name || t.tenant_name || ''
+                const unit = String(t.storage_units?.unit_number || '')
+                return [name, unit].some(f => f.toLowerCase().includes(q))
+              })
+              return (
+                <div className="space-y-2 pb-2">
+                  {filtered.map(t => {
+                    const isActive = !t.end_date
+                    const name = t.customers?.name || t.tenant_name
+                    const unitNum = t.storage_units?.unit_number
+                    const unitId = t.storage_units?.id
+                    const payments = t.storage_payments ?? []
+                    const lastPeriod = [...payments].sort((a, b) => (b.period_label || '').localeCompare(a.period_label || ''))[0]?.period_label
+                    return (
+                      <button
+                        key={t.id}
+                        onClick={() => unitId && navigate(`/storage/${unitId}/billing`)}
+                        className="w-full text-left bg-card border rounded-xl p-4 hover:bg-accent transition-colors"
+                      >
+                        <div className="flex items-start justify-between gap-2 mb-1.5">
+                          <div className="flex items-center gap-2">
+                            <span className="font-semibold">Unit {unitNum}</span>
+                            <span className={`text-xs px-2 py-0.5 rounded-full ${isActive ? 'bg-green-500/10 text-green-700' : 'bg-muted text-muted-foreground'}`}>
+                              {isActive ? 'Active' : 'Ended'}
+                            </span>
+                          </div>
+                          <ChevronRight size={15} className="text-muted-foreground flex-shrink-0 mt-0.5" />
+                        </div>
+                        {name && <p className="text-sm text-muted-foreground">{name}</p>}
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-xs text-muted-foreground">
+                          {t.monthly_rate && <span>${t.monthly_rate}/mo</span>}
+                          <span>{fmt(t.move_in_date)} → {t.end_date ? fmt(t.end_date) : 'Present'}</span>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-0.5 text-xs text-muted-foreground">
+                          <span>{payments.length} payment{payments.length !== 1 ? 's' : ''}{lastPeriod ? ` · last: ${fmtPeriod(lastPeriod)}` : ''}</span>
+                          {isActive && t.paid_through_date && (
+                            <span className="text-green-600">Paid through {fmt(t.paid_through_date)}</span>
+                          )}
+                        </div>
+                      </button>
+                    )
+                  })}
+                  {filtered.length === 0 && q && (
+                    <p className="text-muted-foreground text-sm text-center mt-16">No results for "{storageQuery}"</p>
+                  )}
+                </div>
+              )
+            })()}
           </div>
         </>
       )}

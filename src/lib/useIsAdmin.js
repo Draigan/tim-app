@@ -1,14 +1,25 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabase'
-
-const ADMIN_EMAILS = ['tim@timberfell.ca']
+import { isAdminUser } from './authz'
 
 export function useIsAdmin() {
   const [isAdmin, setIsAdmin] = useState(false)
   useEffect(() => {
+    let mounted = true
+    const applySession = session => {
+      if (mounted) setIsAdmin(isAdminUser(session?.user))
+    }
+
     supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user?.email && ADMIN_EMAILS.includes(session.user.email)) setIsAdmin(true)
+      applySession(session)
     })
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      applySession(session)
+    })
+    return () => {
+      mounted = false
+      subscription.unsubscribe()
+    }
   }, [])
   return isAdmin
 }
