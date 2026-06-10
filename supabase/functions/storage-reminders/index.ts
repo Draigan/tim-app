@@ -86,18 +86,76 @@ function lastDayOf(year: number, month: number): number {
   return new Date(Date.UTC(year, month, 0)).getUTCDate()
 }
 
-function daysOverdue(billingDay: number): number {
-  const today = todayParts()
-  const effectiveDay = Math.min(billingDay, lastDayOf(today.year, today.month))
-  const due = today.day >= effectiveDay
-    ? { year: today.year, month: today.month, day: effectiveDay }
-    : (() => {
-        const prev = addMonths(today.year, today.month, -1)
-        return { ...prev, day: Math.min(billingDay, lastDayOf(prev.year, prev.month)) }
-      })()
+function periodStartForPeriod(period: string, billingDay: number): string | null {
+  if (!/^\d{4}-\d{2}$/.test(period)) return null
+  const [year, month] = period.split('-').map(Number)
+  return dateLabel(year, month, Math.min(billingDay, lastDayOf(year, month)))
+}
 
+function paidThroughForPeriod(period: string, billingDay: number): string | null {
+  if (!/^\d{4}-\d{2}$/.test(period)) return null
+  const [year, month] = period.split('-').map(Number)
+  const next = addMonths(year, month, 1)
+  const nextStartDay = Math.min(billingDay, lastDayOf(next.year, next.month))
+  const paidThrough = new Date(Date.UTC(next.year, next.month - 1, nextStartDay) - 86400000)
+  return dateLabel(paidThrough.getUTCFullYear(), paidThrough.getUTCMonth() + 1, paidThrough.getUTCDate())
+}
+
+function periodLabelForDate(value: string, billingDay: number): string | null {
+  const [year, month, day] = value.split('-').map(Number)
+  if (![year, month, day].every(Number.isFinite)) return null
+  const effectiveDay = Math.min(billingDay, lastDayOf(year, month))
+  if (day >= effectiveDay) return periodLabel(year, month)
+  const prev = addMonths(year, month, -1)
+  return periodLabel(prev.year, prev.month)
+}
+
+function dueDateForPeriod(period: string, billingDay: number, moveInDate: string | null): string | null {
+  const start = periodStartForPeriod(period, billingDay)
+  const end = paidThroughForPeriod(period, billingDay)
+  if (!start || !end) return null
+  if (moveInDate && moveInDate > end) return null
+  if (moveInDate && moveInDate > start) return moveInDate
+  return start
+}
+
+function dateMs(label: string): number | null {
+  const [year, month, day] = label.split('-').map(Number)
+  if (![year, month, day].every(Number.isFinite)) return null
+  return Date.UTC(year, month - 1, day)
+}
+
+function daysInclusive(start: string, end: string): number {
+  const startMs = dateMs(start)
+  const endMs = dateMs(end)
+  if (startMs === null || endMs === null || endMs < startMs) return 0
+  return Math.floor((endMs - startMs) / 86400000) + 1
+}
+
+function amountForPeriod(period: string, billingDay: number, moveInDate: string | null, monthlyRate: number | null): number | null {
+  const rate = Number(monthlyRate ?? 0)
+  if (!Number.isFinite(rate) || rate <= 0) return null
+
+  const start = periodStartForPeriod(period, billingDay)
+  const end = paidThroughForPeriod(period, billingDay)
+  if (!start || !end) return rate
+  if (moveInDate && moveInDate > end) return null
+
+  const chargeStart = moveInDate && moveInDate > start ? moveInDate : start
+  const totalDays = daysInclusive(start, end)
+  const billableDays = daysInclusive(chargeStart, end)
+  if (totalDays <= 0 || billableDays <= 0) return null
+  if (billableDays >= totalDays) return rate
+  return Number((Math.round(rate * 100) * billableDays / totalDays / 100).toFixed(2))
+}
+
+function daysOverdue(billingDay: number, moveInDate: string | null): number {
+  const today = todayParts()
+  const due = dueDateForPeriod(currentPeriodLabel(billingDay), billingDay, moveInDate)
+  if (!due) return -1
   const todayUtc = Date.UTC(today.year, today.month - 1, today.day)
-  const dueUtc = Date.UTC(due.year, due.month - 1, due.day)
+  const dueUtc = dateMs(due)
+  if (dueUtc === null) return -1
   return Math.floor((todayUtc - dueUtc) / 86400000)
 }
 
@@ -117,22 +175,20 @@ function isPaidThroughToday(paidThroughDate: string | null | undefined, today: s
 
 function generatePeriods(billingDay: number, moveInDate: string | null): string[] {
   const current = currentPeriodLabel(billingDay)
-  if (!moveInDate) return [current]
-  const [sy, sm_raw, sd] = moveInDate.split('-').map(Number)
-  const sm = sm_raw
+  const first = moveInDate ? periodLabelForDate(moveInDate, billingDay) : current
+  if (!first) return [current]
+
   let [y, m] = current.split('-').map(Number)
   const periods: string[] = []
-  while ((y > sy || (y === sy && m >= sm)) && periods.length < 24) {
-    periods.push(periodLabel(y, m))
+  while (periods.length < 24) {
+    const label = periodLabel(y, m)
+    if (label < first) break
+    periods.push(label)
     const prev = addMonths(y, m, -1)
     y = prev.year
     m = prev.month
   }
-  return periods.filter(p => {
-    const [py, pm] = p.split('-').map(Number)
-    const dueDay = Math.min(billingDay, lastDayOf(py, pm))
-    return dateLabel(py, pm, dueDay) >= moveInDate
-  })
+  return periods
 }
 
 function formatPeriod(label: string): string {
@@ -144,22 +200,27 @@ function buildMessage(
   name: string,
   descriptor: string,
   unpaidPeriods: string[],
+  unpaidAmounts: Array<number | null>,
   monthlyRate: number | null,
   overdue: number,
   businessName: string
 ): string {
   const count = unpaidPeriods.length
-  const total = monthlyRate ? monthlyRate * count : null
+  const knownAmounts = unpaidAmounts.filter((amount): amount is number => typeof amount === 'number' && amount > 0)
+  const total = knownAmounts.length === count
+    ? knownAmounts.reduce((sum, amount) => sum + amount, 0)
+    : monthlyRate ? monthlyRate * count : null
   const contact = 'Please call Tim at (705) 340-8842 to arrange payment. Do not reply to this number.'
 
   let detail: string
   if (count === 1) {
     const dueLabel = overdue === 0 ? 'due today' : `${overdue} day${overdue === 1 ? '' : 's'} overdue`
-    detail = `your ${descriptor} payment${monthlyRate ? ` of $${monthlyRate}` : ''} is ${dueLabel}`
+    const amount = knownAmounts[0] ?? monthlyRate
+    detail = `your ${descriptor} payment${amount ? ` of $${amount.toFixed(2)}` : ''} is ${dueLabel}`
   } else {
     const periodList = unpaidPeriods.map(formatPeriod).join(', ')
     detail = `your ${descriptor} account is ${count} months behind`
-    if (total) detail += ` — $${total} outstanding`
+    if (total) detail += ` — $${total.toFixed(2)} outstanding`
     detail += ` (${periodList})`
   }
 
@@ -235,7 +296,7 @@ Deno.serve(async (req) => {
       if (sentToday.has(tenancy.unit_id)) continue
       if (isPaidThroughToday(tenancy.paid_through_date, today)) continue
 
-      const overdue = daysOverdue(tenancy.billing_day)
+      const overdue = daysOverdue(tenancy.billing_day, tenancy.move_in_date)
       if (!shouldSend(overdue, settings)) continue
 
       const expectedPeriods = generatePeriods(tenancy.billing_day, tenancy.move_in_date)
@@ -250,12 +311,16 @@ Deno.serve(async (req) => {
       const unpaidPeriods = expectedPeriods.filter(p => !paidSet.has(p))
 
       if (unpaidPeriods.length === 0) continue
+      const unpaidAmounts = unpaidPeriods.map(period =>
+        amountForPeriod(period, tenancy.billing_day, tenancy.move_in_date, tenancy.monthly_rate)
+      )
 
       const unitNumber = (tenancy.storage_units as any)?.unit_number ?? tenancy.unit_id
       const message = buildMessage(
         tenancy.tenant_name,
         `storage unit ${unitNumber}`,
         unpaidPeriods,
+        unpaidAmounts,
         tenancy.monthly_rate,
         overdue,
         settings.business_name
@@ -276,7 +341,7 @@ Deno.serve(async (req) => {
     // ── Portable units (unchanged) ───────────────────────────────────────────
     const { data: rentals } = await supabase
       .from('portable_storage_rentals')
-      .select('asset_id, tenant_name, tenant_phone, billing_day, monthly_rate, move_in_date, assets(label)')
+      .select('asset_id, tenant_name, tenant_phone, billing_day, monthly_rate, move_in_date, paid_through_date, assets(label)')
       .eq('payment_frequency', 'monthly')
       .not('billing_day', 'is', null)
       .not('tenant_phone', 'is', null)
@@ -284,8 +349,9 @@ Deno.serve(async (req) => {
 
     for (const rental of rentals ?? []) {
       if (sentToday.has(rental.asset_id)) continue
+      if (isPaidThroughToday(rental.paid_through_date, today)) continue
 
-      const overdue = daysOverdue(rental.billing_day)
+      const overdue = daysOverdue(rental.billing_day, rental.move_in_date)
       if (!shouldSend(overdue, settings)) continue
 
       const expectedPeriods = generatePeriods(rental.billing_day, rental.move_in_date)
@@ -300,12 +366,16 @@ Deno.serve(async (req) => {
       const unpaidPeriods = expectedPeriods.filter(p => !paidSet.has(p))
 
       if (unpaidPeriods.length === 0) continue
+      const unpaidAmounts = unpaidPeriods.map(period =>
+        amountForPeriod(period, rental.billing_day, rental.move_in_date, rental.monthly_rate)
+      )
 
       const label = (rental.assets as any)?.label ?? 'portable unit'
       const message = buildMessage(
         rental.tenant_name,
         'portable storage',
         unpaidPeriods,
+        unpaidAmounts,
         rental.monthly_rate,
         overdue,
         settings.business_name

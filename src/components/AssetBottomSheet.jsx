@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { supabase } from '@/lib/supabase'
 import { geocodeAddress } from '@/lib/mapbox'
-import { getMarkerColor, formatPhone } from '@/lib/utils'
+import { getMarkerColor, formatPhone, formatPhoneInput } from '@/lib/utils'
 import { Textarea } from '@/components/ui/textarea'
 import { Phone, MapPin, Calendar, User, ChevronLeft, Navigation, Star } from 'lucide-react'
 import { useNavigate, useLocation } from 'react-router-dom'
@@ -36,7 +36,7 @@ function UpdateDialog({ deployment, open, onOpenChange, onSaved }) {
       setAddress(deployment.address ?? '')
       setSelectedCoords({ lng: deployment.lng, lat: deployment.lat })
       setCustomerName(deployment.customer_name ?? '')
-      setCustomerPhone(deployment.customer_phone ?? '')
+      setCustomerPhone(formatPhone(deployment.customer_phone ?? ''))
       setExpiresAt(deployment.expires_at ?? '')
       setNotes(deployment.notes ?? '')
       setSuggestions([])
@@ -132,7 +132,7 @@ function UpdateDialog({ deployment, open, onOpenChange, onSaved }) {
           </div>
           <div>
             <p className="text-xs text-muted-foreground mb-1.5">Customer Phone</p>
-            <Input type="tel" value={customerPhone} onChange={e => setCustomerPhone(e.target.value)} placeholder="(555) 000-0000" />
+            <Input type="tel" value={customerPhone} onChange={e => setCustomerPhone(formatPhoneInput(e.target.value))} placeholder="(555) 000-0000" />
           </div>
           <div>
             <p className="text-xs text-muted-foreground mb-1.5">Expected Pick Up</p>

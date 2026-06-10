@@ -10,8 +10,14 @@ import { useTheme } from '@/lib/theme'
 import { usePushNotifications } from '@/lib/usePushNotifications'
 import { ADMIN_EMAILS, isAdminUser } from '@/lib/authz'
 
+const PASSWORD_MIN_LENGTH = 12
+
 function validPassword(pw) {
-  return pw.length >= 5 && /[A-Z]/.test(pw) && /[0-9]/.test(pw)
+  return pw.length >= PASSWORD_MIN_LENGTH
+    && /[a-z]/.test(pw)
+    && /[A-Z]/.test(pw)
+    && /[0-9]/.test(pw)
+    && /[^A-Za-z0-9]/.test(pw)
 }
 
 async function adminFetch(path, options = {}) {
@@ -175,12 +181,12 @@ function UsersPanel() {
               </div>
               <div>
                 <p className="text-xs text-muted-foreground mb-1.5">Password</p>
-                <Input placeholder="They'll use this to log in" value={newPassword} onChange={e => setNewPassword(e.target.value)} />
-                <p className="text-xs text-muted-foreground mt-1">Min. 5 characters, 1 uppercase, 1 number</p>
+                <Input type="password" autoComplete="new-password" placeholder="They'll use this to log in" value={newPassword} onChange={e => setNewPassword(e.target.value)} />
+                <p className="text-xs text-muted-foreground mt-1">Min. 12 characters, uppercase, lowercase, number, and symbol</p>
               </div>
               <div>
                 <p className="text-xs text-muted-foreground mb-1.5">Confirm Password</p>
-                <Input placeholder="Repeat password" value={newPasswordConfirm} onChange={e => setNewPasswordConfirm(e.target.value)} />
+                <Input type="password" autoComplete="new-password" placeholder="Repeat password" value={newPasswordConfirm} onChange={e => setNewPasswordConfirm(e.target.value)} />
                 {newPasswordConfirm && newPassword !== newPasswordConfirm && (
                   <p className="text-xs text-destructive mt-1">Passwords do not match</p>
                 )}

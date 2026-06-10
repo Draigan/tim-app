@@ -8,6 +8,16 @@ import { Share, MoreVertical, Plus, Download } from 'lucide-react'
 const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent)
 const isAndroid = /android/i.test(navigator.userAgent)
 const isStandalone = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches
+const PASSWORD_MIN_LENGTH = 12
+
+function passwordPolicyError(password) {
+  if (password.length < PASSWORD_MIN_LENGTH) return `Password must be at least ${PASSWORD_MIN_LENGTH} characters`
+  if (!/[a-z]/.test(password)) return 'Password must include a lowercase letter'
+  if (!/[A-Z]/.test(password)) return 'Password must include an uppercase letter'
+  if (!/[0-9]/.test(password)) return 'Password must include a number'
+  if (!/[^A-Za-z0-9]/.test(password)) return 'Password must include a symbol'
+  return null
+}
 
 function InstallBanner({ deferredPrompt, onInstall }) {
   if (isStandalone) return null
@@ -74,7 +84,8 @@ function SetPasswordForm({ onPasswordSet }) {
   async function handleSubmit(e) {
     e.preventDefault()
     if (password !== confirm) { setError('Passwords do not match'); return }
-    if (password.length < 6) { setError('Password must be at least 6 characters'); return }
+    const passwordError = passwordPolicyError(password)
+    if (passwordError) { setError(passwordError); return }
     setLoading(true)
     const { error } = await supabase.auth.updateUser({ password })
     if (error) { setError(error.message); setLoading(false) }
@@ -92,6 +103,7 @@ function SetPasswordForm({ onPasswordSet }) {
           <div className="space-y-2">
             <Label htmlFor="pw">New Password</Label>
             <Input id="pw" type="password" value={password} onChange={e => setPassword(e.target.value)} required autoFocus />
+            <p className="text-xs text-muted-foreground">Min. 12 characters, uppercase, lowercase, number, and symbol</p>
           </div>
           <div className="space-y-2">
             <Label htmlFor="cpw">Confirm Password</Label>
@@ -144,6 +156,8 @@ export default function Login({ onPasswordSet }) {
     if (error) setError(error.message)
     setLoading(false)
   }
+
+  if (onPasswordSet) return <SetPasswordForm onPasswordSet={onPasswordSet} />
 
   return (
     <div className="min-h-dvh flex items-center justify-center p-6 bg-background">

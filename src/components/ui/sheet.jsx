@@ -39,11 +39,38 @@ const sheetVariants = cva(
   }
 )
 
-function SheetContent({ side = 'bottom', className, children, ...props }) {
+function isActiveDateInput() {
+  const activeElement = typeof document !== 'undefined' ? document.activeElement : null
+  return activeElement?.tagName === 'INPUT' && activeElement?.type === 'date'
+}
+
+function SheetContent({
+  side = 'bottom',
+  className,
+  children,
+  onInteractOutside,
+  onPointerDownOutside,
+  ...props
+}) {
+  function handleInteractOutside(event) {
+    if (isActiveDateInput()) event.preventDefault()
+    onInteractOutside?.(event)
+  }
+
+  function handlePointerDownOutside(event) {
+    if (isActiveDateInput()) event.preventDefault()
+    onPointerDownOutside?.(event)
+  }
+
   return (
     <SheetPortal>
       <SheetOverlay />
-      <DialogPrimitive.Content className={cn(sheetVariants({ side }), className)} {...props}>
+      <DialogPrimitive.Content
+        className={cn(sheetVariants({ side }), className)}
+        onInteractOutside={handleInteractOutside}
+        onPointerDownOutside={handlePointerDownOutside}
+        {...props}
+      >
         {children}
         <SheetClose className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none">
           <X className="h-4 w-4" />

@@ -16,9 +16,11 @@ import Calendar from '@/pages/Calendar'
 import AssetManager from '@/pages/AssetManager'
 import Storage from '@/pages/Storage'
 import StorageLayout from '@/pages/StorageLayout'
+import StorageFloorplan from '@/pages/StorageFloorplan'
 import StorageBilling from '@/pages/StorageBilling'
 import Customers from '@/pages/Customers'
 import ReviewRequest from '@/pages/ReviewRequest'
+import AdminRevenue from '@/pages/AdminRevenue'
 
 export default function App() {
   const [session, setSession] = useState(undefined)
@@ -59,9 +61,12 @@ export default function App() {
           <Route path="/asset-manager" element={<AssetManager />} />
           <Route path="/storage" element={<Storage />} />
           <Route path="/storage/layout" element={<StorageLayout />} />
+          <Route path="/storage/floorplan" element={<StorageFloorplan />} />
+          <Route path="/storage/portable/:assetId/billing" element={<StorageBilling />} />
           <Route path="/storage/:unitId/billing" element={<StorageBilling />} />
           <Route path="/customers" element={<Customers />} />
           <Route path="/review-request" element={<ReviewRequest />} />
+          <Route path="/admin-revenue" element={<AdminRevenue />} />
         </Route>
       </Routes>
     </BrowserRouter>

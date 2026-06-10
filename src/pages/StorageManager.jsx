@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Plus, Trash2, ArrowLeft, Pencil } from 'lucide-react'
+import { formatPhone, formatPhoneInput } from '@/lib/utils'
 
 const EMPTY_FORM = {
   unit_number: '', tenant_name: '', tenant_phone: '',
@@ -45,7 +46,7 @@ export default function StorageManager() {
     setForm({
       unit_number:       unit.unit_number       ?? '',
       tenant_name:       unit.tenant_name       ?? '',
-      tenant_phone:      unit.tenant_phone      ?? '',
+      tenant_phone:      formatPhone(unit.tenant_phone ?? ''),
       monthly_rate:      unit.monthly_rate      ?? '',
       billing_day:       unit.billing_day       ?? '',
       payment_frequency: unit.payment_frequency ?? 'monthly',
@@ -152,7 +153,7 @@ export default function StorageManager() {
             </div>
             <div>
               <p className="text-xs text-muted-foreground mb-1.5">Phone</p>
-              <Input value={form.tenant_phone} onChange={e => set('tenant_phone', e.target.value)} placeholder="(519) 555-0000" type="tel" />
+              <Input value={form.tenant_phone} onChange={e => set('tenant_phone', formatPhoneInput(e.target.value))} placeholder="(519) 555-0000" type="tel" />
             </div>
             <div className="flex gap-3">
               <div className="flex-1">

@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { ArrowLeft, Truck, MapPin, Calendar, User, Phone, Pencil, BookMarked, Trash2 } from 'lucide-react'
-import { formatPhone } from '@/lib/utils'
+import { formatPhone, formatPhoneInput } from '@/lib/utils'
 import { ICON_OPTIONS, iconImgUrl } from '@/lib/icons'
 import { geocodeAddress } from '@/lib/mapbox'
 import { useIsAdmin } from '@/lib/useIsAdmin'
@@ -87,7 +87,7 @@ function ReserveDialog({ assetId, open, onOpenChange, onSaved }) {
           </div>
           <div>
             <p className="text-xs text-muted-foreground mb-1.5">Customer Phone</p>
-            <Input type="tel" value={customerPhone} onChange={e => setCustomerPhone(e.target.value)} placeholder="(555) 000-0000" />
+            <Input type="tel" value={customerPhone} onChange={e => setCustomerPhone(formatPhoneInput(e.target.value))} placeholder="(555) 000-0000" />
           </div>
           <div>
             <p className="text-xs text-muted-foreground mb-1.5">Address</p>

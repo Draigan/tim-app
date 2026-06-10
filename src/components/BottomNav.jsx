@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
-import { Map, Package, Settings, Warehouse, MoreHorizontal, Users, CalendarDays, LayoutGrid, History, ChevronRight, Star } from 'lucide-react'
+import { Map, Package, Settings, Warehouse, MoreHorizontal, Users, CalendarDays, LayoutGrid, History, ChevronRight, Star, Lock } from 'lucide-react'
 import { Sheet, SheetContent } from '@/components/ui/sheet'
 import { cn } from '@/lib/utils'
 import { useIsAdmin } from '@/lib/useIsAdmin'
+import PinModal from '@/components/PinModal'
 
 const MORE_ITEMS = [
   { to: '/calendar',       icon: CalendarDays, label: 'Calendar',        description: 'Schedule and reservations' },
@@ -16,6 +17,7 @@ const MORE_ITEMS = [
 function MoreSheet({ open, onClose }) {
   const navigate = useNavigate()
   const { pathname } = useLocation()
+  const [showAdminPin, setShowAdminPin] = useState(false)
 
   function go(to) {
     onClose()
@@ -23,36 +25,68 @@ function MoreSheet({ open, onClose }) {
   }
 
   return (
-    <Sheet open={open} onOpenChange={v => !v && onClose()}>
-      <SheetContent side="bottom" className="pb-8">
-        <div className="pt-2 pb-1">
-          <div className="space-y-1">
-            {MORE_ITEMS.map(({ to, icon: Icon, label, description }) => (
+    <>
+      <Sheet open={open} onOpenChange={v => !v && onClose()}>
+        <SheetContent side="bottom" className="pb-8">
+          <div className="pt-2 pb-1">
+            <div className="space-y-1">
+              {MORE_ITEMS.map(({ to, icon: Icon, label, description }) => (
+                <button
+                  key={to}
+                  onClick={() => go(to)}
+                  className={cn(
+                    'w-full flex items-center gap-4 px-2 py-3 rounded-xl transition-colors hover:bg-accent',
+                    pathname === to && 'text-primary'
+                  )}
+                >
+                  <div className={cn(
+                    'w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0',
+                    pathname === to ? 'bg-primary/15' : 'bg-muted'
+                  )}>
+                    <Icon size={20} className={pathname === to ? 'text-primary' : 'text-foreground'} />
+                  </div>
+                  <div className="flex-1 text-left">
+                    <p className={cn('text-sm font-medium', pathname === to && 'text-primary')}>{label}</p>
+                    <p className="text-xs text-muted-foreground">{description}</p>
+                  </div>
+                  <ChevronRight size={16} className="text-muted-foreground flex-shrink-0" />
+                </button>
+              ))}
+
               <button
-                key={to}
-                onClick={() => go(to)}
-                className={cn(
-                  'w-full flex items-center gap-4 px-2 py-3 rounded-xl transition-colors hover:bg-accent',
-                  pathname === to && 'text-primary'
-                )}
+                onClick={() => setShowAdminPin(true)}
+                className="w-full flex items-center gap-4 px-2 py-3 rounded-xl transition-colors hover:bg-accent"
               >
-                <div className={cn(
-                  'w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0',
-                  pathname === to ? 'bg-primary/15' : 'bg-muted'
-                )}>
-                  <Icon size={20} className={pathname === to ? 'text-primary' : 'text-foreground'} />
+                <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 bg-muted">
+                  <Lock size={20} className="text-foreground" />
                 </div>
                 <div className="flex-1 text-left">
-                  <p className={cn('text-sm font-medium', pathname === to && 'text-primary')}>{label}</p>
-                  <p className="text-xs text-muted-foreground">{description}</p>
+                  <p className="text-sm font-medium">Admin</p>
+                  <p className="text-xs text-muted-foreground">Admin settings</p>
                 </div>
                 <ChevronRight size={16} className="text-muted-foreground flex-shrink-0" />
               </button>
-            ))}
+            </div>
           </div>
-        </div>
-      </SheetContent>
-    </Sheet>
+        </SheetContent>
+      </Sheet>
+
+      <PinModal
+        open={showAdminPin}
+        onClose={() => setShowAdminPin(false)}
+        onConfirm={async (pin) => {
+          if (pin !== '4321') return { error: 'Incorrect PIN' }
+          setShowAdminPin(false)
+          onClose()
+          navigate('/admin-revenue')
+        }}
+        title="Admin"
+        subtitle="Enter PIN to access revenue tracker"
+        icon={Lock}
+        pinLabel="Enter admin PIN"
+        confirmLabel="Enter"
+      />
+    </>
   )
 }
 

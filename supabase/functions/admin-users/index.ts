@@ -10,6 +10,7 @@ const ADMIN_EMAILS = (Deno.env.get('ADMIN_EMAILS') ?? 'tim@timberfell.ca')
   .split(',')
   .map(email => email.trim().toLowerCase())
   .filter(Boolean)
+const PASSWORD_MIN_LENGTH = 12
 
 const supabaseAdmin = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -29,6 +30,16 @@ function userHasAdminRole(user: any): boolean {
   if (roles && typeof roles === 'object') return Boolean(roles.admin)
 
   return false
+}
+
+function passwordPolicyError(value: unknown): string | null {
+  if (typeof value !== 'string') return 'Password is required'
+  if (value.length < PASSWORD_MIN_LENGTH) return `Password must be at least ${PASSWORD_MIN_LENGTH} characters`
+  if (!/[a-z]/.test(value)) return 'Password must include a lowercase letter'
+  if (!/[A-Z]/.test(value)) return 'Password must include an uppercase letter'
+  if (!/[0-9]/.test(value)) return 'Password must include a number'
+  if (!/[^A-Za-z0-9]/.test(value)) return 'Password must include a symbol'
+  return null
 }
 
 async function authorizeAdmin(req: Request): Promise<Response | null> {
@@ -73,14 +84,18 @@ Deno.serve(async (req) => {
     const body = await req.json()
 
     if (action === 'create') {
-      const { email: newEmail, password, full_name } = body
-      if (!full_name?.trim()) return json({ error: 'Name is required' }, 400)
-      if (!password || password.length < 4) return json({ error: 'Password must be at least 4 characters' }, 400)
+      const newEmail = typeof body.email === 'string' ? body.email.trim() : ''
+      const password = typeof body.password === 'string' ? body.password : ''
+      const fullName = typeof body.full_name === 'string' ? body.full_name.trim() : ''
+      if (!fullName) return json({ error: 'Name is required' }, 400)
+      if (!newEmail) return json({ error: 'Email is required' }, 400)
+      const passwordError = passwordPolicyError(password)
+      if (passwordError) return json({ error: passwordError }, 400)
       const { error } = await supabaseAdmin.auth.admin.createUser({
         email: newEmail,
         password,
         email_confirm: true,
-        user_metadata: { full_name },
+        user_metadata: { full_name: fullName },
       })
       if (error) return json({ error: error.message }, 500)
       return json({ ok: true })

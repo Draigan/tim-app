@@ -40,6 +40,50 @@ function paidThroughForPeriod(period: string, billingDay?: number | null): strin
   return dateLabel(paidThrough.getUTCFullYear(), paidThrough.getUTCMonth() + 1, paidThrough.getUTCDate())
 }
 
+function dollarsFromCents(value: number): number {
+  return Number((value / 100).toFixed(2))
+}
+
+function periodAmountsFromMetadata(value: unknown, labels: string[]): number[] | null {
+  if (typeof value !== 'string' || !value.trim()) return null
+  const amounts = value.split(',').map(part => Number(part.trim()))
+  if (amounts.length !== labels.length) return null
+  if (!amounts.every(amount => Number.isFinite(amount) && amount >= 0)) return null
+  return amounts
+}
+
+function paymentRecordAmountsFromMetadata({
+  index,
+  perMonth,
+  periodAmounts,
+  periodSubtotalAmounts,
+  periodTaxAmounts,
+  taxRate,
+  taxLabel,
+}: {
+  index: number
+  perMonth: number
+  periodAmounts: number[] | null
+  periodSubtotalAmounts: number[] | null
+  periodTaxAmounts: number[] | null
+  taxRate: unknown
+  taxLabel: unknown
+}) {
+  const amountCents = periodAmounts?.[index]
+  const subtotalCents = periodSubtotalAmounts?.[index] ?? amountCents
+  const taxCents = periodTaxAmounts?.[index] ?? 0
+  const parsedTaxRate = Number(taxRate)
+  const label = typeof taxLabel === 'string' && taxLabel.trim() ? taxLabel.trim() : null
+
+  return {
+    amount: typeof amountCents === 'number' ? dollarsFromCents(amountCents) : perMonth,
+    subtotal_amount: typeof subtotalCents === 'number' ? dollarsFromCents(subtotalCents) : perMonth,
+    tax_amount: dollarsFromCents(taxCents),
+    tax_rate: Number.isFinite(parsedTaxRate) && taxCents > 0 ? parsedTaxRate : 0,
+    tax_label: taxCents > 0 ? label : null,
+  }
+}
+
 async function extendPaidThroughByLabels(tenancyId: string, labels: string[]) {
   const { data: tenancy } = await supabase
     .from('storage_tenancies')
@@ -58,6 +102,27 @@ async function extendPaidThroughByLabels(tenancyId: string, labels: string[]) {
     await supabase.from('storage_tenancies')
       .update({ paid_through_date: paidThroughDate })
       .eq('id', tenancyId)
+  }
+}
+
+async function extendPortablePaidThroughByLabels(assetId: string, labels: string[]) {
+  const { data: rental } = await supabase
+    .from('portable_storage_rentals')
+    .select('asset_id, billing_day, paid_through_date')
+    .eq('asset_id', assetId)
+    .maybeSingle()
+
+  if (!rental) return
+
+  const paidThroughCandidates = [rental.paid_through_date, ...labels.map(label => paidThroughForPeriod(label, rental.billing_day))]
+    .filter(Boolean)
+    .sort()
+  const paidThroughDate = paidThroughCandidates[paidThroughCandidates.length - 1] as string | undefined
+
+  if (paidThroughDate && paidThroughDate !== rental.paid_through_date) {
+    await supabase.from('portable_storage_rentals')
+      .update({ paid_through_date: paidThroughDate })
+      .eq('asset_id', assetId)
   }
 }
 
@@ -98,7 +163,20 @@ Deno.serve(async (req) => {
 
     if (event.type === 'payment_intent.succeeded') {
       const pi = event.data.object as Stripe.PaymentIntent
-      const { tenancy_id, unit_id, period_label, monthly_rate } = pi.metadata ?? {}
+      const {
+        tenancy_id,
+        unit_id,
+        period_label,
+        monthly_rate,
+        period_amounts_cents,
+        period_subtotal_amounts_cents,
+        period_tax_amounts_cents,
+        tax_rate,
+        tax_label,
+        unit_type,
+        portable_asset_id,
+        portable_rental_id,
+      } = pi.metadata ?? {}
 
       if (period_label) {
         const labels = period_label.split(',').map((l: string) => l.trim()).filter(isPeriodLabel)
@@ -109,30 +187,74 @@ Deno.serve(async (req) => {
         const perMonth = Number.isFinite(metadataMonthlyRate) && metadataMonthlyRate > 0
           ? metadataMonthlyRate
           : labels.length > 1 ? pi.amount / 100 / labels.length : pi.amount / 100
+        const periodAmounts = periodAmountsFromMetadata(period_amounts_cents, labels)
+        const periodSubtotalAmounts = periodAmountsFromMetadata(period_subtotal_amounts_cents, labels)
+        const periodTaxAmounts = periodAmountsFromMetadata(period_tax_amounts_cents, labels)
 
-        // Resolve tenancy_id — prefer explicit, fall back to looking up active tenancy by unit_id
-        let resolvedTenancyId = tenancy_id || null
-        if (!resolvedTenancyId && unit_id) {
-          const { data: t } = await supabase
-            .from('storage_tenancies')
-            .select('id')
-            .eq('unit_id', unit_id)
-            .is('end_date', null)
-            .maybeSingle()
-          resolvedTenancyId = t?.id ?? null
-        }
+        if (unit_type === 'portable' || portable_asset_id || portable_rental_id) {
+          let resolvedAssetId = portable_asset_id || null
+          if (!resolvedAssetId && portable_rental_id) {
+            const { data: r } = await supabase
+              .from('portable_storage_rentals')
+              .select('asset_id')
+              .eq('id', portable_rental_id)
+              .maybeSingle()
+            resolvedAssetId = r?.asset_id ?? null
+          }
 
-        if (resolvedTenancyId) {
-          await supabase.from('storage_payments').upsert(
-            labels.map((label: string) => ({
-              tenancy_id: resolvedTenancyId,
-              period_label: label,
-              paid_at: new Date().toISOString(),
-              amount: perMonth,
-            })),
-            { onConflict: 'tenancy_id,period_label' }
-          )
-          await extendPaidThroughByLabels(resolvedTenancyId, labels)
+          if (resolvedAssetId) {
+            await supabase.from('portable_storage_payments').upsert(
+              labels.map((label: string, index: number) => ({
+                asset_id: resolvedAssetId,
+                period_label: label,
+                paid_at: new Date().toISOString(),
+                ...paymentRecordAmountsFromMetadata({
+                  index,
+                  perMonth,
+                  periodAmounts,
+                  periodSubtotalAmounts,
+                  periodTaxAmounts,
+                  taxRate: tax_rate,
+                  taxLabel: tax_label,
+                }),
+              })),
+              { onConflict: 'asset_id,period_label' }
+            )
+            await extendPortablePaidThroughByLabels(resolvedAssetId, labels)
+          }
+        } else {
+          // Resolve tenancy_id — prefer explicit, fall back to looking up active tenancy by unit_id
+          let resolvedTenancyId = tenancy_id || null
+          if (!resolvedTenancyId && unit_id) {
+            const { data: t } = await supabase
+              .from('storage_tenancies')
+              .select('id')
+              .eq('unit_id', unit_id)
+              .is('end_date', null)
+              .maybeSingle()
+            resolvedTenancyId = t?.id ?? null
+          }
+
+          if (resolvedTenancyId) {
+            await supabase.from('storage_payments').upsert(
+              labels.map((label: string, index: number) => ({
+                tenancy_id: resolvedTenancyId,
+                period_label: label,
+                paid_at: new Date().toISOString(),
+                ...paymentRecordAmountsFromMetadata({
+                  index,
+                  perMonth,
+                  periodAmounts,
+                  periodSubtotalAmounts,
+                  periodTaxAmounts,
+                  taxRate: tax_rate,
+                  taxLabel: tax_label,
+                }),
+              })),
+              { onConflict: 'tenancy_id,period_label' }
+            )
+            await extendPaidThroughByLabels(resolvedTenancyId, labels)
+          }
         }
       }
     }

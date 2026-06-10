@@ -46,6 +46,11 @@ verify_jwt = false
 import_map = "./functions/storage-reminders/deno.json"
 entrypoint = "./functions/storage-reminders/index.ts"
 
+[functions.public-storage-availability]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/public-storage-availability/index.ts"
+
 [functions.stripe-billing-run]
 enabled = true
 verify_jwt = false

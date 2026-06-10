@@ -15,10 +15,16 @@ const CORS = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
-const BILLING_ADMIN_EMAILS = (Deno.env.get('BILLING_ADMIN_EMAILS') ?? 'tim@timberfell.ca')
-  .split(',')
-  .map(email => email.trim().toLowerCase())
-  .filter(Boolean)
+function emailsFromEnv(...names: string[]): string[] {
+  const values = names
+    .flatMap(name => (Deno.env.get(name) ?? '').split(','))
+    .map(email => email.trim().toLowerCase())
+    .filter(Boolean)
+
+  return [...new Set(values.length ? values : ['tim@timberfell.ca'])]
+}
+
+const BILLING_ADMIN_EMAILS = emailsFromEnv('BILLING_ADMIN_EMAILS', 'ADMIN_EMAILS')
 const BILLING_ROLES = new Set(['admin', 'billing', 'billing_admin'])
 const DEFAULT_APP_ORIGIN = 'https://pvpzpkvgdyjujtelwbbs.supabase.co'
 
@@ -53,7 +59,7 @@ async function authorizeBillingUser(req: Request): Promise<Response | null> {
     return null
   }
 
-  return json({ error: 'Forbidden' }, 403)
+  return json({ error: 'Billing access required for this account.' }, 403)
 }
 
 function normalizeOrigin(value: unknown): string | null {

@@ -67,7 +67,8 @@ function ReservationBanner() {
 
 export default function Layout() {
   const { pathname } = useLocation()
-  const showLogo = pathname !== '/'
+  const showLogo = pathname !== '/' && pathname !== '/storage/floorplan'
+  const showNav  = pathname !== '/storage/floorplan'
 
   return (
     <div className="flex flex-col h-full">
@@ -80,7 +81,7 @@ export default function Layout() {
       <main className="flex-1 overflow-hidden">
         <Outlet />
       </main>
-      <BottomNav />
+      {showNav && <BottomNav />}
       <PushPrompt />
     </div>
   )

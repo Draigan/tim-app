@@ -15,12 +15,20 @@ const CORS = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
-const ADMIN_EMAILS = (Deno.env.get('BILLING_ADMIN_EMAILS') ?? 'tim@timberfell.ca')
-  .split(',')
-  .map(email => email.trim().toLowerCase())
-  .filter(Boolean)
+function emailsFromEnv(...names: string[]): string[] {
+  const values = names
+    .flatMap(name => (Deno.env.get(name) ?? '').split(','))
+    .map(email => email.trim().toLowerCase())
+    .filter(Boolean)
+
+  return [...new Set(values.length ? values : ['tim@timberfell.ca'])]
+}
+
+const ADMIN_EMAILS = emailsFromEnv('BILLING_ADMIN_EMAILS', 'ADMIN_EMAILS')
 const BILLING_ROLES = new Set(['admin', 'billing', 'billing_admin'])
 const BUSINESS_TIME_ZONE = 'America/Toronto'
+const SALES_TAX_RATE = 0.13
+const SALES_TAX_LABEL = 'HST'
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -81,7 +89,7 @@ async function authorizeManualBilling(req: Request, body: Record<string, unknown
   if (error || !user?.email) return json({ error: 'Unauthorized' }, 401)
 
   if (!userHasBillingRole(user) && !ADMIN_EMAILS.includes(user.email.toLowerCase())) {
-    return json({ error: 'Forbidden' }, 403)
+    return json({ error: 'Billing access required for this account.' }, 403)
   }
 
   return validateBillingPin(body)
@@ -165,11 +173,6 @@ function currentPeriodLabel(billingDay?: number | null): string {
   return periodLabel(prev.year, prev.month)
 }
 
-function lastDayOfCurrentMonth(): number {
-  const now = todayParts()
-  return lastDayOf(now.year, now.month)
-}
-
 function todayLabel(): string {
   const today = todayParts()
   return dateLabel(today.year, today.month, today.day)
@@ -184,6 +187,79 @@ function paidThroughForPeriod(period: string, billingDay?: number | null): strin
   return dateLabel(paidThrough.getUTCFullYear(), paidThrough.getUTCMonth() + 1, paidThrough.getUTCDate())
 }
 
+function periodStartForPeriod(period: string, billingDay?: number | null): string | null {
+  if (!billingDay || !/^\d{4}-\d{2}$/.test(period)) return null
+  const [y, m] = period.split('-').map(Number)
+  const day = Math.min(billingDay, lastDayOf(y, m))
+  return dateLabel(y, m, day)
+}
+
+function dateMs(label: string): number | null {
+  const [y, m, d] = label.split('-').map(Number)
+  if (![y, m, d].every(Number.isFinite)) return null
+  return Date.UTC(y, m - 1, d)
+}
+
+function daysInclusive(start: string, end: string): number {
+  const startMs = dateMs(start)
+  const endMs = dateMs(end)
+  if (startMs === null || endMs === null || endMs < startMs) return 0
+  return Math.floor((endMs - startMs) / 86400000) + 1
+}
+
+function dollarsFromCents(value: number): number {
+  return Number((value / 100).toFixed(2))
+}
+
+function taxCentsForSubtotal(subtotalCents: number): number {
+  return Math.round(subtotalCents * SALES_TAX_RATE)
+}
+
+function totalCentsForSubtotal(subtotalCents: number): number {
+  return subtotalCents + taxCentsForSubtotal(subtotalCents)
+}
+
+function shouldCollectTax(body: Record<string, unknown>): boolean {
+  return body.collect_tax === true
+}
+
+function paymentRecordAmounts(subtotalCents: number, collectTax = true) {
+  const taxCents = collectTax ? taxCentsForSubtotal(subtotalCents) : 0
+  return {
+    amount: dollarsFromCents(subtotalCents + taxCents),
+    subtotal_amount: dollarsFromCents(subtotalCents),
+    tax_amount: dollarsFromCents(taxCents),
+    tax_rate: collectTax && taxCents > 0 ? SALES_TAX_RATE : 0,
+    tax_label: collectTax && taxCents > 0 ? SALES_TAX_LABEL : null,
+  }
+}
+
+function amountCentsForPeriod(period: string, rental: any): number {
+  const monthlyRate = Number(rental.monthly_rate ?? 0)
+  const monthlyRateCents = Number.isFinite(monthlyRate) ? Math.round(monthlyRate * 100) : 0
+  if (monthlyRateCents <= 0) return 0
+
+  const start = periodStartForPeriod(period, rental.billing_day)
+  const end = paidThroughForPeriod(period, rental.billing_day)
+  if (!start || !end) return monthlyRateCents
+
+  const moveInDate = typeof rental.move_in_date === 'string' ? rental.move_in_date : null
+  if (moveInDate && moveInDate > end) return 0
+
+  const chargeStart = moveInDate && moveInDate > start ? moveInDate : start
+  const totalDays = daysInclusive(start, end)
+  const billableDays = daysInclusive(chargeStart, end)
+  if (totalDays <= 0 || billableDays <= 0) return 0
+  if (billableDays >= totalDays) return monthlyRateCents
+  return Math.round(monthlyRateCents * billableDays / totalDays)
+}
+
+function chargeablePeriods(periods: string[], rental: any): Array<{ period: string; amountCents: number }> {
+  return periods
+    .map(period => ({ period, amountCents: amountCentsForPeriod(period, rental) }))
+    .filter(charge => charge.amountCents > 0)
+}
+
 function isPaidThroughToday(paidThroughDate?: string | null): boolean {
   return !!paidThroughDate && paidThroughDate >= todayLabel()
 }
@@ -194,6 +270,22 @@ function periodCovered(period: string, tenancy: any): boolean {
   const fullPeriodPaidThrough = paidThroughForPeriod(period, tenancy.billing_day)
   if (fullPeriodPaidThrough && paidThroughDate >= fullPeriodPaidThrough) return true
   return period === currentPeriodLabel(tenancy.billing_day) && isPaidThroughToday(paidThroughDate)
+}
+
+function dueDateForPeriod(period: string, rental: any): string | null {
+  const start = periodStartForPeriod(period, rental.billing_day)
+  const end = paidThroughForPeriod(period, rental.billing_day)
+  if (!start || !end) return null
+
+  const moveInDate = typeof rental.move_in_date === 'string' ? rental.move_in_date : null
+  if (moveInDate && moveInDate > end) return null
+  if (moveInDate && moveInDate > start) return moveInDate
+  return start
+}
+
+function isDueToday(rental: any): boolean {
+  const billingPeriod = currentPeriodLabel(rental.billing_day)
+  return dueDateForPeriod(billingPeriod, rental) === todayLabel()
 }
 
 async function extendPaidThrough(tenancy: any, periods: string[]) {
@@ -210,6 +302,23 @@ async function extendPaidThrough(tenancy: any, periods: string[]) {
       .update({ paid_through_date: paidThroughDate })
       .eq('id', tenancy.id)
     tenancy.paid_through_date = paidThroughDate
+  }
+}
+
+async function extendPortablePaidThrough(rental: any, periods: string[]) {
+  const candidates = periods
+    .map(period => paidThroughForPeriod(period, rental.billing_day))
+    .filter(Boolean) as string[]
+  const paidThroughCandidates = [rental.paid_through_date, ...candidates]
+    .filter(Boolean)
+    .sort()
+  const paidThroughDate = paidThroughCandidates[paidThroughCandidates.length - 1] as string | undefined
+
+  if (paidThroughDate && paidThroughDate !== rental.paid_through_date) {
+    await supabase.from('portable_storage_rentals')
+      .update({ paid_through_date: paidThroughDate })
+      .eq('id', rental.id)
+    rental.paid_through_date = paidThroughDate
   }
 }
 
@@ -235,9 +344,16 @@ async function chargeUnit(tenancy: any, period: string, idempotencyKey?: string)
     return { status: 'skipped', reason: 'already_paid' }
   }
 
+  const periodSubtotalCents = amountCentsForPeriod(period, tenancy)
+  if (periodSubtotalCents <= 0) {
+    return { status: 'skipped', reason: 'no_amount' }
+  }
+  const periodTaxCents = taxCentsForSubtotal(periodSubtotalCents)
+  const periodTotalCents = periodSubtotalCents + periodTaxCents
+
   const pi = await createPaymentIntent(
     {
-      amount: Math.round(tenancy.monthly_rate * 100),
+      amount: periodTotalCents,
       currency: 'cad',
       customer: customer.stripe_customer_id,
       payment_method: customer.stripe_payment_method_id,
@@ -247,6 +363,12 @@ async function chargeUnit(tenancy: any, period: string, idempotencyKey?: string)
         unit_id: tenancy.unit_id,
         tenancy_id: tenancy.id,
         period_label: period,
+        monthly_rate: String(Number(tenancy.monthly_rate ?? 0)),
+        period_amounts_cents: String(periodTotalCents),
+        period_subtotal_amounts_cents: String(periodSubtotalCents),
+        period_tax_amounts_cents: String(periodTaxCents),
+        tax_rate: String(SALES_TAX_RATE),
+        tax_label: SALES_TAX_LABEL,
         unit_number: tenancy.unit_number ?? '',
       },
     },
@@ -254,7 +376,12 @@ async function chargeUnit(tenancy: any, period: string, idempotencyKey?: string)
   )
 
   await supabase.from('storage_payments').upsert(
-    { tenancy_id: tenancy.id, period_label: period, paid_at: new Date().toISOString(), amount: pi.amount / 100 },
+    {
+      tenancy_id: tenancy.id,
+      period_label: period,
+      paid_at: new Date().toISOString(),
+      ...paymentRecordAmounts(periodSubtotalCents),
+    },
     { onConflict: 'tenancy_id,period_label' }
   )
   await extendPaidThrough(tenancy, [period])
@@ -308,8 +435,14 @@ async function chargePeriods(tenancy: any, periods: string[], extraAmount: numbe
     return { status: 'skipped', reason: 'no_rate', periods: [] }
   }
 
-  const amount = monthlyRate * unpaidPeriods.length + extraAmount
-  if (amount <= 0) {
+  const periodCharges = chargeablePeriods(unpaidPeriods, tenancy)
+  const periodSubtotalCents = periodCharges.reduce((sum, charge) => sum + charge.amountCents, 0)
+  const periodTaxCents = periodCharges.reduce((sum, charge) => sum + taxCentsForSubtotal(charge.amountCents), 0)
+  const periodTotalCents = periodSubtotalCents + periodTaxCents
+  const extraAmountCents = Math.round(extraAmount * 100)
+  const extraTaxCents = taxCentsForSubtotal(extraAmountCents)
+  const amountCents = periodTotalCents + extraAmountCents + extraTaxCents
+  if (amountCents <= 0) {
     return { status: 'skipped', reason: periods.length ? 'already_paid' : 'no_amount', periods: [] }
   }
 
@@ -317,15 +450,23 @@ async function chargePeriods(tenancy: any, periods: string[], extraAmount: numbe
     unit_id: tenancy.unit_id,
     tenancy_id: tenancy.id,
     unit_number: tenancy.unit_number ?? '',
-    months: String(unpaidPeriods.length),
+    months: String(periodCharges.length),
     monthly_rate: String(monthlyRate),
     extra_amount: String(extraAmount),
+    extra_tax_amount: String(dollarsFromCents(extraTaxCents)),
+    tax_rate: String(SALES_TAX_RATE),
+    tax_label: SALES_TAX_LABEL,
   }
-  if (unpaidPeriods.length > 0) metadata.period_label = unpaidPeriods.join(',')
+  if (periodCharges.length > 0) {
+    metadata.period_label = periodCharges.map(charge => charge.period).join(',')
+    metadata.period_amounts_cents = periodCharges.map(charge => totalCentsForSubtotal(charge.amountCents)).join(',')
+    metadata.period_subtotal_amounts_cents = periodCharges.map(charge => charge.amountCents).join(',')
+    metadata.period_tax_amounts_cents = periodCharges.map(charge => taxCentsForSubtotal(charge.amountCents)).join(',')
+  }
 
   const pi = await createPaymentIntent(
     {
-      amount: Math.round(amount * 100),
+      amount: amountCents,
       currency: 'cad',
       customer: customer.stripe_customer_id,
       payment_method: customer.stripe_payment_method_id,
@@ -336,18 +477,101 @@ async function chargePeriods(tenancy: any, periods: string[], extraAmount: numbe
     idempotencyKey,
   )
 
-  if (unpaidPeriods.length > 0) {
-    const inserts = unpaidPeriods.map(p => ({
+  if (periodCharges.length > 0) {
+    const inserts = periodCharges.map(({ period, amountCents }) => ({
       tenancy_id: tenancy.id,
-      period_label: p,
+      period_label: period,
       paid_at: new Date().toISOString(),
-      amount: monthlyRate,
+      ...paymentRecordAmounts(amountCents),
     }))
     await supabase.from('storage_payments').upsert(inserts, { onConflict: 'tenancy_id,period_label' })
-    await extendPaidThrough(tenancy, unpaidPeriods)
+    await extendPaidThrough(tenancy, periodCharges.map(charge => charge.period))
   }
 
-  return { status: 'charged', periods: unpaidPeriods, amount: pi.amount / 100 }
+  return { status: 'charged', periods: periodCharges.map(charge => charge.period), amount: pi.amount / 100 }
+}
+
+async function chargePortablePeriods(rental: any, periods: string[], extraAmount: number, idempotencyKey?: string) {
+  const customer = rental.customers as { stripe_customer_id: string | null; stripe_payment_method_id: string | null } | null
+  if (!customer?.stripe_payment_method_id || !customer?.stripe_customer_id) {
+    return { status: 'skipped', reason: 'no_card', periods: [] }
+  }
+
+  let unpaidPeriods = periods
+  if (periods.length > 0) {
+    const { data: existing } = await supabase
+      .from('portable_storage_payments')
+      .select('period_label')
+      .eq('asset_id', rental.asset_id)
+      .in('period_label', periods)
+
+    const paidSet = new Set((existing ?? []).map((p: any) => p.period_label))
+    unpaidPeriods = periods.filter(p => !paidSet.has(p) && !periodCovered(p, rental))
+  } else {
+    unpaidPeriods = unpaidPeriods.filter(p => !periodCovered(p, rental))
+  }
+
+  const monthlyRate = Number(rental.monthly_rate ?? 0)
+  if (unpaidPeriods.length > 0 && monthlyRate <= 0) {
+    return { status: 'skipped', reason: 'no_rate', periods: [] }
+  }
+
+  const periodCharges = chargeablePeriods(unpaidPeriods, rental)
+  const periodSubtotalCents = periodCharges.reduce((sum, charge) => sum + charge.amountCents, 0)
+  const periodTaxCents = periodCharges.reduce((sum, charge) => sum + taxCentsForSubtotal(charge.amountCents), 0)
+  const periodTotalCents = periodSubtotalCents + periodTaxCents
+  const extraAmountCents = Math.round(extraAmount * 100)
+  const extraTaxCents = taxCentsForSubtotal(extraAmountCents)
+  const amountCents = periodTotalCents + extraAmountCents + extraTaxCents
+  if (amountCents <= 0) {
+    return { status: 'skipped', reason: periods.length ? 'already_paid' : 'no_amount', periods: [] }
+  }
+
+  const label = (rental.assets as any)?.label ?? rental.asset_id
+  const metadata: Record<string, string> = {
+    unit_type: 'portable',
+    portable_asset_id: rental.asset_id,
+    portable_rental_id: rental.id,
+    asset_label: label,
+    months: String(periodCharges.length),
+    monthly_rate: String(monthlyRate),
+    extra_amount: String(extraAmount),
+    extra_tax_amount: String(dollarsFromCents(extraTaxCents)),
+    tax_rate: String(SALES_TAX_RATE),
+    tax_label: SALES_TAX_LABEL,
+  }
+  if (periodCharges.length > 0) {
+    metadata.period_label = periodCharges.map(charge => charge.period).join(',')
+    metadata.period_amounts_cents = periodCharges.map(charge => totalCentsForSubtotal(charge.amountCents)).join(',')
+    metadata.period_subtotal_amounts_cents = periodCharges.map(charge => charge.amountCents).join(',')
+    metadata.period_tax_amounts_cents = periodCharges.map(charge => taxCentsForSubtotal(charge.amountCents)).join(',')
+  }
+
+  const pi = await createPaymentIntent(
+    {
+      amount: amountCents,
+      currency: 'cad',
+      customer: customer.stripe_customer_id,
+      payment_method: customer.stripe_payment_method_id,
+      off_session: true,
+      confirm: true,
+      metadata,
+    },
+    idempotencyKey,
+  )
+
+  if (periodCharges.length > 0) {
+    const inserts = periodCharges.map(({ period, amountCents }) => ({
+      asset_id: rental.asset_id,
+      period_label: period,
+      paid_at: new Date().toISOString(),
+      ...paymentRecordAmounts(amountCents),
+    }))
+    await supabase.from('portable_storage_payments').upsert(inserts, { onConflict: 'asset_id,period_label' })
+    await extendPortablePaidThrough(rental, periodCharges.map(charge => charge.period))
+  }
+
+  return { status: 'charged', periods: periodCharges.map(charge => charge.period), amount: pi.amount / 100, paid_through_date: rental.paid_through_date ?? null }
 }
 
 async function markCreditRefunded(body: Record<string, unknown>) {
@@ -368,16 +592,205 @@ async function markCreditRefunded(body: Record<string, unknown>) {
   return json({ ok: true, credit: data })
 }
 
+async function recordPortableCashPayment(body: Record<string, unknown>) {
+  const assetId = typeof body.portable_asset_id === 'string' ? body.portable_asset_id : ''
+  if (!assetId) return json({ error: 'portable_asset_id required' }, 400)
+  const collectTax = shouldCollectTax(body)
+
+  const requestedPeriods = normalizePeriods(body.periods)
+  if (!requestedPeriods?.length) return json({ error: 'periods required' }, 400)
+
+  const { data: rental, error: rentalError } = await supabase
+    .from('portable_storage_rentals')
+    .select('*, assets(label)')
+    .eq('asset_id', assetId)
+    .maybeSingle()
+
+  if (rentalError) return json({ error: rentalError.message }, 500)
+  if (!rental) return json({ error: 'no active rental for portable asset' }, 404)
+
+  const { data: existing, error: existingError } = await supabase
+    .from('portable_storage_payments')
+    .select('period_label')
+    .eq('asset_id', assetId)
+    .in('period_label', requestedPeriods)
+
+  if (existingError) return json({ error: existingError.message }, 500)
+
+  const paidSet = new Set((existing ?? []).map((payment: any) => payment.period_label))
+  const periods = requestedPeriods.filter(period => !paidSet.has(period) && !periodCovered(period, rental))
+
+  if (!periods.length) {
+    return json({ ok: true, status: 'skipped', reason: 'already_paid', periods: [], payments: [] })
+  }
+
+  const { data: payments, error: paymentError } = await supabase.from('portable_storage_payments')
+    .upsert(
+      periods.map(period => ({
+        asset_id: assetId,
+        period_label: period,
+        paid_at: new Date().toISOString(),
+        ...paymentRecordAmounts(amountCentsForPeriod(period, rental), collectTax),
+      })),
+      { onConflict: 'asset_id,period_label' },
+    )
+    .select()
+
+  if (paymentError) return json({ error: paymentError.message }, 500)
+
+  await extendPortablePaidThrough(rental, periods)
+
+  return json({
+    ok: true,
+    status: 'recorded',
+    periods,
+    payments: payments ?? [],
+    paid_through_date: rental.paid_through_date ?? null,
+  })
+}
+
+async function recordCashPayment(body: Record<string, unknown>) {
+  if (typeof body.portable_asset_id === 'string' && body.portable_asset_id.trim()) {
+    return recordPortableCashPayment(body)
+  }
+  const collectTax = shouldCollectTax(body)
+
+  const unitId = typeof body.cash_unit_id === 'string'
+    ? body.cash_unit_id
+    : typeof body.unit_id === 'string'
+      ? body.unit_id
+      : ''
+  if (!unitId) return json({ error: 'unit_id required' }, 400)
+
+  const requestedPeriods = normalizePeriods(body.periods)
+  if (!requestedPeriods?.length) return json({ error: 'periods required' }, 400)
+
+  const { data: tenancy, error: tenancyError } = await supabase
+    .from('storage_tenancies')
+    .select('*, storage_units(unit_number)')
+    .eq('unit_id', unitId)
+    .is('end_date', null)
+    .maybeSingle()
+
+  if (tenancyError) return json({ error: tenancyError.message }, 500)
+  if (!tenancy) return json({ error: 'no active tenancy for unit' }, 404)
+
+  const { data: existing, error: existingError } = await supabase
+    .from('storage_payments')
+    .select('period_label')
+    .eq('tenancy_id', tenancy.id)
+    .in('period_label', requestedPeriods)
+
+  if (existingError) return json({ error: existingError.message }, 500)
+
+  const paidSet = new Set((existing ?? []).map((payment: any) => payment.period_label))
+  const periods = requestedPeriods.filter(period => !paidSet.has(period) && !periodCovered(period, tenancy))
+
+  if (!periods.length) {
+    return json({ ok: true, status: 'skipped', reason: 'already_paid', periods: [], payments: [] })
+  }
+
+  const { data: payments, error: paymentError } = await supabase.from('storage_payments')
+    .upsert(
+      periods.map(period => ({
+        unit_id: tenancy.unit_id,
+        tenancy_id: tenancy.id,
+        period_label: period,
+        paid_at: new Date().toISOString(),
+        ...paymentRecordAmounts(amountCentsForPeriod(period, tenancy), collectTax),
+      })),
+      { onConflict: 'tenancy_id,period_label' },
+    )
+    .select()
+
+  if (paymentError) return json({ error: paymentError.message }, 500)
+
+  await extendPaidThrough(tenancy, periods)
+
+  return json({
+    ok: true,
+    status: 'recorded',
+    periods,
+    payments: payments ?? [],
+    paid_through_date: tenancy.paid_through_date ?? null,
+  })
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS })
 
   try {
     const body = await req.json().catch(() => ({})) as Record<string, unknown>
+    const action = typeof body.action === 'string' ? body.action : ''
 
-    if (body.action === 'mark_credit_refunded') {
+    if (action === 'mark_credit_refunded') {
       const authError = await authorizeManualBilling(req, body)
       if (authError) return authError
       return await markCreditRefunded(body)
+    }
+
+    if (action === 'record_cash_payment') {
+      const authError = await authorizeManualBilling(req, body)
+      if (authError) return authError
+      return await recordCashPayment(body)
+    }
+
+    if (action) return json({ error: 'Unknown billing action.' }, 400)
+
+    if (body.portable_asset_id) {
+      const authError = await authorizeManualBilling(req, body)
+      if (authError) return authError
+
+      const assetId = typeof body.portable_asset_id === 'string' ? body.portable_asset_id : ''
+      const { data: rental, error } = await supabase
+        .from('portable_storage_rentals')
+        .select('*, customers(stripe_customer_id, stripe_payment_method_id), assets(label)')
+        .eq('asset_id', assetId)
+        .maybeSingle()
+
+      if (error || !rental) return new Response(JSON.stringify({ error: 'no active rental for portable asset' }), { status: 404, headers: CORS })
+
+      const extraAmount = normalizeExtraAmount(body.extra_amount)
+      const requestedPeriods = normalizePeriods(body.periods)
+      const requestId = requestIdFromBody(body)
+      if (requestedPeriods) {
+        const fallback = [
+          requestedPeriods.join('_') || 'extra',
+          Math.round(extraAmount * 100),
+        ]
+        const idempotencyKey = makeIdempotencyKey('manual-portable', rental.id, requestId ?? fallback.join(':'))
+        const result = await chargePortablePeriods(rental, requestedPeriods, extraAmount, idempotencyKey)
+        return json({ ok: true, ...result })
+      }
+
+      const months = normalizeMonths(body.months)
+      const billingPeriod = currentPeriodLabel(rental.billing_day)
+      const [y, m] = billingPeriod.split('-').map(Number)
+      const candidatePeriods = Array.from({ length: months + 24 }, (_, i) => {
+        const d = addMonths(y, m, i)
+        return periodLabel(d.year, d.month)
+      })
+
+      const { data: existing } = await supabase
+        .from('portable_storage_payments')
+        .select('period_label')
+        .eq('asset_id', assetId)
+        .in('period_label', candidatePeriods)
+
+      const paidSet = new Set((existing ?? []).map((p: any) => p.period_label))
+      const unpaidPeriods = candidatePeriods.filter(p => !paidSet.has(p) && !periodCovered(p, rental)).slice(0, months)
+
+      if (unpaidPeriods.length === 0 && extraAmount === 0) {
+        return json({ ok: true, status: 'skipped', reason: 'already_paid', periods: [] })
+      }
+
+      const fallback = [
+        unpaidPeriods.join('_') || 'extra',
+        Math.round(extraAmount * 100),
+      ]
+      const idempotencyKey = makeIdempotencyKey('manual-portable', rental.id, requestId ?? fallback.join(':'))
+      const result = await chargePortablePeriods(rental, unpaidPeriods, extraAmount, idempotencyKey)
+      return json({ ok: true, ...result })
     }
 
     // ── single unit charge (manual "Charge now" or one-time) ─────────────────
@@ -451,6 +864,10 @@ Deno.serve(async (req) => {
       return json({ ok: true, ...result })
     }
 
+    if (req.headers.get('Authorization')) {
+      return json({ error: 'unit_id required for manual billing.' }, 400)
+    }
+
     // ── daily cron: charge all due units ─────────────────────────────────────
     const cronError = authorizeCron(req)
     if (cronError) return cronError
@@ -464,20 +881,18 @@ Deno.serve(async (req) => {
       })
     }
 
-    const todayDay = todayParts().day
-    const lastDay  = lastDayOfCurrentMonth()
-
     const { data: tenancies, error } = await supabase
       .from('storage_tenancies')
       .select('*, customers(stripe_customer_id, stripe_payment_method_id), storage_units(unit_number)')
       .eq('payment_frequency', 'monthly')
       .not('monthly_rate', 'is', null)
       .not('customer_id', 'is', null)
+      .not('billing_day', 'is', null)
       .is('end_date', null)
 
     if (error) throw error
 
-    const due = (tenancies ?? []).filter(t => Math.min(t.billing_day, lastDay) === todayDay && !isPaidThroughToday(t.paid_through_date))
+    const due = (tenancies ?? []).filter(t => isDueToday(t) && !isPaidThroughToday(t.paid_through_date))
     const results = { charged: 0, skipped: 0, failed: 0 }
 
     for (const tenancy of due) {
@@ -494,7 +909,32 @@ Deno.serve(async (req) => {
       }
     }
 
-    return new Response(JSON.stringify({ ok: true, period: currentPeriodLabel(), due: due.length, ...results }), {
+    const { data: portableRentals, error: portableError } = await supabase
+      .from('portable_storage_rentals')
+      .select('*, customers(stripe_customer_id, stripe_payment_method_id), assets(label)')
+      .eq('payment_frequency', 'monthly')
+      .not('monthly_rate', 'is', null)
+      .not('customer_id', 'is', null)
+      .not('billing_day', 'is', null)
+
+    if (portableError) throw portableError
+
+    const portableDue = (portableRentals ?? []).filter(r => isDueToday(r) && !isPaidThroughToday(r.paid_through_date))
+
+    for (const rental of portableDue) {
+      try {
+        const billingPeriod = currentPeriodLabel(rental.billing_day)
+        const idempotencyKey = makeIdempotencyKey('cron-portable', rental.id, billingPeriod)
+        const { status } = await chargePortablePeriods(rental, [billingPeriod], 0, idempotencyKey)
+        if (status === 'charged') results.charged++
+        else results.skipped++
+      } catch (err) {
+        console.error(`Failed to charge portable rental ${rental.id}:`, err)
+        results.failed++
+      }
+    }
+
+    return new Response(JSON.stringify({ ok: true, period: currentPeriodLabel(), due: due.length + portableDue.length, fixed_due: due.length, portable_due: portableDue.length, ...results }), {
       headers: { 'Content-Type': 'application/json' },
     })
   } catch (err) {

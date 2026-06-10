@@ -27,26 +27,32 @@ export default function AssetManager() {
   const [newUnitNumber, setNewUnitNumber] = useState('')
   const [newUnitSize, setNewUnitSize] = useState('')
   const [newUnitNotes, setNewUnitNotes] = useState('')
+  const [unitError, setUnitError] = useState('')
+  const [savingUnit, setSavingUnit] = useState(false)
   const [confirmDeleteUnit, setConfirmDeleteUnit] = useState(null)
   const [renameAsset, setRenameAsset] = useState(null)
   const [renameLabel, setRenameLabel] = useState('')
   const [renameSize, setRenameSize] = useState('')
 
   const fetchAll = useCallback(async () => {
-    const [{ data: assetData }, { data: deployments }, { data: typeData }, { data: unitData }] = await Promise.all([
+    const [{ data: assetData }, { data: deployments }, { data: typeData }, { data: unitData }, { data: tenancyData }] = await Promise.all([
       supabase.from('assets').select('*, asset_types(name, icon)').eq('archived', false).order('label'),
       supabase.from('active_deployments').select('asset_id'),
       supabase.from('asset_types').select('*').order('name'),
-      supabase.from('storage_units').select('id, unit_number, size, tenant_name').order('unit_number'),
+      supabase.from('storage_units').select('id, unit_number, size, notes').order('unit_number'),
+      supabase.from('storage_tenancies').select('unit_id, tenant_name').is('end_date', null),
     ])
     if (assetData) setAssets(assetData)
     if (deployments) setDeployedIds(new Set(deployments.map(d => d.asset_id)))
     if (typeData) setTypes(typeData)
-    if (unitData) setStorageUnits(unitData)
+    if (unitData) {
+      const tenantByUnit = Object.fromEntries((tenancyData ?? []).map(t => [t.unit_id, t.tenant_name]))
+      setStorageUnits(unitData.map(u => ({ ...u, tenant_name: tenantByUnit[u.id] ?? null })))
+    }
   }, [])
 
   useEffect(() => { fetchAll() }, [fetchAll])
-  useRealtime(['assets', 'asset_types', 'deployments'], fetchAll)
+  useRealtime(['assets', 'asset_types', 'deployments', 'storage_units', 'storage_tenancies'], fetchAll)
 
   async function addType() {
     if (!newTypeName.trim()) return
@@ -90,11 +96,18 @@ export default function AssetManager() {
 
   async function addStorageUnit() {
     if (!newUnitNumber.trim()) return
-    await supabase.from('storage_units').insert({
+    setSavingUnit(true)
+    setUnitError('')
+    const { error } = await supabase.from('storage_units').insert({
       unit_number: newUnitNumber.trim(),
-      size:  newUnitSize.trim()  || null,
+      size: newUnitSize.trim() || null,
       notes: newUnitNotes.trim() || null,
     })
+    setSavingUnit(false)
+    if (error) {
+      setUnitError(error.message)
+      return
+    }
     setNewUnitNumber('')
     setNewUnitSize('')
     setNewUnitNotes('')
@@ -213,7 +226,7 @@ export default function AssetManager() {
         <div>
           <div className="flex items-center justify-between mb-3">
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Fixed Storage Units</p>
-            <Button size="sm" variant="outline" onClick={() => { setNewUnitNumber(''); setNewUnitSize(''); setNewUnitNotes(''); setShowAddUnit(true) }}>
+            <Button size="sm" variant="outline" onClick={() => { setNewUnitNumber(''); setNewUnitSize(''); setNewUnitNotes(''); setUnitError(''); setShowAddUnit(true) }}>
               <Plus size={14} />
               Add Unit
             </Button>
@@ -224,6 +237,7 @@ export default function AssetManager() {
                 <div>
                   <p className="text-sm font-medium">{unit.unit_number}{unit.size ? ` · ${unit.size}` : ''}</p>
                   <p className="text-xs text-muted-foreground">{unit.tenant_name ?? 'Vacant'}</p>
+                  {unit.notes && <p className="text-xs text-muted-foreground mt-0.5">{unit.notes}</p>}
                 </div>
                 <button
                   onClick={() => setConfirmDeleteUnit(unit)}
@@ -332,7 +346,7 @@ export default function AssetManager() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={showAddUnit} onOpenChange={v => !v && setShowAddUnit(false)}>
+      <Dialog open={showAddUnit} onOpenChange={v => { if (!v) { setShowAddUnit(false); setUnitError('') } }}>
         <DialogContent className="max-w-sm">
           <DialogHeader><DialogTitle>New Storage Unit</DialogTitle></DialogHeader>
           <div className="space-y-3 mt-2">
@@ -348,9 +362,12 @@ export default function AssetManager() {
               <p className="text-xs text-muted-foreground mb-1.5">Notes</p>
               <Input placeholder="Location, access info…" value={newUnitNotes} onChange={e => setNewUnitNotes(e.target.value)} />
             </div>
+            {unitError && <p className="text-sm text-destructive">{unitError}</p>}
             <div className="flex gap-2 pt-1">
-              <Button variant="outline" className="flex-1" onClick={() => setShowAddUnit(false)}>Cancel</Button>
-              <Button className="flex-1" onClick={addStorageUnit} disabled={!newUnitNumber.trim()}>Add Unit</Button>
+              <Button variant="outline" className="flex-1" onClick={() => setShowAddUnit(false)} disabled={savingUnit}>Cancel</Button>
+              <Button className="flex-1" onClick={addStorageUnit} disabled={!newUnitNumber.trim() || savingUnit}>
+                {savingUnit ? 'Adding…' : 'Add Unit'}
+              </Button>
             </div>
           </div>
         </DialogContent>

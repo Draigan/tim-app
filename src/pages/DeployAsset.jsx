@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { ArrowLeft, MapPin, TriangleAlert, X } from 'lucide-react'
 import CustomerPicker from '@/components/CustomerPicker'
+import { formatPhone } from '@/lib/utils'
 
 export default function DeployAsset() {
   const { assetId } = useParams()
@@ -155,7 +156,7 @@ export default function DeployAsset() {
           {selectedCustomer?.phone && (
             <div className="pt-1">
               <p className="text-xs text-muted-foreground mb-1.5">Phone</p>
-              <Input value={selectedCustomer.phone} readOnly className="text-muted-foreground" />
+              <Input value={formatPhone(selectedCustomer.phone)} readOnly className="text-muted-foreground" />
             </div>
           )}
         </div>

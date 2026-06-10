@@ -20,7 +20,17 @@ export const TYPE_ICONS = [
 
 export function formatPhone(phone) {
   if (!phone) return ''
-  const digits = phone.replace(/\D/g, '')
+  const text = String(phone).trim()
+  const rawDigits = text.replace(/\D/g, '')
+  const digits = rawDigits.length === 11 && rawDigits.startsWith('1') ? rawDigits.slice(1) : rawDigits
   if (digits.length === 10) return `(${digits.slice(0,3)}) ${digits.slice(3,6)}-${digits.slice(6)}`
-  return phone
+  return text
+}
+
+export function formatPhoneInput(value) {
+  const rawDigits = String(value).replace(/\D/g, '')
+  const digits = (rawDigits.length > 10 && rawDigits.startsWith('1') ? rawDigits.slice(1) : rawDigits).slice(0, 10)
+  if (digits.length <= 3) return digits
+  if (digits.length <= 6) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`
+  return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`
 }

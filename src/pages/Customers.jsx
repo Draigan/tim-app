@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Search, X, Plus, Phone, Mail, ChevronRight, ChevronUp, ChevronDown, Pencil, Truck, MapPin, Star, CreditCard, CheckCircle2, Send, Eye, EyeOff, DollarSign, Archive, ExternalLink } from 'lucide-react'
+import PinModal from '@/components/PinModal'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { supabase } from '@/lib/supabase'
-import { formatPhone } from '@/lib/utils'
+import { formatPhone, formatPhoneInput } from '@/lib/utils'
 import { useRealtime } from '@/lib/useRealtime'
 import { geocodeAddress } from '@/lib/mapbox'
 import { newBillingRequestId } from '@/lib/billingApproval'
@@ -26,13 +26,6 @@ function fmtPeriod(label) {
 }
 
 const EMPTY_FORM = { name: '', phone: '', email: '', address: '', notes: '' }
-
-function formatPhoneInput(value) {
-  const digits = value.replace(/\D/g, '').slice(0, 10)
-  if (digits.length <= 3) return digits
-  if (digits.length <= 6) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`
-  return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`
-}
 
 // ─── customer card ────────────────────────────────────────────────────────────
 
@@ -59,6 +52,67 @@ function CustomerCard({ customer, onTap }) {
   )
 }
 
+function RefundSuccessView({ result, onDone }) {
+  const { credit, customerName, refundedAt } = result
+  const amount = Number(credit?.amount ?? 0)
+  const unitNumber = credit?.storage_units?.unit_number
+  const periods = credit?.period_labels ?? []
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-col items-center py-4">
+        <div className="w-16 h-16 rounded-full bg-green-500/10 flex items-center justify-center mb-3">
+          <CheckCircle2 size={34} className="text-green-500" />
+        </div>
+        <p className="text-xl font-bold">Refund recorded</p>
+        <p className="text-sm text-muted-foreground mt-1">
+          ${amount.toFixed(2)} marked refunded
+        </p>
+      </div>
+
+      <div className="rounded-xl border overflow-hidden text-sm">
+        <div className="px-4 py-2.5 bg-muted/30 border-b flex items-center justify-between">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Receipt</p>
+          <span className="flex items-center gap-1 text-xs text-muted-foreground">
+            <DollarSign size={12} />
+            Refund
+          </span>
+        </div>
+        <div className="divide-y">
+          <div className="flex justify-between px-4 py-2.5">
+            <span className="text-muted-foreground">Customer</span>
+            <span className="font-medium">{customerName || 'Customer'}</span>
+          </div>
+          {unitNumber && (
+            <div className="flex justify-between px-4 py-2.5">
+              <span className="text-muted-foreground">Unit</span>
+              <span className="font-medium">{unitNumber}</span>
+            </div>
+          )}
+          {periods.length > 0 && (
+            <div className="flex justify-between px-4 py-2.5">
+              <span className="text-muted-foreground">Periods</span>
+              <span className="font-medium text-right">{periods.map(fmtPeriod).join(', ')}</span>
+            </div>
+          )}
+          <div className="flex justify-between px-4 py-2.5 font-semibold">
+            <span>Total refunded</span>
+            <span className="text-green-600">${amount.toFixed(2)}</span>
+          </div>
+          {refundedAt && (
+            <div className="flex justify-between px-4 py-2.5 bg-green-500/5">
+              <span className="text-muted-foreground">Recorded</span>
+              <span className="font-medium text-green-700">{fmtDate(refundedAt)}</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <Button className="w-full" onClick={onDone}>Done</Button>
+    </div>
+  )
+}
+
 // ─── customer sheet ───────────────────────────────────────────────────────────
 
 function CustomerSheet({ customer, isNew, onClose, onSaved }) {
@@ -69,7 +123,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
   const addrTimer = useRef(null)
   const [form, setForm]         = useState(
     customer
-      ? { name: customer.name ?? '', phone: customer.phone ?? '', email: customer.email ?? '', address: customer.address ?? '', notes: customer.notes ?? '' }
+      ? { name: customer.name ?? '', phone: formatPhone(customer.phone ?? ''), email: customer.email ?? '', address: customer.address ?? '', notes: customer.notes ?? '' }
       : EMPTY_FORM
   )
   const [active, setActive]         = useState([])
@@ -80,8 +134,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
   const [credits, setCredits]       = useState([])
   const [confirmArchive, setConfirmArchive] = useState(false)
   const [confirmRefundCredit, setConfirmRefundCredit] = useState(null)
-  const [refundPin, setRefundPin]   = useState('')
-  const [refundError, setRefundError] = useState('')
+  const [refundSuccess, setRefundSuccess] = useState(null)
   const [archiving, setArchiving]   = useState(false)
   const [resolvingCreditId, setResolvingCreditId] = useState(null)
   const [savingCard, setSavingCard]     = useState(false)
@@ -93,6 +146,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
 
   useEffect(() => {
     if (!customer) return
+    setRefundSuccess(null)
     setHistoryLoading(true)
     Promise.all([
       supabase.from('active_deployments').select('*').eq('customer_id', customer.id),
@@ -195,31 +249,39 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
     }
   }
 
-  async function handleSendInvite() {
+  async function handleSendInvite(pin) {
     setSendingInvite(true)
     try {
       const { data: { session } } = await supabase.auth.getSession()
-      await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-card-invite`, {
+      if (!session?.access_token) return { error: 'Sign in again before sending this invite.' }
+
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-card-invite`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ customer_id: customer.id }),
+        body: JSON.stringify({
+          customer_id: customer.id,
+          billing_pin: pin,
+          request_id: newBillingRequestId(),
+        }),
       })
+      const result = await res.json()
+      if (!res.ok || result.error) return { error: result.error || 'Could not send card invite.' }
+
+      setConfirmSendInvite(false)
       setInviteSent(true)
       setTimeout(() => setInviteSent(false), 3000)
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : 'Could not send card invite.' }
     } finally {
       setSendingInvite(false)
     }
   }
 
-  async function handleMarkCreditRefunded(creditId) {
+  async function handleMarkCreditRefunded(creditId, pin) {
     setResolvingCreditId(creditId)
-    setRefundError('')
     try {
       const { data: { session } } = await supabase.auth.getSession()
-      if (!session?.access_token) {
-        setRefundError('Sign in again before marking this refunded.')
-        return
-      }
+      if (!session?.access_token) return { error: 'Sign in again before marking this refunded.' }
 
       const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-billing-run`, {
         method: 'POST',
@@ -227,20 +289,20 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
         body: JSON.stringify({
           action: 'mark_credit_refunded',
           credit_id: creditId,
-          billing_pin: refundPin,
+          billing_pin: pin,
           request_id: newBillingRequestId(),
         }),
       })
       const result = await res.json()
-      if (!res.ok || result.error) {
-        setRefundError(result.error || 'Could not mark credit refunded.')
-        return
-      }
+      if (!res.ok || result.error) return { error: result.error || 'Could not mark credit refunded.' }
 
       if (result.credit) setCredits(prev => prev.map(c => c.id === creditId ? result.credit : c))
-      setResolvingCreditId(null)
+      setRefundSuccess({
+        credit: result.credit ?? credits.find(c => c.id === creditId),
+        customerName: customer?.name,
+        refundedAt: result.credit?.resolved_at ?? new Date().toISOString(),
+      })
       setConfirmRefundCredit(null)
-      setRefundPin('')
       onSaved()
     } finally {
       setResolvingCreditId(null)
@@ -251,14 +313,31 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
   const openCredits = credits.filter(c => c.status === 'open')
   const resolvedCredits = credits.filter(c => c.status !== 'open')
   const openCreditTotal = openCredits.reduce((sum, c) => sum + (Number(c.amount) || 0), 0)
+  const pinModalOpen = !!confirmRefundCredit || confirmSendInvite
+
+  function handleSheetOpenChange(open) {
+    if (open) return
+    if (pinModalOpen) return
+    onClose()
+  }
+
+  function handleSheetInteractOutside(event) {
+    if (pinModalOpen) event.preventDefault()
+  }
 
   return (
-    <Sheet open onOpenChange={v => !v && onClose()}>
-      <SheetContent side="bottom" className="max-h-[90vh] overflow-y-auto" aria-describedby={undefined}>
+    <Sheet open onOpenChange={handleSheetOpenChange}>
+      <SheetContent
+        side="bottom"
+        className="max-h-[90vh] overflow-y-auto"
+        aria-describedby={undefined}
+        onPointerDownOutside={handleSheetInteractOutside}
+        onInteractOutside={handleSheetInteractOutside}
+      >
         <SheetHeader className="mb-5">
           <SheetTitle className="flex items-center justify-between pr-6">
             <span>{title}</span>
-            {!isNew && !editing && (
+            {!refundSuccess && !isNew && !editing && (
               <button onClick={() => setEditing(true)} className="text-muted-foreground hover:text-foreground">
                 <Pencil size={16} />
               </button>
@@ -266,6 +345,9 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
           </SheetTitle>
         </SheetHeader>
 
+        {refundSuccess ? (
+          <RefundSuccessView result={refundSuccess} onDone={() => setRefundSuccess(null)} />
+        ) : (
         <div className="space-y-5">
 
           {/* Fields */}
@@ -563,59 +645,56 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
           )}
 
         </div>
+        )}
 
-        <Dialog open={!!confirmRefundCredit} onOpenChange={open => {
-          if (!open) {
-            setConfirmRefundCredit(null)
-            setRefundPin('')
-            setRefundError('')
-          }
-        }}>
-          <DialogContent className="max-w-sm">
-            <DialogHeader>
-              <DialogTitle>Mark credit refunded?</DialogTitle>
-            </DialogHeader>
-            <p className="text-sm text-muted-foreground">
-              Confirm that ${Number(confirmRefundCredit?.amount ?? 0).toFixed(2)} was refunded to {customer?.name}. This will close the open credit.
-            </p>
-            <Input
-              type="password"
-              inputMode="numeric"
-              placeholder="Billing PIN"
-              value={refundPin}
-              onChange={e => { setRefundPin(e.target.value); setRefundError('') }}
-              autoComplete="off"
-            />
-            {refundError && <p className="text-xs text-destructive">{refundError}</p>}
-            <div className="flex gap-2 pt-2">
-              <Button variant="outline" className="flex-1" disabled={!!resolvingCreditId} onClick={() => setConfirmRefundCredit(null)}>
-                Cancel
-              </Button>
-              <Button className="flex-1" disabled={!confirmRefundCredit || !!resolvingCreditId || !refundPin.trim()} onClick={() => handleMarkCreditRefunded(confirmRefundCredit.id)}>
-                {resolvingCreditId ? 'Saving…' : 'Confirm'}
-              </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
       </SheetContent>
 
-      <Dialog open={confirmSendInvite} onOpenChange={open => !open && setConfirmSendInvite(false)}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Send card invite?</DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            This will send a Stripe payment setup link via SMS to <span className="font-medium text-foreground">{form.phone}</span>. They can use it to securely add their card on file for billing.
-          </p>
-          <div className="flex gap-2 pt-2">
-            <Button variant="outline" className="flex-1" onClick={() => setConfirmSendInvite(false)}>Cancel</Button>
-            <Button className="flex-1 gap-2" disabled={sendingInvite} onClick={() => { setConfirmSendInvite(false); handleSendInvite() }}>
-              <Send size={14} />
-              {sendingInvite ? 'Sending…' : 'Send invite'}
-            </Button>
+      <PinModal
+        open={!!confirmRefundCredit}
+        onClose={() => setConfirmRefundCredit(null)}
+        onConfirm={pin => confirmRefundCredit
+          ? handleMarkCreditRefunded(confirmRefundCredit.id, pin)
+          : { error: 'No credit selected.' }
+        }
+        loading={!!resolvingCreditId}
+        title="Mark credit refunded"
+        subtitle="Enter billing PIN to confirm"
+        icon={DollarSign}
+        confirmLabel="Confirm refund"
+      >
+        <div className="rounded-xl border divide-y text-sm bg-muted/40">
+          <div className="flex justify-between px-4 py-2.5">
+            <span className="text-muted-foreground">Customer</span>
+            <span className="font-medium">{customer?.name}</span>
           </div>
-        </DialogContent>
-      </Dialog>
+          <div className="flex justify-between px-4 py-2.5">
+            <span className="text-muted-foreground">Amount</span>
+            <span className="font-medium">${Number(confirmRefundCredit?.amount ?? 0).toFixed(2)}</span>
+          </div>
+        </div>
+      </PinModal>
+
+      <PinModal
+        open={confirmSendInvite}
+        onClose={() => !sendingInvite && setConfirmSendInvite(false)}
+        onConfirm={handleSendInvite}
+        loading={sendingInvite}
+        title="Send card invite"
+        subtitle="Enter billing PIN to send setup link"
+        icon={Send}
+        confirmLabel="Send invite"
+      >
+        <div className="rounded-xl border divide-y text-sm bg-muted/40">
+          <div className="flex justify-between gap-3 px-4 py-2.5">
+            <span className="text-muted-foreground">Customer</span>
+            <span className="font-medium text-right">{customer?.name}</span>
+          </div>
+          <div className="flex justify-between gap-3 px-4 py-2.5">
+            <span className="text-muted-foreground">SMS to</span>
+            <span className="font-medium text-right">{formatPhone(form.phone)}</span>
+          </div>
+        </div>
+      </PinModal>
     </Sheet>
   )
 }

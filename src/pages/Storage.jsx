@@ -1,13 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Search, X, Phone, ChevronRight, CheckCircle2, Send, Pencil, ArrowUpDown, CreditCard, Plus, Eye, EyeOff, Map as MapIcon } from 'lucide-react'
+import { Search, X, Phone, ChevronRight, CheckCircle2, Send, Pencil, ArrowUpDown, Plus, Eye, EyeOff, Map as MapIcon, Move } from 'lucide-react'
+import PinModal from '@/components/PinModal'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { supabase } from '@/lib/supabase'
 import CustomerPicker from '@/components/CustomerPicker'
-import { cn, formatPhone } from '@/lib/utils'
+import { cn, formatPhone, formatPhoneInput } from '@/lib/utils'
 import { useRealtime } from '@/lib/useRealtime'
 import { newBillingRequestId, promptBillingPin } from '@/lib/billingApproval'
 import { CUSTOMER_ASSIGN_COLUMNS } from '@/lib/customerFields'
@@ -20,6 +20,24 @@ const cents = value => {
   return Number.isFinite(n) ? Math.round(n * 100) : 0
 }
 const dollars = value => Number((value / 100).toFixed(2))
+const SALES_TAX_RATE = 0.13
+const SALES_TAX_LABEL = 'HST'
+
+function taxCentsForSubtotal(subtotalCents) {
+  return Math.round(subtotalCents * SALES_TAX_RATE)
+}
+
+function paymentAmountsFromSubtotal(subtotal, collectTax = false) {
+  const subtotalCents = cents(subtotal)
+  const taxCents = collectTax ? taxCentsForSubtotal(subtotalCents) : 0
+  return {
+    amount: dollars(subtotalCents + taxCents),
+    subtotal_amount: dollars(subtotalCents),
+    tax_amount: dollars(taxCents),
+    tax_rate: collectTax && taxCents > 0 ? SALES_TAX_RATE : 0,
+    tax_label: collectTax && taxCents > 0 ? SALES_TAX_LABEL : null,
+  }
+}
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -110,6 +128,29 @@ function periodCovered(period, billingDay, paidSet, paidThroughDate) {
   const periodPaidThrough = paidThroughForPeriod(period, billingDay)
   if (periodPaidThrough && paidThrough >= periodPaidThrough) return true
   return period === currentPeriodLabel(billingDay) && isPaidThroughToday(paidThroughDate)
+}
+
+function periodChargeCents(label, billingDay, moveInDate, monthlyRate) {
+  const monthlyRateCents = cents(monthlyRate)
+  if (monthlyRateCents <= 0) return 0
+
+  const start = periodDueDate(label, billingDay)
+  const end = paidThroughForPeriod(label, billingDay)
+  if (!start || !end) return monthlyRateCents
+
+  const moveIn = parseLocalDate(moveInDate)
+  if (moveIn && moveIn > end) return 0
+
+  const chargeStart = moveIn && moveIn > start ? moveIn : start
+  const totalDays = daysInclusive(start, end)
+  const billableDays = daysInclusive(chargeStart, end)
+  if (totalDays <= 0 || billableDays <= 0) return 0
+  if (billableDays >= totalDays) return monthlyRateCents
+  return Math.round(monthlyRateCents * billableDays / totalDays)
+}
+
+function periodChargeAmount(label, billingDay, moveInDate, monthlyRate) {
+  return dollars(periodChargeCents(label, billingDay, moveInDate, monthlyRate))
 }
 
 function periodLabelForDate(date, billingDay) {
@@ -208,14 +249,29 @@ function paymentStatus(billingDay, frequency, isPaid, moveInDate, paidThroughDat
   today.setHours(0, 0, 0, 0)
   const paidThrough = parseLocalDate(paidThroughDate)
   if (paidThrough && paidThrough < today) return 'overdue'
-  const dueDate = periodDueDate(currentPeriodLabel(billingDay), billingDay)
+  const currentPeriod = currentPeriodLabel(billingDay)
+  let dueDate = periodDueDate(currentPeriod, billingDay)
   if (!dueDate) return 'unpaid'
   const moveIn = parseLocalDate(moveInDate)
-  if (moveIn && dueDate < moveIn) return 'upcoming'
+  const periodEnd = paidThroughForPeriod(currentPeriod, billingDay)
+  if (moveIn && periodEnd && periodEnd < moveIn) return 'upcoming'
+  if (moveIn && dueDate < moveIn && (!periodEnd || moveIn <= periodEnd)) dueDate = moveIn
   const daysUntilDue = Math.round((dueDate - today) / DAY_MS)
   if (daysUntilDue < 0) return 'overdue'
   if (daysUntilDue <= 3) return 'due_soon'
   return 'upcoming'
+}
+
+function dueDateForCurrentPeriod(billingDay, moveInDate) {
+  if (!billingDay) return null
+  const currentPeriod = currentPeriodLabel(billingDay)
+  const dueDate = periodDueDate(currentPeriod, billingDay)
+  if (!dueDate) return null
+  const moveIn = parseLocalDate(moveInDate)
+  const periodEnd = paidThroughForPeriod(currentPeriod, billingDay)
+  if (moveIn && periodEnd && periodEnd < moveIn) return null
+  if (moveIn && dueDate < moveIn && (!periodEnd || moveIn <= periodEnd)) return moveIn
+  return dueDate
 }
 
 function ordinal(n) {
@@ -227,7 +283,7 @@ function ordinal(n) {
 function paymentRowsForPeriods({ tenancyId, periods, amount }) {
   return periods.map(period => {
     const row = { tenancy_id: tenancyId, period_label: period }
-    if (amount !== undefined && amount !== null) row.amount = amount
+    if (amount !== undefined && amount !== null) Object.assign(row, paymentAmountsFromSubtotal(amount))
     return row
   })
 }
@@ -289,28 +345,27 @@ function formatPeriod(label) {
 function generatePeriods(billingDay, moveInDate) {
   if (!billingDay) return []
   const current = currentPeriodLabel(billingDay)
-  if (!moveInDate) return [current]
-  const [sy, sm_raw] = moveInDate.split('-').map(Number)
-  const sm = sm_raw - 1
+  const moveIn = parseLocalDate(moveInDate)
+  const first = moveIn ? periodLabelForDate(moveIn, billingDay) : current
+  if (!first) return [current]
+
   let [y, m] = current.split('-').map(Number)
   m -= 1
   const periods = []
-  while ((y > sy || (y === sy && m >= sm)) && periods.length < 24) {
-    periods.push(`${y}-${String(m + 1).padStart(2, '0')}`)
+  while (periods.length < 24) {
+    const label = `${y}-${String(m + 1).padStart(2, '0')}`
+    if (label < first) break
+    periods.push(label)
     if (--m < 0) { m = 11; y-- }
   }
-  return periods.filter(p => {
-    const [py, pm] = p.split('-').map(Number)
-    const billingDay_ = Math.min(billingDay, lastDayOf(py, pm - 1))
-    const billingStr = `${py}-${String(pm).padStart(2,'0')}-${String(billingDay_).padStart(2,'0')}`
-    return billingStr >= moveInDate
-  })
+  return periods
 }
 
 // ─── shared small pieces ──────────────────────────────────────────────────────
 
-function StatusBadge({ status, billingDay }) {
-  const effectiveDay = billingDay ? Math.min(billingDay, lastDayOf(new Date().getFullYear(), new Date().getMonth())) : billingDay
+function StatusBadge({ status, billingDay, moveInDate }) {
+  const dueDate = dueDateForCurrentPeriod(billingDay, moveInDate)
+  const effectiveDay = dueDate?.getDate() ?? (billingDay ? Math.min(billingDay, lastDayOf(new Date().getFullYear(), new Date().getMonth())) : billingDay)
   if (status === 'paid')     return <span className="text-xs font-medium text-green-500">Paid</span>
   if (status === 'overdue')  return <span className="text-xs font-medium text-destructive">Overdue</span>
   if (status === 'due_soon') return <span className="text-xs font-medium text-amber-500">{effectiveDay === todayDay() ? 'Due today' : `Due ${ordinal(effectiveDay)}`}</span>
@@ -327,7 +382,97 @@ function cardBorder(status) {
 const tenantName = (item) => item?.customers?.name || item?.tenant_name || null
 
 const FREQ_LABELS = { monthly: 'Monthly', one_time: 'One-time' }
-const EMPTY_ASSIGN = { monthly_rate: '150', billing_day: String(new Date().getDate()), payment_frequency: 'monthly', move_in_date: localDateStr(), notes: '' }
+const MONTH_OPTIONS = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+]
+const EMPTY_ASSIGN = { monthly_rate: '150', billing_day: '1', payment_frequency: 'monthly', move_in_date: localDateStr(), notes: '' }
+
+function datePartsFromValue(value) {
+  const [year, month, day] = String(value || '').split('-').map(Number)
+  if (![year, month, day].every(Number.isFinite)) return null
+  if (month < 1 || month > 12) return null
+  if (day < 1 || day > lastDayOf(year, month - 1)) return null
+  return { year, month, day }
+}
+
+function formatDateParts({ year, month, day }) {
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+}
+
+function yearOptionsFor(value) {
+  const currentYear = new Date().getFullYear()
+  const selectedYear = datePartsFromValue(value)?.year
+  const start = Math.min(currentYear - 15, selectedYear ?? currentYear)
+  const end = Math.max(currentYear + 5, selectedYear ?? currentYear)
+  return Array.from({ length: end - start + 1 }, (_, i) => end - i)
+}
+
+function StorageDateSelect({ value, onChange }) {
+  const selected = datePartsFromValue(value)
+  const today = datePartsFromValue(localDateStr())
+  const base = selected ?? today
+  const maxDay = lastDayOf(base.year, base.month - 1)
+  const selectClass = 'h-10 w-full rounded-md border border-input bg-background px-2 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2'
+
+  function updatePart(part, rawValue) {
+    const numericValue = Number(rawValue)
+    if (!Number.isFinite(numericValue)) return
+    const next = { ...base, [part]: numericValue }
+    next.day = Math.min(next.day, lastDayOf(next.year, next.month - 1))
+    onChange(formatDateParts(next))
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-[minmax(0,1.15fr)_minmax(0,0.75fr)_minmax(0,0.95fr)] gap-2">
+        <select
+          aria-label="Move-in month"
+          value={selected ? String(selected.month) : ''}
+          onChange={e => updatePart('month', e.target.value)}
+          className={selectClass}
+        >
+          <option value="" disabled>Month</option>
+          {MONTH_OPTIONS.map((label, index) => (
+            <option key={label} value={index + 1}>{label}</option>
+          ))}
+        </select>
+        <select
+          aria-label="Move-in day"
+          value={selected ? String(selected.day) : ''}
+          onChange={e => updatePart('day', e.target.value)}
+          className={selectClass}
+        >
+          <option value="" disabled>Day</option>
+          {Array.from({ length: maxDay }, (_, i) => i + 1).map(day => (
+            <option key={day} value={day}>{day}</option>
+          ))}
+        </select>
+        <select
+          aria-label="Move-in year"
+          value={selected ? String(selected.year) : ''}
+          onChange={e => updatePart('year', e.target.value)}
+          className={selectClass}
+        >
+          <option value="" disabled>Year</option>
+          {yearOptionsFor(value).map(year => (
+            <option key={year} value={year}>{year}</option>
+          ))}
+        </select>
+      </div>
+      <div className="flex gap-3 px-0.5 text-xs">
+        <button type="button" onClick={() => onChange(localDateStr())} className="text-primary hover:text-primary/80">
+          Today
+        </button>
+        {value && (
+          <button type="button" onClick={() => onChange('')} className="text-muted-foreground hover:text-foreground">
+            Clear
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
 
 // ─── fixed unit card ──────────────────────────────────────────────────────────
 
@@ -354,8 +499,9 @@ function FixedUnitCard({ unit, isPaid, onTap }) {
             {unit.tenant_phone && <span className="text-xs text-muted-foreground">{formatPhone(unit.tenant_phone)}</span>}
           </div>
         )}
+        {unit.unit_notes && <p className="text-xs text-muted-foreground mt-1 truncate">{unit.unit_notes}</p>}
       </div>
-      {status && <StatusBadge status={status} billingDay={unit.billing_day} />}
+      {status && <StatusBadge status={status} billingDay={unit.billing_day} moveInDate={unit.move_in_date} />}
       <ChevronRight size={16} className="text-muted-foreground flex-shrink-0" />
     </button>
   )
@@ -363,7 +509,7 @@ function FixedUnitCard({ unit, isPaid, onTap }) {
 
 // ─── storage sheet ────────────────────────────────────────────────────────────
 
-function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }) {
+export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }) {
   const navigate = useNavigate()
   const [history, setHistory]         = useState([])
   const [smsLog, setSmsLog]           = useState([])
@@ -470,9 +616,10 @@ function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }) {
   }
 
   async function handleMarkOnePaid(period) {
+    const amount = periodChargeAmount(period, item.billing_day, item.move_in_date, item.monthly_rate)
     const { data } = await supabase
       .from('storage_payments')
-      .upsert({ tenancy_id: item.tenancy_id, period_label: period }, { onConflict: 'tenancy_id,period_label' })
+      .upsert({ tenancy_id: item.tenancy_id, period_label: period, ...paymentAmountsFromSubtotal(amount) }, { onConflict: 'tenancy_id,period_label' })
       .select()
       .single()
     if (data) setHistory(prev => sortPaymentsByPeriod([data, ...prev]))
@@ -495,7 +642,11 @@ function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }) {
 
   async function handlePayAll(unpaid) {
     setPayingAll(true)
-    const inserts = unpaid.map(period => ({ tenancy_id: item.tenancy_id, period_label: period }))
+    const inserts = unpaid.map(period => ({
+      tenancy_id: item.tenancy_id,
+      period_label: period,
+      ...paymentAmountsFromSubtotal(periodChargeAmount(period, item.billing_day, item.move_in_date, item.monthly_rate)),
+    }))
     const { data } = await supabase.from('storage_payments').upsert(inserts, { onConflict: 'tenancy_id,period_label' }).select()
     setHistory(prev => sortPaymentsByPeriod([...(data ?? []), ...prev]))
     await extendTenancyPaidThrough({
@@ -561,7 +712,11 @@ function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }) {
   async function handleMarkPaidOneTime() {
     const unpaid = oneTimePeriods(oneTimeMonths).filter(p => !p.alreadyPaid).map(p => p.label)
     if (!unpaid.length) return
-    const inserts = unpaid.map(period => ({ tenancy_id: item.tenancy_id, period_label: period }))
+    const inserts = unpaid.map(period => ({
+      tenancy_id: item.tenancy_id,
+      period_label: period,
+      ...paymentAmountsFromSubtotal(periodChargeAmount(period, item.billing_day, item.move_in_date, item.monthly_rate)),
+    }))
     const { data } = await supabase.from('storage_payments').upsert(inserts, { onConflict: 'tenancy_id,period_label' }).select()
     setHistory(prev => sortPaymentsByPeriod([...(data ?? []), ...prev]))
     await extendTenancyPaidThrough({
@@ -640,18 +795,30 @@ function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }) {
     }
   }
 
-  async function handleSendInvite() {
+  async function handleSendInvite(pin) {
     if (!customer?.id || !customer?.phone) return
     setSendingInvite(true)
     try {
       const { data: { session } } = await supabase.auth.getSession()
-      await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-card-invite`, {
+      if (!session?.access_token) return { error: 'Sign in again before sending this invite.' }
+
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-card-invite`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ customer_id: customer.id }),
+        body: JSON.stringify({
+          customer_id: customer.id,
+          billing_pin: pin,
+          request_id: newBillingRequestId(),
+        }),
       })
+      const result = await res.json()
+      if (!res.ok || result.error) return { error: result.error || 'Could not send card invite.' }
+
+      setConfirmSendInvite(false)
       setInviteSent(true)
       setTimeout(() => setInviteSent(false), 3000)
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : 'Could not send card invite.' }
     } finally {
       setSendingInvite(false)
     }
@@ -734,47 +901,57 @@ function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }) {
   }
 
   async function handleAssign({ applyCredits = false } = {}) {
+    if (saving) return
     setSaving(true)
-    let assignCustomer = customer
-    if (isNewCustomer) {
-      const { data } = await supabase.from('customers').insert({
-        name:  newCustomer.name.trim()  || null,
-        phone: newCustomer.phone.trim() || null,
-        email: newCustomer.email.trim() || null,
-      }).select(CUSTOMER_ASSIGN_COLUMNS).single()
-      if (!data) { setSaving(false); return }
-      assignCustomer = data
+    try {
+      let assignCustomer = customer
+      if (isNewCustomer) {
+        const { data, error } = await supabase.from('customers').insert({
+          name:  newCustomer.name.trim()  || null,
+          phone: newCustomer.phone.trim() || null,
+          email: newCustomer.email.trim() || null,
+        }).select(CUSTOMER_ASSIGN_COLUMNS).single()
+        if (error) throw error
+        if (!data) throw new Error('Could not create the customer.')
+        assignCustomer = data
+      }
+      if (!assignCustomer) throw new Error('Choose a customer before assigning the unit.')
+
+      const monthlyRate = assign.monthly_rate ? Number(assign.monthly_rate) : null
+      const billingDay = assign.billing_day ? Number(assign.billing_day) : null
+
+      const { data: tenancy, error } = await supabase.from('storage_tenancies').insert({
+        unit_id:           item.id,
+        customer_id:       assignCustomer.id,
+        tenant_name:       assignCustomer.name  || null,
+        tenant_phone:      assignCustomer.phone || null,
+        monthly_rate:      monthlyRate,
+        billing_day:       billingDay,
+        payment_frequency: assign.payment_frequency || null,
+        move_in_date:      assign.move_in_date  || null,
+        notes:             assign.notes.trim()  || null,
+      }).select('id').single()
+      if (error) throw error
+      if (!tenancy?.id) throw new Error('Could not assign the unit.')
+
+      if (applyCredits && monthlyRate && billingDay) {
+        await applyOpenCreditsToTenancy({
+          customerId: assignCustomer.id,
+          tenancyId: tenancy.id,
+          monthlyRate,
+          billingDay,
+          moveInDate: assign.move_in_date,
+        })
+      }
+
+      onAssigned()
+      onClose()
+    } catch (err) {
+      console.error('Failed to assign storage unit:', err)
+      window.alert(err instanceof Error ? err.message : 'Could not assign the unit.')
+    } finally {
+      setSaving(false)
     }
-    if (!assignCustomer) { setSaving(false); return }
-
-    const monthlyRate = assign.monthly_rate ? Number(assign.monthly_rate) : null
-    const billingDay = assign.billing_day ? Number(assign.billing_day) : null
-
-    const { data: tenancy } = await supabase.from('storage_tenancies').insert({
-      unit_id:           item.id,
-      customer_id:       assignCustomer.id,
-      tenant_name:       assignCustomer.name  || null,
-      tenant_phone:      assignCustomer.phone || null,
-      monthly_rate:      monthlyRate,
-      billing_day:       billingDay,
-      payment_frequency: assign.payment_frequency || null,
-      move_in_date:      assign.move_in_date  || null,
-      notes:             assign.notes.trim()  || null,
-    }).select('id').single()
-
-    if (applyCredits && tenancy?.id && monthlyRate && billingDay) {
-      await applyOpenCreditsToTenancy({
-        customerId: assignCustomer.id,
-        tenancyId: tenancy.id,
-        monthlyRate,
-        billingDay,
-        moveInDate: assign.move_in_date,
-      })
-    }
-
-    setSaving(false)
-    onAssigned()
-    onClose()
   }
 
   async function handleVacate(targetUnitId) {
@@ -907,13 +1084,28 @@ function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }) {
   const creditAmountToApply = dollars(creditCoveragePreview?.appliedCents ?? 0)
   const canApplyCustomerCredit = (creditCoveragePreview?.appliedCents ?? 0) > 0
 
+  function handleSheetOpenChange(open) {
+    if (open) return
+    if (confirmSendInvite) return
+    onClose()
+  }
+
+  function handleSheetInteractOutside(event) {
+    if (confirmSendInvite) event.preventDefault()
+  }
+
   return (
-    <Sheet open={!!item} onOpenChange={v => !v && onClose()}>
-      <SheetContent side="bottom" className="max-h-[85vh] overflow-y-auto">
+    <Sheet open={!!item} onOpenChange={handleSheetOpenChange}>
+      <SheetContent
+        side="bottom"
+        className="max-h-[85vh] overflow-y-auto"
+        onPointerDownOutside={handleSheetInteractOutside}
+        onInteractOutside={handleSheetInteractOutside}
+      >
         <SheetHeader className="mb-5">
           <SheetTitle className="flex items-center justify-between pr-6">
             <span>Unit {item.unit_number}</span>
-            {status && <StatusBadge status={status} billingDay={item.billing_day} />}
+            {status && <StatusBadge status={status} billingDay={item.billing_day} moveInDate={item.move_in_date} />}
           </SheetTitle>
         </SheetHeader>
 
@@ -928,7 +1120,7 @@ function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }) {
                   <div className="bg-muted/50 rounded-xl p-3 flex items-center justify-between">
                     <div>
                       <p className="font-medium">{customer.name}</p>
-                      {customer.phone && <p className="text-xs text-muted-foreground">{customer.phone}</p>}
+                      {customer.phone && <p className="text-xs text-muted-foreground">{formatPhone(customer.phone)}</p>}
                       {customer.email && <p className="text-xs text-muted-foreground">{customer.email}</p>}
                       {openCreditTotal > 0 && (
                         <p className="text-xs text-amber-600">Credit owed ${openCreditTotal.toFixed(2)}</p>
@@ -957,7 +1149,7 @@ function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }) {
                     <button onClick={() => setIsNewCustomer(false)} className="text-xs text-muted-foreground hover:text-foreground">Cancel</button>
                   </div>
                   <Input value={newCustomer.name} onChange={e => setNewCustomer(c => ({ ...c, name: e.target.value }))} placeholder="Full name" autoFocus />
-                  <Input value={newCustomer.phone} onChange={e => setNewCustomer(c => ({ ...c, phone: e.target.value }))} placeholder="(519) 555-0000" type="tel" />
+                  <Input value={newCustomer.phone} onChange={e => setNewCustomer(c => ({ ...c, phone: formatPhoneInput(e.target.value) }))} placeholder="(519) 555-0000" type="tel" />
                   <Input value={newCustomer.email} onChange={e => setNewCustomer(c => ({ ...c, email: e.target.value }))} placeholder="email@example.com" type="email" />
                 </div>
               ) : (
@@ -982,7 +1174,7 @@ function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }) {
                                 </span>
                               )}
                             </span>
-                            {c.phone && <span className="text-xs text-muted-foreground">{c.phone}</span>}
+                            {c.phone && <span className="text-xs text-muted-foreground">{formatPhone(c.phone)}</span>}
                           </button>
                         ))
                       }
@@ -1015,7 +1207,7 @@ function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }) {
               </div>
               <div>
                 <p className="text-xs text-muted-foreground mb-1.5">Move-in Date</p>
-                <Input value={assign.move_in_date} onChange={e => setAssign(a => ({ ...a, move_in_date: e.target.value, billing_day: e.target.value ? String(new Date(e.target.value + 'T12:00:00').getDate()) : a.billing_day }))} type="date" />
+                <StorageDateSelect value={assign.move_in_date} onChange={value => setAssign(a => ({ ...a, move_in_date: value }))} />
               </div>
               <div>
                 <p className="text-xs text-muted-foreground mb-1.5">Notes</p>
@@ -1096,7 +1288,7 @@ function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }) {
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground mb-1.5">Move-in Date</p>
-                  <Input value={editForm.move_in_date} onChange={e => setEditForm(f => ({ ...f, move_in_date: e.target.value }))} type="date" />
+                  <StorageDateSelect value={editForm.move_in_date} onChange={value => setEditForm(f => ({ ...f, move_in_date: value }))} />
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground mb-1.5">Notes</p>
@@ -1139,6 +1331,7 @@ function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }) {
                         Paid through {formatLocalDate(effectivePaidThroughDate, { month: 'short', day: 'numeric', year: 'numeric' })}
                       </p>
                     )}
+                    {item.unit_notes && <p className="text-xs text-muted-foreground mt-1">Unit note: {item.unit_notes}</p>}
                     {item.notes && <p className="text-xs text-muted-foreground mt-1">{item.notes}</p>}
                   </div>
                   <button onClick={startEdit} className="p-2 text-muted-foreground hover:text-foreground transition-colors flex-shrink-0">
@@ -1242,23 +1435,27 @@ function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }) {
         )}
       </SheetContent>
 
-      <Dialog open={confirmSendInvite} onOpenChange={open => !open && setConfirmSendInvite(false)}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Send card invite?</DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            This will send a Stripe payment setup link via SMS to <span className="font-medium text-foreground">{formatPhone(customer?.phone)}</span>. They can use it to securely add their card on file for billing.
-          </p>
-          <div className="flex gap-2 pt-2">
-            <Button variant="outline" className="flex-1" onClick={() => setConfirmSendInvite(false)}>Cancel</Button>
-            <Button className="flex-1 gap-2" disabled={sendingInvite} onClick={() => { setConfirmSendInvite(false); handleSendInvite() }}>
-              <Send size={14} />
-              {sendingInvite ? 'Sending…' : 'Send invite'}
-            </Button>
+      <PinModal
+        open={confirmSendInvite}
+        onClose={() => !sendingInvite && setConfirmSendInvite(false)}
+        onConfirm={handleSendInvite}
+        loading={sendingInvite}
+        title="Send card invite"
+        subtitle="Enter billing PIN to send setup link"
+        icon={Send}
+        confirmLabel="Send invite"
+      >
+        <div className="rounded-xl border divide-y text-sm bg-muted/40">
+          <div className="flex justify-between gap-3 px-4 py-2.5">
+            <span className="text-muted-foreground">Customer</span>
+            <span className="font-medium text-right">{customer?.name}</span>
           </div>
-        </DialogContent>
-      </Dialog>
+          <div className="flex justify-between gap-3 px-4 py-2.5">
+            <span className="text-muted-foreground">SMS to</span>
+            <span className="font-medium text-right">{formatPhone(customer?.phone)}</span>
+          </div>
+        </div>
+      </PinModal>
     </Sheet>
   )
 }
@@ -1267,7 +1464,7 @@ function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }) {
 
 function PortableUnitCard({ asset, rental, isPaid, isDeployed, onTap }) {
   const unassigned = !tenantName(rental)
-  const status = unassigned ? null : paymentStatus(rental.billing_day, rental.payment_frequency, isPaid, rental.move_in_date)
+  const status = unassigned ? null : paymentStatus(rental.billing_day, rental.payment_frequency, isPaid, rental.move_in_date, rental.paid_through_date)
 
   return (
     <button
@@ -1292,13 +1489,14 @@ function PortableUnitCard({ asset, rental, isPaid, isDeployed, onTap }) {
         )}
         {unassigned && isDeployed && <p className="text-xs text-primary mt-0.5">Deployed</p>}
       </div>
-      {status && <StatusBadge status={status} billingDay={rental.billing_day} />}
+      {status && <StatusBadge status={status} billingDay={rental.billing_day} moveInDate={rental.move_in_date} />}
       <ChevronRight size={16} className="text-muted-foreground flex-shrink-0" />
     </button>
   )
 }
 
 function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, onAssigned }) {
+  const navigate = useNavigate()
   const [history, setHistory]       = useState([])
   const [smsLog, setSmsLog]         = useState([])
   const [assign, setAssign]         = useState(EMPTY_ASSIGN)
@@ -1311,6 +1509,10 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
   const [editForm, setEditForm]     = useState({})
   const [payingAll, setPayingAll]   = useState(false)
   const [historyLoading, setHistoryLoading] = useState(false)
+  const [showPin, setShowPin]       = useState(false)
+  const [confirmSendInvite, setConfirmSendInvite] = useState(false)
+  const [sendingInvite, setSendingInvite] = useState(false)
+  const [inviteSent, setInviteSent] = useState(false)
 
   useEffect(() => {
     if (!asset) return
@@ -1333,6 +1535,9 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
     setVacateInput('')
     setRemindState('idle')
     setEditing(false)
+    setShowPin(false)
+    setConfirmSendInvite(false)
+    setInviteSent(false)
   }, [asset?.id, rental?.tenant_name])
 
   function startEdit() {
@@ -1361,27 +1566,52 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
   }
 
   async function handleMarkOnePaid(period) {
+    const amount = periodChargeAmount(period, rental.billing_day, rental.move_in_date, rental.monthly_rate)
     const { data } = await supabase
       .from('portable_storage_payments')
-      .upsert({ asset_id: asset.id, period_label: period }, { onConflict: 'asset_id,period_label' })
+      .upsert({ asset_id: asset.id, period_label: period, ...paymentAmountsFromSubtotal(amount) }, { onConflict: 'asset_id,period_label' })
       .select().single()
     if (data) setHistory(prev => sortPaymentsByPeriod([data, ...prev]))
+    await extendPortablePaidThrough([period])
     onAssigned()
   }
 
   async function handleUnmarkPaid(period) {
     await supabase.from('portable_storage_payments').delete().eq('asset_id', asset.id).eq('period_label', period)
-    setHistory(prev => prev.filter(p => p.period_label !== period))
+    const nextHistory = history.filter(p => p.period_label !== period)
+    setHistory(nextHistory)
+    await updatePortablePaidThrough(paidThroughFromPayments(nextHistory, rental.billing_day))
     onAssigned()
   }
 
   async function handlePayAll(unpaid) {
     setPayingAll(true)
-    const inserts = unpaid.map(period => ({ asset_id: asset.id, period_label: period }))
+    const inserts = unpaid.map(period => ({
+      asset_id: asset.id,
+      period_label: period,
+      ...paymentAmountsFromSubtotal(periodChargeAmount(period, rental.billing_day, rental.move_in_date, rental.monthly_rate)),
+    }))
     const { data } = await supabase.from('portable_storage_payments').upsert(inserts, { onConflict: 'asset_id,period_label' }).select()
     setHistory(prev => sortPaymentsByPeriod([...(data ?? []), ...prev]))
+    await extendPortablePaidThrough(unpaid)
     setPayingAll(false)
     onAssigned()
+  }
+
+  async function updatePortablePaidThrough(paidThroughDate) {
+    await supabase.from('portable_storage_rentals')
+      .update({ paid_through_date: paidThroughDate })
+      .eq('asset_id', asset.id)
+  }
+
+  async function extendPortablePaidThrough(periods) {
+    const paidThroughDate = paidThroughFromPayments(
+      periods.map(period_label => ({ period_label })),
+      rental.billing_day,
+      rental.paid_through_date
+    )
+    if (paidThroughDate) await updatePortablePaidThrough(paidThroughDate)
+    return paidThroughDate
   }
 
   async function handleSendReminder(behindCount) {
@@ -1409,23 +1639,61 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
     }
   }
 
+  async function handleSendInvite(pin) {
+    if (!customer?.id || !customer?.phone) return
+    setSendingInvite(true)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) return { error: 'Sign in again before sending this invite.' }
+
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-card-invite`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customer_id: customer.id,
+          billing_pin: pin,
+          request_id: newBillingRequestId(),
+        }),
+      })
+      const result = await res.json()
+      if (!res.ok || result.error) return { error: result.error || 'Could not send card invite.' }
+
+      setConfirmSendInvite(false)
+      setInviteSent(true)
+      setTimeout(() => setInviteSent(false), 3000)
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : 'Could not send card invite.' }
+    } finally {
+      setSendingInvite(false)
+    }
+  }
+
   async function handleAssign() {
     if (!customer) return
+    if (saving) return
     setSaving(true)
-    await supabase.from('portable_storage_rentals').upsert({
-      asset_id:          asset.id,
-      customer_id:       customer.id,
-      tenant_name:       customer.name  || null,
-      tenant_phone:      customer.phone || null,
-      monthly_rate:      assign.monthly_rate ? Number(assign.monthly_rate) : null,
-      billing_day:       assign.billing_day  ? Number(assign.billing_day)  : null,
-      payment_frequency: assign.payment_frequency || null,
-      move_in_date:      assign.move_in_date  || null,
-      notes:             assign.notes.trim()  || null,
-    }, { onConflict: 'asset_id' })
-    setSaving(false)
-    onAssigned()
-    onClose()
+    try {
+      const { error } = await supabase.from('portable_storage_rentals').upsert({
+        asset_id:          asset.id,
+        customer_id:       customer.id,
+        tenant_name:       customer.name  || null,
+        tenant_phone:      customer.phone || null,
+        monthly_rate:      assign.monthly_rate ? Number(assign.monthly_rate) : null,
+        billing_day:       assign.billing_day  ? Number(assign.billing_day)  : null,
+        payment_frequency: assign.payment_frequency || null,
+        move_in_date:      assign.move_in_date  || null,
+        notes:             assign.notes.trim()  || null,
+      }, { onConflict: 'asset_id' })
+      if (error) throw error
+
+      onAssigned()
+      onClose()
+    } catch (err) {
+      console.error('Failed to assign portable storage:', err)
+      window.alert(err instanceof Error ? err.message : 'Could not assign the storage unit.')
+    } finally {
+      setSaving(false)
+    }
   }
 
   async function handleVacate() {
@@ -1439,10 +1707,11 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
   if (!asset) return null
 
   const unassigned = !tenantName(rental)
-  const status = unassigned ? null : paymentStatus(rental.billing_day, rental.payment_frequency, isPaid, rental.move_in_date)
+  const status = unassigned ? null : paymentStatus(rental.billing_day, rental.payment_frequency, isPaid, rental.move_in_date, rental.paid_through_date)
   const periods = generatePeriods(rental?.billing_day, rental?.move_in_date)
   const paidPeriodSet = new Set(history.map(p => p.period_label).filter(isPeriodLabel))
-  const unpaidPeriods = periods.filter(p => !paidPeriodSet.has(p))
+  const effectivePaidThroughDate = paidThroughFromPayments(history, rental?.billing_day, rental?.paid_through_date)
+  const unpaidPeriods = periods.filter(p => !periodCovered(p, rental?.billing_day, paidPeriodSet, effectivePaidThroughDate))
   const behindCount = unpaidPeriods.length
 
   return (
@@ -1451,7 +1720,7 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
         <SheetHeader className="mb-5">
           <SheetTitle className="flex items-center justify-between pr-6">
             <span>{asset.label}{asset.size ? ` · ${asset.size}` : ''}</span>
-            {status && <StatusBadge status={status} billingDay={rental.billing_day} />}
+            {status && <StatusBadge status={status} billingDay={rental.billing_day} moveInDate={rental.move_in_date} />}
           </SheetTitle>
         </SheetHeader>
 
@@ -1460,6 +1729,17 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
             <div>
               <p className="text-xs text-muted-foreground mb-1.5">Customer</p>
               <CustomerPicker value={customer} onChange={setCustomer} />
+              {customer?.has_payment_method ? (
+                <div className="flex items-center gap-1.5 text-xs text-green-600 px-1 pt-2">
+                  <CheckCircle2 size={13} />
+                  Card on file
+                </div>
+              ) : customer?.phone ? (
+                <button onClick={() => setConfirmSendInvite(true)} disabled={sendingInvite} className="flex items-center gap-1.5 text-xs text-primary hover:text-primary/80 transition-colors px-1 pt-2">
+                  <Send size={13} />
+                  {inviteSent ? 'Invite sent!' : 'Send card invite'}
+                </button>
+              ) : null}
             </div>
             <div className="flex gap-3">
               <div className="flex-1">
@@ -1485,7 +1765,7 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
             </div>
             <div>
               <p className="text-xs text-muted-foreground mb-1.5">Move-in Date</p>
-              <Input value={assign.move_in_date} onChange={e => setAssign(a => ({ ...a, move_in_date: e.target.value, billing_day: e.target.value ? String(new Date(e.target.value + 'T12:00:00').getDate()) : a.billing_day }))} type="date" />
+              <StorageDateSelect value={assign.move_in_date} onChange={value => setAssign(a => ({ ...a, move_in_date: value }))} />
             </div>
             <div>
               <p className="text-xs text-muted-foreground mb-1.5">Notes</p>
@@ -1526,7 +1806,7 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground mb-1.5">Move-in Date</p>
-                  <Input value={editForm.move_in_date} onChange={e => setEditForm(f => ({ ...f, move_in_date: e.target.value }))} type="date" />
+                  <StorageDateSelect value={editForm.move_in_date} onChange={value => setEditForm(f => ({ ...f, move_in_date: value }))} />
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground mb-1.5">Notes</p>
@@ -1550,10 +1830,27 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
                         {formatPhone(rental.tenant_phone)}
                       </a>
                     )}
+                    {rental.customers?.pin && (
+                      <button onClick={() => setShowPin(v => !v)} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
+                        PIN <span className="font-mono font-semibold text-foreground tracking-widest">{showPin ? rental.customers.pin : '••••'}</span>
+                        {showPin ? <EyeOff size={11} /> : <Eye size={11} />}
+                      </button>
+                    )}
+                    {rental.customers?.has_payment_method && (
+                      <div className="flex items-center gap-1.5 text-xs text-green-600">
+                        <CheckCircle2 size={13} />
+                        Card on file
+                      </div>
+                    )}
                     {rental.monthly_rate && <p className="text-sm text-muted-foreground">${rental.monthly_rate}/mo · billed the {ordinal(rental.billing_day)}</p>}
                     {rental.move_in_date && (
                       <p className="text-xs text-muted-foreground">
                         Tenant for {tenureSummary(rental.move_in_date)} · since {formatLocalDate(rental.move_in_date, { month: 'short', day: 'numeric', year: 'numeric' })}
+                      </p>
+                    )}
+                    {effectivePaidThroughDate && (
+                      <p className="text-xs text-green-600">
+                        Paid through {formatLocalDate(effectivePaidThroughDate, { month: 'short', day: 'numeric', year: 'numeric' })}
                       </p>
                     )}
                     {rental.notes && <p className="text-xs text-muted-foreground mt-1">{rental.notes}</p>}
@@ -1567,6 +1864,27 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
 
             {!editing && (
               <>
+                <button
+                  onClick={() => { onClose(); navigate(`/storage/portable/${asset.id}/billing`) }}
+                  className="w-full flex items-center justify-between bg-card border rounded-xl px-4 py-3 hover:bg-accent transition-colors"
+                >
+                  <div>
+                    <p className="text-sm font-medium text-left">Billing</p>
+                    <p className="text-xs text-muted-foreground">
+                      {(() => {
+                        const recent = history.filter(p => isPeriodLabel(p.period_label)).slice(0, 3).map(p => {
+                          const [y, m] = p.period_label.split('-').map(Number)
+                          return new Date(y, m - 1, 1).toLocaleDateString('en-CA', { month: 'short', year: 'numeric' })
+                        })
+                        if (recent.length > 0) return recent.join(' · ')
+                        if (effectivePaidThroughDate) return `Paid through ${formatLocalDate(effectivePaidThroughDate, { month: 'short', day: 'numeric' })}`
+                        return behindCount > 0 ? `${behindCount} month${behindCount !== 1 ? 's' : ''} behind` : 'No paid months yet'
+                      })()}
+                    </p>
+                  </div>
+                  <ChevronRight size={16} className="text-muted-foreground" />
+                </button>
+
                 {historyLoading ? (
                   <p className="text-sm text-muted-foreground text-center py-4">Loading…</p>
                 ) : periods.length > 0 ? (
@@ -1585,9 +1903,13 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
                     <div className="space-y-0">
                       {periods.map(period => {
                         const payment = history.find(p => p.period_label === period)
+                        const amount = payment?.amount ?? periodChargeAmount(period, rental.billing_day, rental.move_in_date, rental.monthly_rate)
                         return (
                           <div key={period} className="flex items-center justify-between py-2.5 border-b last:border-0 text-sm">
-                            <span className="text-muted-foreground">{formatPeriod(period)}</span>
+                            <span className="text-muted-foreground">
+                              {formatPeriod(period)}
+                              {amount ? <span className="ml-2 text-xs">${parseFloat(amount).toFixed(2)}</span> : null}
+                            </span>
                             {payment ? (
                               <div className="flex items-center gap-2">
                                 <span className="text-xs text-muted-foreground">{new Date(payment.paid_at).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' })}</span>
@@ -1664,6 +1986,28 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
           </div>
         )}
       </SheetContent>
+
+      <PinModal
+        open={confirmSendInvite}
+        onClose={() => !sendingInvite && setConfirmSendInvite(false)}
+        onConfirm={handleSendInvite}
+        loading={sendingInvite}
+        title="Send card invite"
+        subtitle="Enter billing PIN to send setup link"
+        icon={Send}
+        confirmLabel="Send invite"
+      >
+        <div className="rounded-xl border divide-y text-sm bg-muted/40">
+          <div className="flex justify-between gap-3 px-4 py-2.5">
+            <span className="text-muted-foreground">Customer</span>
+            <span className="font-medium text-right">{customer?.name}</span>
+          </div>
+          <div className="flex justify-between gap-3 px-4 py-2.5">
+            <span className="text-muted-foreground">SMS to</span>
+            <span className="font-medium text-right">{formatPhone(customer?.phone)}</span>
+          </div>
+        </div>
+      </PinModal>
     </Sheet>
   )
 }
@@ -1702,7 +2046,7 @@ export default function Storage() {
       supabase.from('storage_tenancies').select('*, customers(name, pin)').is('end_date', null),
       supabase.from('storage_payments').select('tenancy_id, period_label').gte('period_label', cutoff),
       supabase.from('assets').select('*, asset_types(name, is_storage)').eq('archived', false).order('label'),
-      supabase.from('portable_storage_rentals').select('*, customers(name, pin)'),
+      supabase.from('portable_storage_rentals').select('*, customers(name, pin, has_payment_method, stripe_customer_id)'),
       supabase.from('portable_storage_payments').select('asset_id, period_label').gte('period_label', cutoff),
       supabase.from('active_deployments').select('asset_id'),
     ])
@@ -1717,6 +2061,7 @@ export default function Storage() {
           id:               u.id,
           unit_number:      u.unit_number,
           created_at:       u.created_at,
+          unit_notes:        u.notes         || null,
           tenancy_id:       t?.id            || null,
           customer_id:      t?.customer_id   || null,
           tenant_name:      t?.tenant_name   || null,
@@ -1732,26 +2077,24 @@ export default function Storage() {
       })
       setUnits(merged)
 
-      if (paymentData) {
-        const tenancyToUnit = {}
-        merged.forEach(u => { if (u.tenancy_id) tenancyToUnit[u.tenancy_id] = u })
+      const tenancyToUnit = {}
+      merged.forEach(u => { if (u.tenancy_id) tenancyToUnit[u.tenancy_id] = u })
 
-        const paid = new Set(
-          merged
-            .filter(u => u.tenancy_id && isPaidThroughToday(u.paid_through_date))
-            .map(u => u.id)
-        )
+      const paid = new Set(
+        merged
+          .filter(u => u.tenancy_id && isPaidThroughToday(u.paid_through_date))
+          .map(u => u.id)
+      )
 
-        paymentData
-            .filter(p => {
-              const u = tenancyToUnit[p.tenancy_id]
-              return u && p.period_label === currentPeriodLabel(u.billing_day)
-            })
-            .map(p => tenancyToUnit[p.tenancy_id]?.id)
-            .filter(Boolean)
-            .forEach(id => paid.add(id))
-        setPaidIds(paid)
-      }
+      paymentData
+        ?.filter(p => {
+          const u = tenancyToUnit[p.tenancy_id]
+          return u && p.period_label === currentPeriodLabel(u.billing_day)
+        })
+        .map(p => tenancyToUnit[p.tenancy_id]?.id)
+        .filter(Boolean)
+        .forEach(id => paid.add(id))
+      setPaidIds(paid)
     }
 
     if (assetData) {
@@ -1767,24 +2110,26 @@ export default function Storage() {
       rentalData.forEach(r => { map[r.asset_id] = r })
       setRentals(map)
 
-      if (portablePaymentData) {
-        const paid = new Set(
-          portablePaymentData
-            .filter(p => {
-              const rental = rentalData.find(r => r.asset_id === p.asset_id)
-              return p.period_label === currentPeriodLabel(rental?.billing_day)
-            })
-            .map(p => p.asset_id)
-        )
-        setPortablePaidIds(paid)
-      }
+      const paid = new Set(
+        rentalData
+          .filter(r => isPaidThroughToday(r.paid_through_date))
+          .map(r => r.asset_id)
+      )
+      portablePaymentData
+        ?.filter(p => {
+          const rental = rentalData.find(r => r.asset_id === p.asset_id)
+          return p.period_label === currentPeriodLabel(rental?.billing_day)
+        })
+        .map(p => p.asset_id)
+        .forEach(id => paid.add(id))
+      setPortablePaidIds(paid)
     }
 
     setLoading(false)
   }, [])
 
   useEffect(() => { fetchAll() }, [fetchAll])
-  useRealtime(['storage_units', 'storage_tenancies', 'storage_payments', 'portable_storage_rentals', 'portable_storage_payments'], fetchAll)
+  useRealtime(['storage_units', 'storage_tenancies', 'storage_payments', 'assets', 'asset_types', 'deployments', 'portable_storage_rentals', 'portable_storage_payments'], fetchAll)
 
   const q = query.trim().toLowerCase()
   const match = (...fields) => fields.some(f => f?.toLowerCase().includes(q))
@@ -1818,8 +2163,8 @@ export default function Storage() {
       const ra = rentals[a.id]; const rb = rentals[b.id]
       if (!ra?.tenant_name && rb?.tenant_name) return 1
       if (ra?.tenant_name && !rb?.tenant_name) return -1
-      const sa = ra ? paymentStatus(ra.billing_day, ra.payment_frequency, portablePaidIds.has(a.id), ra.move_in_date) : 'unpaid'
-      const sb = rb ? paymentStatus(rb.billing_day, rb.payment_frequency, portablePaidIds.has(b.id), rb.move_in_date) : 'unpaid'
+      const sa = ra ? paymentStatus(ra.billing_day, ra.payment_frequency, portablePaidIds.has(a.id), ra.move_in_date, ra.paid_through_date) : 'unpaid'
+      const sb = rb ? paymentStatus(rb.billing_day, rb.payment_frequency, portablePaidIds.has(b.id), rb.move_in_date, rb.paid_through_date) : 'unpaid'
       return (STATUS_ORDER[sa] ?? 4) - (STATUS_ORDER[sb] ?? 4)
     })
 
@@ -1830,12 +2175,24 @@ export default function Storage() {
     const marking = !portablePaidIds.has(id)
     if (marking) {
       await supabase.from('portable_storage_payments').upsert(
-        { asset_id: id, period_label: period, amount: rental?.monthly_rate ?? null },
+        {
+          asset_id: id,
+          period_label: period,
+          ...paymentAmountsFromSubtotal(periodChargeAmount(period, rental?.billing_day, rental?.move_in_date, rental?.monthly_rate)),
+        },
         { onConflict: 'asset_id,period_label' }
       )
+      const paidThroughDate = paidThroughFromPayments([{ period_label: period }], rental?.billing_day, rental?.paid_through_date)
+      if (paidThroughDate) {
+        await supabase.from('portable_storage_rentals').update({ paid_through_date: paidThroughDate }).eq('asset_id', id)
+      }
       setPortablePaidIds(prev => new Set([...prev, id]))
     } else {
       await supabase.from('portable_storage_payments').delete().eq('asset_id', id).eq('period_label', period)
+      const { data: remaining } = await supabase.from('portable_storage_payments').select('period_label').eq('asset_id', id)
+      await supabase.from('portable_storage_rentals')
+        .update({ paid_through_date: paidThroughFromPayments(remaining ?? [], rental?.billing_day) })
+        .eq('asset_id', id)
       setPortablePaidIds(prev => { const next = new Set(prev); next.delete(id); return next })
     }
   }
@@ -1844,12 +2201,20 @@ export default function Storage() {
     <div className="h-full flex flex-col">
       <div className="px-4 pt-5 pb-3 flex items-center justify-between gap-3">
         <h1 className="text-xl font-semibold">Storage</h1>
-        <Button asChild variant="outline" size="sm">
-          <Link to="/storage/layout">
-            <MapIcon size={14} />
-            Layout
-          </Link>
-        </Button>
+        <div className="flex gap-2">
+          <Button asChild variant="outline" size="sm">
+            <Link to="/storage/layout">
+              <MapIcon size={14} />
+              Layout
+            </Link>
+          </Button>
+          <Button asChild variant="outline" size="sm">
+            <Link to="/storage/floorplan">
+              <Move size={14} />
+              Plan
+            </Link>
+          </Button>
+        </div>
       </div>
 
       <div className="px-4 pb-3">
@@ -1895,7 +2260,7 @@ export default function Storage() {
                   <FixedUnitCard key={u.id} unit={u} isPaid={paidIds.has(u.id)} onTap={setSelected} />
                 ))}
                 {units.length === 0 && (
-                  <p className="text-muted-foreground text-sm text-center mt-4">No fixed units yet — add them in Settings → Storage Manager</p>
+                  <p className="text-muted-foreground text-sm text-center mt-4">No fixed units yet — add them in Asset Manager</p>
                 )}
                 {q && filteredUnits.length === 0 && units.length > 0 && (
                   <p className="text-muted-foreground text-sm text-center mt-4">No units match "{query}"</p>

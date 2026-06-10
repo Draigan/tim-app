@@ -14,16 +14,21 @@ import { useLocation } from 'react-router-dom'
 mapboxgl.accessToken = MAPBOX_TOKEN
 
 const ICON_KEYS = ['trash', 'package', 'car', 'stairs', 'tool', 'toilet-paper']
-const COLORS = { red: '#ef4444', yellow: '#f59e0b', green: '#22c55e' }
+const COLORS = { red: '#ef4444', yellow: '#f59e0b', green: '#22c55e', blue: '#3b82f6' }
 
-function colorKey(expires_at) {
-  const hex = getMarkerColor(expires_at)
+function colorKey(dep) {
+  const tn = dep.type_name?.toLowerCase() ?? ''
+  if (tn.startsWith('portable storage') || tn.startsWith('mobile storage trailer')) return 'blue'
+  const hex = getMarkerColor(dep.expires_at)
   return hex === '#ef4444' ? 'red' : hex === '#f59e0b' ? 'yellow' : 'green'
 }
 
 function worstColorKey(deps) {
-  const keys = deps.map(d => colorKey(d.expires_at))
-  return keys.includes('red') ? 'red' : keys.includes('yellow') ? 'yellow' : 'green'
+  const keys = deps.map(d => colorKey(d))
+  if (keys.includes('red')) return 'red'
+  if (keys.includes('yellow')) return 'yellow'
+  if (keys.every(k => k === 'blue')) return 'blue'
+  return 'green'
 }
 
 function toGeoJSON(deps) {
@@ -63,7 +68,20 @@ function toGeoJSON(deps) {
   }
 }
 
-async function loadPinImages(map) {
+function filterDeployments(deps, urgency, types) {
+  return deps.filter(d => {
+    if (types.size > 0 && !types.has(d.type_name)) return false
+    if (urgency === 'all') return true
+    const daysLeft = d.expires_at
+      ? Math.ceil((new Date(d.expires_at) - new Date()) / (1000 * 60 * 60 * 24))
+      : null
+    if (urgency === 'expiring') return daysLeft !== null && daysLeft >= 0 && daysLeft <= 7
+    if (urgency === 'expired') return daysLeft !== null && daysLeft < 0
+    return true
+  })
+}
+
+async function loadPinImages(map, shouldContinue = () => true) {
   const contents = {}
   await Promise.all(ICON_KEYS.map(async k => {
     try {
@@ -88,6 +106,10 @@ async function loadPinImages(map) {
       const url = `data:image/svg+xml,${encodeURIComponent(svg)}`
       const img = new Image()
       img.onload = () => {
+        if (!shouldContinue()) {
+          resolve()
+          return
+        }
         const canvas = document.createElement('canvas')
         canvas.width = 27; canvas.height = 41
         canvas.getContext('2d').drawImage(img, 0, 0, 27, 41)
@@ -133,7 +155,7 @@ async function loadPinImages(map) {
   )
 
   // Yard pin — white pin with logo image drawn on top
-  if (!map.hasImage('pin-yard')) {
+  if (shouldContinue() && !map.hasImage('pin-yard')) {
     await new Promise(resolve => {
       const gradId = 'sg-yard'
       const svgInner = `
@@ -143,12 +165,20 @@ async function loadPinImages(map) {
       const svg = `<svg display="block" height="41px" width="27px" viewBox="0 0 27 41" xmlns="http://www.w3.org/2000/svg">${svgInner}</svg>`
       const pinImg = new Image()
       pinImg.onload = () => {
+        if (!shouldContinue()) {
+          resolve()
+          return
+        }
         const canvas = document.createElement('canvas')
         canvas.width = 27; canvas.height = 41
         const ctx = canvas.getContext('2d')
         ctx.drawImage(pinImg, 0, 0, 27, 41)
         const logoImg = new Image()
         logoImg.onload = () => {
+          if (!shouldContinue()) {
+            resolve()
+            return
+          }
           const size = 12
           ctx.drawImage(logoImg, 13.5 - size / 2 + 1.5, 13.5 - size / 2 + 1.5, size, size)
           try {
@@ -166,8 +196,9 @@ async function loadPinImages(map) {
   }
 }
 
-async function addDeploymentLayer(map, deps) {
-  await loadPinImages(map)
+async function addDeploymentLayer(map, deps, shouldContinue = () => true) {
+  await loadPinImages(map, shouldContinue)
+  if (!shouldContinue()) return false
 
   if (map.getSource('deployments')) {
     ;['deployment-pins', 'deployment-groups'].forEach(id => {
@@ -207,6 +238,7 @@ async function addDeploymentLayer(map, deps) {
       'icon-ignore-placement': true,
     },
   })
+  return true
 }
 
 function addYardLayer(map, coords) {
@@ -244,7 +276,6 @@ const MAP_STYLES = [
 export default function MapView() {
   const mapContainer = useRef(null)
   const map = useRef(null)
-  const mapReady = useRef(false)
   const yardCoords = useRef(null)
   const deploymentsRef = useRef([])
   const [deployments, setDeployments] = useState([])
@@ -258,6 +289,7 @@ export default function MapView() {
   const [filterUrgency, setFilterUrgency] = useState('all')
   const [filterTypes, setFilterTypes] = useState(new Set())
   const filterRef = useRef(null)
+  const filtersRef = useRef({ urgency: 'all', types: new Set() })
   const [activeStyle, setActiveStyle] = useState(
     () => localStorage.getItem('mapStyle') ?? 'mapbox://styles/mapbox/streets-v12'
   )
@@ -265,32 +297,58 @@ export default function MapView() {
   const location = useLocation()
   const pendingFlyTo = useRef(location.state?.flyTo ?? null)
 
-  const fetchDeployments = useCallback(async () => {
-    const { data } = await supabase.from('active_deployments').select('*')
-    if (data) setDeployments(data)
+  const applyDeployments = useCallback(data => {
+    deploymentsRef.current = data
+    setDeployments(data)
   }, [])
 
+  const fetchDeployments = useCallback(async () => {
+    const { data } = await supabase.from('active_deployments').select('*')
+    if (data) applyDeployments(data)
+  }, [applyDeployments])
+
+  const getVisibleDeployments = useCallback(() => {
+    const { urgency, types } = filtersRef.current
+    return filterDeployments(deploymentsRef.current, urgency, types)
+  }, [])
+
+  const syncDeploymentSource = useCallback(() => {
+    const source = map.current?.getSource('deployments')
+    if (!source) return
+    source.setData(toGeoJSON(getVisibleDeployments()))
+  }, [getVisibleDeployments])
+
   const changeStyle = useCallback(styleId => {
-    if (!map.current) return
+    const targetMap = map.current
+    if (!targetMap) return
     setActiveStyle(styleId)
     localStorage.setItem('mapStyle', styleId)
     setShowStyles(false)
-    mapReady.current = false
-    map.current.setStyle(styleId)
-    map.current.once('style.load', async () => {
-      await addDeploymentLayer(map.current, deploymentsRef.current)
-      if (yardCoords.current) addYardLayer(map.current, yardCoords.current)
-      mapReady.current = true
+    targetMap.setStyle(styleId)
+    targetMap.once('style.load', async () => {
+      const layerAdded = await addDeploymentLayer(targetMap, getVisibleDeployments(), () => map.current === targetMap)
+      if (!layerAdded) return
+      if (yardCoords.current) addYardLayer(targetMap, yardCoords.current)
+      syncDeploymentSource()
     })
-  }, [])
+  }, [getVisibleDeployments, syncDeploymentSource])
 
-  useEffect(() => { fetchDeployments() }, [fetchDeployments])
+  useEffect(() => {
+    let ignore = false
+    supabase.from('active_deployments').select('*').then(({ data }) => {
+      if (!ignore && data) applyDeployments(data)
+    })
+    return () => { ignore = true }
+  }, [applyDeployments])
   useRealtime(['deployments', 'assets'], fetchDeployments)
   useEffect(() => { deploymentsRef.current = deployments }, [deployments])
+  useEffect(() => {
+    filtersRef.current = { urgency: filterUrgency, types: filterTypes }
+  }, [filterUrgency, filterTypes])
 
   useEffect(() => {
     if (map.current) return
-    map.current = new mapboxgl.Map({
+    const mapInstance = new mapboxgl.Map({
       container: mapContainer.current,
       style: localStorage.getItem('mapStyle') ?? 'mapbox://styles/mapbox/streets-v12',
       center: [-78.73, 44.53],
@@ -299,61 +357,54 @@ export default function MapView() {
       maxZoom: 19,
       maxBounds: [[-80.5, 43.5], [-76.5, 45.8]],
     })
-    map.current.addControl(new mapboxgl.NavigationControl(), 'top-right')
+    map.current = mapInstance
+    mapInstance.addControl(new mapboxgl.NavigationControl(), 'top-right')
 
-    map.current.on('click', 'deployment-pins', e => {
+    mapInstance.on('click', 'deployment-pins', e => {
       const dep = JSON.parse(e.features[0].properties.dep)
       setSelected([dep])
     })
-    map.current.on('click', 'deployment-groups', e => {
+    mapInstance.on('click', 'deployment-groups', e => {
       const deps = JSON.parse(e.features[0].properties.deps)
       setSelected(deps)
     })
     ;['deployment-pins', 'deployment-groups'].forEach(layer => {
-      map.current.on('mouseenter', layer, () => {
-        map.current.getCanvas().style.cursor = 'pointer'
+      mapInstance.on('mouseenter', layer, () => {
+        mapInstance.getCanvas().style.cursor = 'pointer'
       })
-      map.current.on('mouseleave', layer, () => {
-        map.current.getCanvas().style.cursor = ''
+      mapInstance.on('mouseleave', layer, () => {
+        mapInstance.getCanvas().style.cursor = ''
       })
     })
 
-    map.current.on('load', async () => {
+    mapInstance.on('load', async () => {
       if (pendingFlyTo.current) {
-        map.current.flyTo({ center: pendingFlyTo.current, zoom: 16 })
+        mapInstance.flyTo({ center: pendingFlyTo.current, zoom: 16 })
         pendingFlyTo.current = null
       }
 
-      await addDeploymentLayer(map.current, deploymentsRef.current)
+      const layerAdded = await addDeploymentLayer(mapInstance, getVisibleDeployments(), () => map.current === mapInstance)
+      if (!layerAdded) return
+      syncDeploymentSource()
 
       geocodeAddress(YARD.address).then(results => {
+        if (map.current !== mapInstance) return
         if (!results.length) return
         const [lng, lat] = results[0].center
         yardCoords.current = [lng, lat]
-        addYardLayer(map.current, [lng, lat])
+        addYardLayer(mapInstance, [lng, lat])
       })
-
-      mapReady.current = true
     })
-  }, [])
 
+    return () => {
+      mapInstance.remove()
+      if (map.current === mapInstance) map.current = null
+    }
+  }, [getVisibleDeployments, syncDeploymentSource])
 
   useEffect(() => {
-    if (!mapReady.current || !map.current) return
-    const source = map.current.getSource('deployments')
-    if (!source) return
-    const visible = deployments.filter(d => {
-      if (filterTypes.size > 0 && !filterTypes.has(d.type_name)) return false
-      if (filterUrgency === 'all') return true
-      const daysLeft = d.expires_at
-        ? Math.ceil((new Date(d.expires_at) - new Date()) / (1000 * 60 * 60 * 24))
-        : null
-      if (filterUrgency === 'expiring') return daysLeft !== null && daysLeft >= 0 && daysLeft <= 7
-      if (filterUrgency === 'expired') return daysLeft !== null && daysLeft < 0
-      return true
-    })
-    source.setData(toGeoJSON(visible))
-  }, [deployments, filterUrgency, filterTypes])
+    syncDeploymentSource()
+  }, [deployments, filterUrgency, filterTypes, syncDeploymentSource])
 
   useEffect(() => {
     if (!showStyles) return

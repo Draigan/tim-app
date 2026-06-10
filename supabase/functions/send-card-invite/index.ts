@@ -15,10 +15,16 @@ const CORS = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
-const BILLING_ADMIN_EMAILS = (Deno.env.get('BILLING_ADMIN_EMAILS') ?? 'tim@timberfell.ca')
-  .split(',')
-  .map(email => email.trim().toLowerCase())
-  .filter(Boolean)
+function emailsFromEnv(...names: string[]): string[] {
+  const values = names
+    .flatMap(name => (Deno.env.get(name) ?? '').split(','))
+    .map(email => email.trim().toLowerCase())
+    .filter(Boolean)
+
+  return [...new Set(values.length ? values : ['tim@timberfell.ca'])]
+}
+
+const BILLING_ADMIN_EMAILS = emailsFromEnv('BILLING_ADMIN_EMAILS', 'ADMIN_EMAILS')
 const BILLING_ROLES = new Set(['admin', 'billing', 'billing_admin'])
 
 const json = (data: unknown, status = 200) =>
@@ -26,6 +32,37 @@ const json = (data: unknown, status = 200) =>
     status,
     headers: { ...CORS, 'Content-Type': 'application/json' },
   })
+
+function constantTimeEqual(a: string, b: string): boolean {
+  const encoder = new TextEncoder()
+  const left = encoder.encode(a)
+  const right = encoder.encode(b)
+  let diff = left.length ^ right.length
+  const length = Math.max(left.length, right.length)
+
+  for (let i = 0; i < length; i++) {
+    diff |= (left[i] ?? 0) ^ (right[i] ?? 0)
+  }
+
+  return diff === 0
+}
+
+function billingPinFromBody(body: Record<string, unknown>): string {
+  const value = body.billing_pin ?? body.pin
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function validateBillingPin(body: Record<string, unknown>): Response | null {
+  const expected = Deno.env.get('BILLING_APPROVAL_PIN')?.trim()
+  if (!expected) return json({ error: 'Billing approval PIN is not configured.' }, 500)
+
+  const supplied = billingPinFromBody(body)
+  if (!supplied || !constantTimeEqual(supplied, expected)) {
+    return json({ error: 'Invalid billing approval PIN.' }, 403)
+  }
+
+  return null
+}
 
 function userHasBillingRole(user: any): boolean {
   const appMetadata = user?.app_metadata ?? {}
@@ -41,7 +78,7 @@ function userHasBillingRole(user: any): boolean {
   return false
 }
 
-async function authorizeBillingUser(req: Request): Promise<Response | null> {
+async function authorizeBillingUser(req: Request, body: Record<string, unknown>): Promise<Response | null> {
   const token = req.headers.get('Authorization')?.replace('Bearer ', '').trim()
   if (!token) return json({ error: 'Unauthorized' }, 401)
 
@@ -49,10 +86,10 @@ async function authorizeBillingUser(req: Request): Promise<Response | null> {
   if (error || !user?.email) return json({ error: 'Unauthorized' }, 401)
 
   if (userHasBillingRole(user) || BILLING_ADMIN_EMAILS.includes(user.email.toLowerCase())) {
-    return null
+    return validateBillingPin(body)
   }
 
-  return json({ error: 'Forbidden' }, 403)
+  return json({ error: 'Billing access required for this account.' }, 403)
 }
 
 async function sendTwilio(to: string, body: string) {
@@ -78,10 +115,11 @@ Deno.serve(async (req) => {
   if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405)
 
   try {
-    const authorizationError = await authorizeBillingUser(req)
+    const body = await req.json().catch(() => ({})) as Record<string, unknown>
+    const authorizationError = await authorizeBillingUser(req, body)
     if (authorizationError) return authorizationError
 
-    const { customer_id } = await req.json()
+    const customer_id = typeof body.customer_id === 'string' ? body.customer_id : ''
     if (!customer_id) return json({ error: 'customer_id required' }, 400)
 
     const { data: customer, error } = await supabase
@@ -111,14 +149,18 @@ Deno.serve(async (req) => {
       currency: 'cad',
       setup_intent_data: { metadata: { customer_id } },
       metadata: { customer_id },
-      success_url: 'https://tdstorage.ca/card-saved',
-      cancel_url:  'https://tdstorage.ca/card-cancelled',
+      success_url: 'https://fenelonless.ca/card-saved',
+      cancel_url:  'https://fenelonless.ca/card-cancelled',
     })
 
     const digits = customer.phone.replace(/\D/g, '')
     const normalized = digits.length === 10 ? '+1' + digits : '+' + digits
     const firstName = customer.name?.split(' ')[0] ?? 'there'
-    const msg = `Hi ${firstName}, T&D Storage is inviting you to save a payment card for automatic billing. Tap here to securely add your card: ${session.url}`
+    const msg = [
+      `Hi ${firstName}, Fenelon Less Storage, a Timberfell Company, is inviting you to save a payment card for automatic billing.`,
+      'Secure card link:',
+      session.url,
+    ].join('\n')
     await sendTwilio(normalized, msg)
 
     return json({ ok: true })

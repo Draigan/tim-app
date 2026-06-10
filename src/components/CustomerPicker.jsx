@@ -4,7 +4,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sh
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { supabase } from '@/lib/supabase'
-import { formatPhone } from '@/lib/utils'
+import { formatPhone, formatPhoneInput } from '@/lib/utils'
 import { geocodeAddress } from '@/lib/mapbox'
 import { CUSTOMER_SAFE_COLUMNS } from '@/lib/customerFields'
 
@@ -169,7 +169,7 @@ export default function CustomerPicker({ value, onChange }) {
             </div>
             <div>
               <p className="text-xs text-muted-foreground mb-1.5">Phone</p>
-              <Input value={form.phone} onChange={e => setField('phone', e.target.value)} placeholder="(519) 555-0000" type="tel" />
+              <Input value={form.phone} onChange={e => setField('phone', formatPhoneInput(e.target.value))} placeholder="(519) 555-0000" type="tel" />
             </div>
             <div>
               <p className="text-xs text-muted-foreground mb-1.5">Email</p>
