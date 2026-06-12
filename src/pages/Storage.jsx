@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import { Search, X, Phone, ChevronRight, CheckCircle2, Send, Pencil, ArrowUpDown, Plus, Eye, EyeOff, Map as MapIcon, Move } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Search, X, Phone, ChevronRight, CheckCircle2, Send, Pencil, ArrowUpDown, Plus, Eye, EyeOff } from 'lucide-react'
 import PinModal from '@/components/PinModal'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import StorageViewMenu from '@/components/StorageViewMenu'
 import { supabase } from '@/lib/supabase'
 import CustomerPicker from '@/components/CustomerPicker'
 import { cn, formatPhone, formatPhoneInput } from '@/lib/utils'
@@ -2201,20 +2202,7 @@ export default function Storage() {
     <div className="h-full flex flex-col">
       <div className="px-4 pt-5 pb-3 flex items-center justify-between gap-3">
         <h1 className="text-xl font-semibold">Storage</h1>
-        <div className="flex gap-2">
-          <Button asChild variant="outline" size="sm">
-            <Link to="/storage/layout">
-              <MapIcon size={14} />
-              Layout
-            </Link>
-          </Button>
-          <Button asChild variant="outline" size="sm">
-            <Link to="/storage/floorplan">
-              <Move size={14} />
-              Plan
-            </Link>
-          </Button>
-        </div>
+        <StorageViewMenu current="list" />
       </div>
 
       <div className="px-4 pb-3">

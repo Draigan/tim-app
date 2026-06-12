@@ -1,7 +1,4 @@
-import Stripe from 'https://esm.sh/stripe@16?target=deno'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-
-const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY')!, { apiVersion: '2026-04-22.dahlia' as any })
 
 const supabase = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -26,6 +23,8 @@ function emailsFromEnv(...names: string[]): string[] {
 
 const BILLING_ADMIN_EMAILS = emailsFromEnv('BILLING_ADMIN_EMAILS', 'ADMIN_EMAILS')
 const BILLING_ROLES = new Set(['admin', 'billing', 'billing_admin'])
+const INVITE_DAYS = 30
+const DEFAULT_RETURN_ORIGIN = Deno.env.get('APP_PUBLIC_ORIGIN') ?? 'https://fenelonless.ca'
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -110,6 +109,45 @@ async function sendTwilio(to: string, body: string) {
   if (!res.ok) throw new Error(`Twilio ${res.status}: ${await res.text()}`)
 }
 
+function bytesToBase64Url(bytes: Uint8Array): string {
+  let binary = ''
+  bytes.forEach(byte => { binary += String.fromCharCode(byte) })
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+}
+
+function newInviteToken(): string {
+  const bytes = new Uint8Array(32)
+  crypto.getRandomValues(bytes)
+  return bytesToBase64Url(bytes)
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const bytes = new TextEncoder().encode(value)
+  const digest = await crypto.subtle.digest('SHA-256', bytes)
+  return [...new Uint8Array(digest)]
+    .map(byte => byte.toString(16).padStart(2, '0'))
+    .join('')
+}
+
+function inviteUrl(token: string): string {
+  const base = Deno.env.get('SUPABASE_URL')!.replace(/\/$/g, '')
+  return `${base}/functions/v1/card-setup-invite?token=${encodeURIComponent(token)}`
+}
+
+async function createCardSetupInvite(customerId: string): Promise<string> {
+  const token = newInviteToken()
+  const tokenHash = await sha256Hex(token)
+  const expiresAt = new Date(Date.now() + INVITE_DAYS * 24 * 60 * 60 * 1000).toISOString()
+  const { error } = await supabase.from('card_setup_invites').insert({
+    customer_id: customerId,
+    token_hash: tokenHash,
+    return_origin: DEFAULT_RETURN_ORIGIN,
+    expires_at: expiresAt,
+  })
+  if (error) throw error
+  return inviteUrl(token)
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS })
   if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405)
@@ -124,42 +162,22 @@ Deno.serve(async (req) => {
 
     const { data: customer, error } = await supabase
       .from('customers')
-      .select('id, name, phone, email, stripe_customer_id')
+      .select('id, name, phone')
       .eq('id', customer_id)
       .single()
 
     if (error || !customer) return json({ error: 'customer not found' }, 404)
     if (!customer.phone) return json({ error: 'customer has no phone number' }, 400)
 
-    // Create or reuse Stripe customer
-    let stripeCustomerId = customer.stripe_customer_id
-    if (!stripeCustomerId) {
-      const sc = await stripe.customers.create({
-        name: customer.name ?? undefined,
-        email: customer.email ?? undefined,
-        metadata: { customer_id },
-      })
-      stripeCustomerId = sc.id
-      await supabase.from('customers').update({ stripe_customer_id: stripeCustomerId }).eq('id', customer_id)
-    }
-
-    const session = await stripe.checkout.sessions.create({
-      mode: 'setup',
-      customer: stripeCustomerId,
-      currency: 'cad',
-      setup_intent_data: { metadata: { customer_id } },
-      metadata: { customer_id },
-      success_url: 'https://fenelonless.ca/card-saved',
-      cancel_url:  'https://fenelonless.ca/card-cancelled',
-    })
-
+    const url = await createCardSetupInvite(customer_id)
     const digits = customer.phone.replace(/\D/g, '')
     const normalized = digits.length === 10 ? '+1' + digits : '+' + digits
     const firstName = customer.name?.split(' ')[0] ?? 'there'
     const msg = [
       `Hi ${firstName}, Fenelon Less Storage, a Timberfell Company, is inviting you to save a payment card for automatic billing.`,
+      `This secure link is valid for ${INVITE_DAYS} days and opens a fresh Stripe card page when you tap it.`,
       'Secure card link:',
-      session.url,
+      url,
     ].join('\n')
     await sendTwilio(normalized, msg)
 

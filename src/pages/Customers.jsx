@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Search, X, Plus, Phone, Mail, ChevronRight, ChevronUp, ChevronDown, Pencil, Truck, MapPin, Star, CreditCard, CheckCircle2, Send, Eye, EyeOff, DollarSign, Archive, ExternalLink } from 'lucide-react'
+import { Search, X, Plus, Phone, Mail, ChevronRight, ChevronUp, ChevronDown, Pencil, Truck, MapPin, Star, CreditCard, CheckCircle2, Send, Eye, EyeOff, DollarSign, Archive, ExternalLink, Copy } from 'lucide-react'
 import PinModal from '@/components/PinModal'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Button } from '@/components/ui/button'
@@ -138,7 +138,10 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
   const [archiving, setArchiving]   = useState(false)
   const [resolvingCreditId, setResolvingCreditId] = useState(null)
   const [savingCard, setSavingCard]     = useState(false)
-  const [cardSaved, setCardSaved]       = useState(!!customer?.has_payment_method)
+  const cardSaved = !!customer?.has_payment_method
+  const [copyingCardLink, setCopyingCardLink] = useState(false)
+  const [cardLinkCopied, setCardLinkCopied] = useState(false)
+  const [cardLinkError, setCardLinkError] = useState('')
   const [sendingInvite, setSendingInvite] = useState(false)
   const [inviteSent, setInviteSent]     = useState(false)
   const [confirmSendInvite, setConfirmSendInvite] = useState(false)
@@ -228,24 +231,78 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
     else setEditing(false)
   }
 
+  async function createStripeSetupUrl({ invite = false } = {}) {
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session?.access_token) throw new Error('Sign in again before creating a Stripe link.')
+
+    const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-setup-session`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        customer_id: customer.id,
+        origin: window.location.origin,
+        link_type: invite ? 'invite' : 'checkout',
+      }),
+    })
+    const result = await res.json()
+    if (!res.ok || result.error || !result.url) {
+      throw new Error(result.error || `Could not create Stripe ${invite ? 'invite' : 'link'}.`)
+    }
+    return result.url
+  }
+
+  async function copyText(text) {
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text)
+        return
+      } catch (err) {
+        console.warn('Clipboard API failed, falling back to manual copy:', err)
+      }
+    }
+
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.setAttribute('readonly', '')
+    textarea.style.position = 'fixed'
+    textarea.style.left = '-9999px'
+    document.body.appendChild(textarea)
+    textarea.select()
+    const copied = document.execCommand('copy')
+    document.body.removeChild(textarea)
+    if (!copied) throw new Error('Could not copy card invite.')
+  }
+
   async function handleSaveCard() {
     setSavingCard(true)
+    setCardLinkError('')
     const tab = window.open('', '_blank')
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-setup-session`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ customer_id: customer.id, origin: window.location.origin }),
-      })
-      const { url } = await res.json()
-      if (url && tab) tab.location.href = url
-      else if (tab) tab.close()
+      const url = await createStripeSetupUrl()
+      if (tab) tab.location.href = url
     } catch (err) {
       console.error('stripe-setup-session error:', err)
+      setCardLinkError(err instanceof Error ? err.message : 'Could not create Stripe link.')
       if (tab) tab.close()
     } finally {
       setSavingCard(false)
+    }
+  }
+
+  async function handleCopyCardLink() {
+    setCopyingCardLink(true)
+    setCardLinkCopied(false)
+    setCardLinkError('')
+    try {
+      const url = await createStripeSetupUrl({ invite: true })
+      await copyText(url)
+      setCardLinkCopied(true)
+      setTimeout(() => setCardLinkCopied(false), 3000)
+    } catch (err) {
+      console.error('copy stripe setup link error:', err)
+      setCardLinkError(err instanceof Error ? err.message : 'Could not copy card invite.')
+    } finally {
+      setCopyingCardLink(false)
     }
   }
 
@@ -428,36 +485,43 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
 
           {/* Card on file */}
           {!isNew && !editing && (
-            <div className="flex items-center gap-2 flex-wrap">
-              {cardSaved ? (
-                <div className="flex items-center gap-2 text-sm text-green-600">
-                  <CheckCircle2 size={15} />
-                  Card on file
-                </div>
-              ) : (
-                <Button variant="outline" size="sm" className="gap-2" disabled={savingCard} onClick={handleSaveCard}>
-                  <CreditCard size={14} />
-                  {savingCard ? 'Opening…' : 'Save card'}
-                </Button>
-              )}
-              {form.phone && (
-                <Button variant="outline" size="sm" className="gap-2" disabled={sendingInvite} onClick={() => setConfirmSendInvite(true)}>
-                  <Send size={14} />
-                  {inviteSent ? 'Sent!' : 'Send card invite'}
-                </Button>
-              )}
-              {customer?.stripe_customer_id && (
-                <a
-                  href={`https://dashboard.stripe.com/customers/${customer.stripe_customer_id}`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  <Button variant="outline" size="sm" className="gap-2">
-                    <ExternalLink size={14} />
-                    Stripe
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                {cardSaved ? (
+                  <div className="flex items-center gap-2 text-sm text-green-600">
+                    <CheckCircle2 size={15} />
+                    Card on file
+                  </div>
+                ) : (
+                  <Button variant="outline" size="sm" className="gap-2" disabled={savingCard} onClick={handleSaveCard}>
+                    <CreditCard size={14} />
+                    {savingCard ? 'Opening…' : 'Save card'}
                   </Button>
-                </a>
-              )}
+                )}
+                <Button variant="outline" size="sm" className="gap-2" disabled={copyingCardLink} onClick={handleCopyCardLink}>
+                  {cardLinkCopied ? <CheckCircle2 size={14} /> : <Copy size={14} />}
+                  {copyingCardLink ? 'Copying…' : cardLinkCopied ? 'Copied!' : 'Copy invite'}
+                </Button>
+                {form.phone && (
+                  <Button variant="outline" size="sm" className="gap-2" disabled={sendingInvite} onClick={() => setConfirmSendInvite(true)}>
+                    <Send size={14} />
+                    {inviteSent ? 'Sent!' : 'Send card invite'}
+                  </Button>
+                )}
+                {customer?.stripe_customer_id && (
+                  <a
+                    href={`https://dashboard.stripe.com/customers/${customer.stripe_customer_id}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <Button variant="outline" size="sm" className="gap-2">
+                      <ExternalLink size={14} />
+                      Stripe
+                    </Button>
+                  </a>
+                )}
+              </div>
+              {cardLinkError && <p className="text-xs text-destructive">{cardLinkError}</p>}
             </div>
           )}
 

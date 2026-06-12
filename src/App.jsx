@@ -17,6 +17,8 @@ import AssetManager from '@/pages/AssetManager'
 import Storage from '@/pages/Storage'
 import StorageLayout from '@/pages/StorageLayout'
 import StorageFloorplan from '@/pages/StorageFloorplan'
+import StorageStatistics from '@/pages/StorageStatistics'
+import StorageCustomerNotes from '@/pages/StorageCustomerNotes'
 import StorageBilling from '@/pages/StorageBilling'
 import Customers from '@/pages/Customers'
 import ReviewRequest from '@/pages/ReviewRequest'
@@ -62,6 +64,8 @@ export default function App() {
           <Route path="/storage" element={<Storage />} />
           <Route path="/storage/layout" element={<StorageLayout />} />
           <Route path="/storage/floorplan" element={<StorageFloorplan />} />
+          <Route path="/storage/statistics" element={<StorageStatistics />} />
+          <Route path="/storage/customer-notes" element={<StorageCustomerNotes />} />
           <Route path="/storage/portable/:assetId/billing" element={<StorageBilling />} />
           <Route path="/storage/:unitId/billing" element={<StorageBilling />} />
           <Route path="/customers" element={<Customers />} />

@@ -6,8 +6,19 @@ import { useIsAdmin } from '@/lib/useIsAdmin'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Plus, Trash2, ChevronRight, Pencil, Warehouse } from 'lucide-react'
 import { ICON_OPTIONS, iconImgUrl } from '@/lib/icons'
+
+const STORAGE_AREAS = [
+  { value: 'none', label: 'Unassigned' },
+  { value: 'up_top', label: 'Up Top' },
+  { value: 'down_below', label: 'Down Below' },
+]
+
+function storageAreaLabel(area) {
+  return STORAGE_AREAS.find(option => option.value === area)?.label ?? 'Unassigned'
+}
 
 export default function AssetManager() {
   const navigate = useNavigate()
@@ -30,6 +41,11 @@ export default function AssetManager() {
   const [unitError, setUnitError] = useState('')
   const [savingUnit, setSavingUnit] = useState(false)
   const [confirmDeleteUnit, setConfirmDeleteUnit] = useState(null)
+  const [editUnit, setEditUnit] = useState(null)
+  const [editUnitNumber, setEditUnitNumber] = useState('')
+  const [editUnitSize, setEditUnitSize] = useState('')
+  const [editUnitArea, setEditUnitArea] = useState('none')
+  const [editUnitNotes, setEditUnitNotes] = useState('')
   const [renameAsset, setRenameAsset] = useState(null)
   const [renameLabel, setRenameLabel] = useState('')
   const [renameSize, setRenameSize] = useState('')
@@ -39,7 +55,7 @@ export default function AssetManager() {
       supabase.from('assets').select('*, asset_types(name, icon)').eq('archived', false).order('label'),
       supabase.from('active_deployments').select('asset_id'),
       supabase.from('asset_types').select('*').order('name'),
-      supabase.from('storage_units').select('id, unit_number, size, notes').order('unit_number'),
+      supabase.from('storage_units').select('id, unit_number, size, area, notes').order('unit_number'),
       supabase.from('storage_tenancies').select('unit_id, tenant_name').is('end_date', null),
     ])
     if (assetData) setAssets(assetData)
@@ -51,7 +67,10 @@ export default function AssetManager() {
     }
   }, [])
 
-  useEffect(() => { fetchAll() }, [fetchAll])
+  useEffect(() => {
+    const timer = setTimeout(fetchAll, 0)
+    return () => clearTimeout(timer)
+  }, [fetchAll])
   useRealtime(['assets', 'asset_types', 'deployments', 'storage_units', 'storage_tenancies'], fetchAll)
 
   async function addType() {
@@ -112,6 +131,34 @@ export default function AssetManager() {
     setNewUnitSize('')
     setNewUnitNotes('')
     setShowAddUnit(false)
+    fetchAll()
+  }
+
+  function openEditStorageUnit(unit) {
+    setEditUnit(unit)
+    setEditUnitNumber(unit.unit_number ?? '')
+    setEditUnitSize(unit.size ?? '')
+    setEditUnitArea(unit.area ?? 'none')
+    setEditUnitNotes(unit.notes ?? '')
+    setUnitError('')
+  }
+
+  async function saveStorageUnit() {
+    if (!editUnit || !editUnitNumber.trim()) return
+    setSavingUnit(true)
+    setUnitError('')
+    const { error } = await supabase.from('storage_units').update({
+      unit_number: editUnitNumber.trim(),
+      size: editUnitSize.trim() || null,
+      area: editUnitArea === 'none' ? null : editUnitArea,
+      notes: editUnitNotes.trim() || null,
+    }).eq('id', editUnit.id)
+    setSavingUnit(false)
+    if (error) {
+      setUnitError(error.message)
+      return
+    }
+    setEditUnit(null)
     fetchAll()
   }
 
@@ -236,15 +283,25 @@ export default function AssetManager() {
               <div key={unit.id} className="bg-card border rounded-xl px-4 py-3 flex items-center justify-between">
                 <div>
                   <p className="text-sm font-medium">{unit.unit_number}{unit.size ? ` · ${unit.size}` : ''}</p>
-                  <p className="text-xs text-muted-foreground">{unit.tenant_name ?? 'Vacant'}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {unit.tenant_name ?? 'Vacant'} · {storageAreaLabel(unit.area)}
+                  </p>
                   {unit.notes && <p className="text-xs text-muted-foreground mt-0.5">{unit.notes}</p>}
                 </div>
-                <button
-                  onClick={() => setConfirmDeleteUnit(unit)}
-                  className="text-muted-foreground hover:text-destructive transition-colors"
-                >
-                  <Trash2 size={15} />
-                </button>
+                <div className="ml-3 flex items-center gap-2 flex-shrink-0">
+                  <button
+                    onClick={() => openEditStorageUnit(unit)}
+                    className="text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <Pencil size={14} />
+                  </button>
+                  <button
+                    onClick={() => setConfirmDeleteUnit(unit)}
+                    className="text-muted-foreground hover:text-destructive transition-colors"
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
               </div>
             ))}
             {storageUnits.length === 0 && (
@@ -367,6 +424,61 @@ export default function AssetManager() {
               <Button variant="outline" className="flex-1" onClick={() => setShowAddUnit(false)} disabled={savingUnit}>Cancel</Button>
               <Button className="flex-1" onClick={addStorageUnit} disabled={!newUnitNumber.trim() || savingUnit}>
                 {savingUnit ? 'Adding…' : 'Add Unit'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!editUnit} onOpenChange={open => { if (!open) { setEditUnit(null); setUnitError('') } }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle>Edit Storage Unit</DialogTitle></DialogHeader>
+          <div className="space-y-3 mt-2">
+            <div>
+              <p className="text-xs text-muted-foreground mb-1.5">Unit Number</p>
+              <Input
+                value={editUnitNumber}
+                onChange={e => setEditUnitNumber(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), saveStorageUnit())}
+                autoFocus
+              />
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground mb-1.5">Size</p>
+              <Input
+                placeholder="e.g. 10x20, 8ft"
+                value={editUnitSize}
+                onChange={e => setEditUnitSize(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), saveStorageUnit())}
+              />
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground mb-1.5">Area</p>
+              <Select value={editUnitArea} onValueChange={setEditUnitArea}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {STORAGE_AREAS.map(area => (
+                    <SelectItem key={area.value} value={area.value}>{area.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground mb-1.5">Notes</p>
+              <Input
+                placeholder="Location, access info…"
+                value={editUnitNotes}
+                onChange={e => setEditUnitNotes(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), saveStorageUnit())}
+              />
+            </div>
+            {unitError && <p className="text-sm text-destructive">{unitError}</p>}
+            <div className="flex gap-2 pt-1">
+              <Button variant="outline" className="flex-1" onClick={() => setEditUnit(null)} disabled={savingUnit}>Cancel</Button>
+              <Button className="flex-1" onClick={saveStorageUnit} disabled={!editUnitNumber.trim() || savingUnit}>
+                {savingUnit ? 'Saving…' : 'Save'}
               </Button>
             </div>
           </div>

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowLeft, RotateCw, Lock, LockOpen } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import StorageViewMenu from '@/components/StorageViewMenu'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import { useRealtime } from '@/lib/useRealtime'
@@ -169,13 +170,12 @@ function UnitBlock({ unit, pos, isPaid, isDragging, onPointerDown, onPointerMove
 // ─── main page ────────────────────────────────────────────────────────────────
 
 const TABS = [
-  { key: 'boat',    label: 'Boat' },
-  { key: 'rv',      label: 'RV' },
-  { key: 'trailer', label: 'Trailer' },
+  { key: 'up_top',    label: 'Up Top' },
+  { key: 'down_below', label: 'Down Below' },
 ]
 
 export default function StorageFloorplan() {
-  const [activeTab, setActiveTab] = useState('boat')
+  const [activeTab, setActiveTab] = useState('up_top')
   const [units, setUnits]         = useState([])
   const [positions, setPositions] = useState({})   // key: `${unitId}::${area}`
   const [paidIds, setPaidIds]     = useState(new Set())
@@ -359,6 +359,8 @@ export default function StorageFloorplan() {
             {label}
           </button>
         ))}
+        <div className="w-px h-5 bg-border flex-shrink-0" />
+        <StorageViewMenu current="floorplan" className="h-8 w-[112px] mx-1" />
         <div className="w-px h-5 bg-border flex-shrink-0" />
         <button
           onClick={() => setLocked(v => !v)}

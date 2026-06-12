@@ -63,6 +63,12 @@ verify_jwt = true
 import_map = "./functions/stripe-setup-session/deno.json"
 entrypoint = "./functions/stripe-setup-session/index.ts"
 
+[functions.card-setup-invite]
+enabled = true
+verify_jwt = false
+import_map = "./functions/card-setup-invite/deno.json"
+entrypoint = "./functions/card-setup-invite/index.ts"
+
 [functions.stripe-webhook]
 enabled = true
 verify_jwt = false

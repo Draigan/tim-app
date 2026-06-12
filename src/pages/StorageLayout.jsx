@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowLeft, Pencil, Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import StorageViewMenu from '@/components/StorageViewMenu'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import { useRealtime } from '@/lib/useRealtime'
@@ -238,6 +239,7 @@ export default function StorageLayout() {
           </Link>
         </Button>
         <h1 className="text-base sm:text-lg font-semibold flex-1">Storage Layout</h1>
+        <StorageViewMenu current="layout" className="w-[128px]" />
         <Button
           variant={editMode ? 'default' : 'outline'}
           size="sm"

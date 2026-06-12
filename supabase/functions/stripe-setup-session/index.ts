@@ -27,6 +27,7 @@ function emailsFromEnv(...names: string[]): string[] {
 const BILLING_ADMIN_EMAILS = emailsFromEnv('BILLING_ADMIN_EMAILS', 'ADMIN_EMAILS')
 const BILLING_ROLES = new Set(['admin', 'billing', 'billing_admin'])
 const DEFAULT_APP_ORIGIN = 'https://pvpzpkvgdyjujtelwbbs.supabase.co'
+const INVITE_DAYS = 30
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -73,6 +74,31 @@ function normalizeOrigin(value: unknown): string | null {
   }
 }
 
+function bytesToBase64Url(bytes: Uint8Array): string {
+  let binary = ''
+  bytes.forEach(byte => { binary += String.fromCharCode(byte) })
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+}
+
+function newInviteToken(): string {
+  const bytes = new Uint8Array(32)
+  crypto.getRandomValues(bytes)
+  return bytesToBase64Url(bytes)
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const bytes = new TextEncoder().encode(value)
+  const digest = await crypto.subtle.digest('SHA-256', bytes)
+  return [...new Uint8Array(digest)]
+    .map(byte => byte.toString(16).padStart(2, '0'))
+    .join('')
+}
+
+function inviteUrl(token: string): string {
+  const base = Deno.env.get('SUPABASE_URL')!.replace(/\/$/g, '')
+  return `${base}/functions/v1/card-setup-invite?token=${encodeURIComponent(token)}`
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS })
   if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405)
@@ -81,7 +107,7 @@ Deno.serve(async (req) => {
     const authorizationError = await authorizeBillingUser(req)
     if (authorizationError) return authorizationError
 
-    const { customer_id, origin } = await req.json()
+    const { customer_id, origin, link_type } = await req.json()
     if (!customer_id) return json({ error: 'customer_id required' }, 400)
 
     const { data: customer, error } = await supabase
@@ -107,6 +133,21 @@ Deno.serve(async (req) => {
     const appOrigin = normalizeOrigin(origin)
       ?? normalizeOrigin(req.headers.get('origin'))
       ?? DEFAULT_APP_ORIGIN
+
+    if (link_type === 'invite') {
+      const token = newInviteToken()
+      const tokenHash = await sha256Hex(token)
+      const expiresAt = new Date(Date.now() + INVITE_DAYS * 24 * 60 * 60 * 1000).toISOString()
+      const { error: inviteError } = await supabase.from('card_setup_invites').insert({
+        customer_id,
+        token_hash: tokenHash,
+        return_origin: appOrigin,
+        expires_at: expiresAt,
+      })
+      if (inviteError) throw inviteError
+
+      return json({ url: inviteUrl(token), invite_url: inviteUrl(token), expires_at: expiresAt })
+    }
 
     const session = await stripe.checkout.sessions.create({
       mode: 'setup',
