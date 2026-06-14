@@ -69,6 +69,12 @@ verify_jwt = false
 import_map = "./functions/card-setup-invite/deno.json"
 entrypoint = "./functions/card-setup-invite/index.ts"
 
+[functions.storage-payment-portal]
+enabled = true
+verify_jwt = false
+import_map = "./functions/storage-payment-portal/deno.json"
+entrypoint = "./functions/storage-payment-portal/index.ts"
+
 [functions.stripe-webhook]
 enabled = true
 verify_jwt = false

@@ -126,6 +126,123 @@ async function extendPortablePaidThroughByLabels(assetId: string, labels: string
   }
 }
 
+function paymentRecordAmountsFromCents(subtotalCents: number, taxCents: number) {
+  return {
+    amount: dollarsFromCents(subtotalCents + taxCents),
+    subtotal_amount: dollarsFromCents(subtotalCents),
+    tax_amount: dollarsFromCents(taxCents),
+    tax_rate: taxCents > 0 ? 0.13 : 0,
+    tax_label: taxCents > 0 ? 'HST' : null,
+  }
+}
+
+function centsFromAmount(value: unknown): number {
+  const amount = Number(value ?? 0)
+  return Number.isFinite(amount) && amount > 0 ? Math.round(amount * 100) : 0
+}
+
+function groupPeriodsBy(items: any[], idKey: string): Map<string, string[]> {
+  const grouped = new Map<string, string[]>()
+  for (const item of items) {
+    const id = typeof item[idKey] === 'string' ? item[idKey] : ''
+    const period = typeof item.period_label === 'string' ? item.period_label : ''
+    if (!id || !isPeriodLabel(period)) continue
+    if (!grouped.has(id)) grouped.set(id, [])
+    grouped.get(id)!.push(period)
+  }
+  return grouped
+}
+
+async function markStorageLateFeesPaid(idKey: 'tenancy_id' | 'portable_rental_id', items: any[]) {
+  for (const [id, periods] of groupPeriodsBy(items, idKey)) {
+    const { error } = await supabase
+      .from('storage_late_fees')
+      .update({ status: 'paid', resolved_at: new Date().toISOString() })
+      .eq(idKey, id)
+      .eq('status', 'open')
+      .in('period_label', periods)
+
+    if (error) throw error
+  }
+}
+
+async function recordPortalPayment(session: Stripe.Checkout.Session) {
+  const portalPaymentId = session.metadata?.portal_payment_id
+  if (!portalPaymentId) return
+
+  const { data: portalPayment, error: portalError } = await supabase
+    .from('storage_portal_payment_sessions')
+    .select('*')
+    .eq('id', portalPaymentId)
+    .maybeSingle()
+
+  if (portalError) throw portalError
+  if (!portalPayment || portalPayment.status === 'paid') return
+
+  const expectedCents = centsFromAmount(portalPayment.amount)
+  if (typeof session.amount_total === 'number' && session.amount_total !== expectedCents) {
+    throw new Error(`Portal payment ${portalPaymentId} amount mismatch.`)
+  }
+
+  const items = Array.isArray(portalPayment.items) ? portalPayment.items : []
+  const fixedItems = items.filter((item: any) => item.source === 'fixed' && item.tenancy_id)
+  const portableItems = items.filter((item: any) => item.source === 'portable' && item.asset_id)
+  const paidAt = new Date().toISOString()
+
+  if (fixedItems.length) {
+    const { error } = await supabase.from('storage_payments').upsert(
+      fixedItems.map((item: any) => ({
+        unit_id: item.unit_id ?? null,
+        tenancy_id: item.tenancy_id,
+        period_label: item.period_label,
+        paid_at: paidAt,
+        ...paymentRecordAmountsFromCents(Number(item.subtotal_cents ?? 0), Number(item.tax_cents ?? 0)),
+      })),
+      { onConflict: 'tenancy_id,period_label' },
+    )
+    if (error) throw error
+
+    for (const [tenancyId, periods] of groupPeriodsBy(fixedItems, 'tenancy_id')) {
+      await extendPaidThroughByLabels(tenancyId, periods)
+    }
+    await markStorageLateFeesPaid('tenancy_id', fixedItems)
+  }
+
+  if (portableItems.length) {
+    const { error } = await supabase.from('portable_storage_payments').upsert(
+      portableItems.map((item: any) => ({
+        asset_id: item.asset_id,
+        period_label: item.period_label,
+        paid_at: paidAt,
+        ...paymentRecordAmountsFromCents(Number(item.subtotal_cents ?? 0), Number(item.tax_cents ?? 0)),
+      })),
+      { onConflict: 'asset_id,period_label' },
+    )
+    if (error) throw error
+
+    for (const [assetId, periods] of groupPeriodsBy(portableItems, 'asset_id')) {
+      await extendPortablePaidThroughByLabels(assetId, periods)
+    }
+    await markStorageLateFeesPaid('portable_rental_id', portableItems)
+  }
+
+  const paymentIntentId = typeof session.payment_intent === 'string'
+    ? session.payment_intent
+    : session.payment_intent?.id ?? null
+
+  const { error: updateError } = await supabase
+    .from('storage_portal_payment_sessions')
+    .update({
+      status: 'paid',
+      paid_at: paidAt,
+      stripe_checkout_session_id: session.id,
+      stripe_payment_intent_id: paymentIntentId,
+    })
+    .eq('id', portalPaymentId)
+
+  if (updateError) throw updateError
+}
+
 Deno.serve(async (req) => {
   if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
 
@@ -141,9 +258,17 @@ Deno.serve(async (req) => {
   }
 
   try {
-    if (event.type === 'checkout.session.completed') {
+    if (event.type === 'checkout.session.completed' || event.type === 'checkout.session.async_payment_succeeded') {
       const session = event.data.object as Stripe.Checkout.Session
-      if (session.mode !== 'setup') return new Response('ok')
+
+      if (session.mode === 'payment' && session.metadata?.source === 'storage_payment_portal' && session.payment_status === 'paid') {
+        await recordPortalPayment(session)
+        return new Response(JSON.stringify({ received: true }), {
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
+      if (event.type !== 'checkout.session.completed' || session.mode !== 'setup') return new Response('ok')
 
       const customerId = session.metadata?.customer_id
       if (!customerId) return new Response('ok')
@@ -159,6 +284,18 @@ Deno.serve(async (req) => {
         .from('customers')
         .update({ stripe_payment_method_id: paymentMethodId, has_payment_method: true })
         .eq('id', customerId)
+    }
+
+    if (event.type === 'checkout.session.expired') {
+      const session = event.data.object as Stripe.Checkout.Session
+      const portalPaymentId = session.metadata?.portal_payment_id
+      if (session.metadata?.source === 'storage_payment_portal' && portalPaymentId) {
+        await supabase
+          .from('storage_portal_payment_sessions')
+          .update({ status: 'expired' })
+          .eq('id', portalPaymentId)
+          .eq('status', 'pending')
+      }
     }
 
     if (event.type === 'payment_intent.succeeded') {

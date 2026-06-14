@@ -12,7 +12,7 @@ export const CUSTOMER_SAFE_COLUMNS = [
 ].join(', ')
 // Note: stripe_customer_id requires the grant in 20260601_grant_stripe_id_read.sql
 
-export const CUSTOMER_WITH_CREDIT_SUMMARY_COLUMNS = `${CUSTOMER_SAFE_COLUMNS}, pin, customer_credits(amount, status)`
+export const CUSTOMER_WITH_CREDIT_SUMMARY_COLUMNS = `${CUSTOMER_SAFE_COLUMNS}, payment_pin, customer_credits(amount, status)`
 
 export const CUSTOMER_ASSIGN_COLUMNS = [
   'id',

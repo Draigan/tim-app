@@ -1313,9 +1313,9 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
                         {formatPhone(item.tenant_phone)}
                       </a>
                     )}
-                    {item.customers?.pin && (
+                    {item.customers?.payment_pin && (
                       <button onClick={() => setShowPin(v => !v)} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
-                        PIN <span className="font-mono font-semibold text-foreground tracking-widest">{showPin ? item.customers.pin : '••••'}</span>
+                        Payment PIN <span className="font-mono font-semibold text-foreground tracking-widest">{showPin ? item.customers.payment_pin : '•••••'}</span>
                         {showPin ? <EyeOff size={11} /> : <Eye size={11} />}
                       </button>
                     )}
@@ -1831,9 +1831,9 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
                         {formatPhone(rental.tenant_phone)}
                       </a>
                     )}
-                    {rental.customers?.pin && (
+                    {rental.customers?.payment_pin && (
                       <button onClick={() => setShowPin(v => !v)} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
-                        PIN <span className="font-mono font-semibold text-foreground tracking-widest">{showPin ? rental.customers.pin : '••••'}</span>
+                        Payment PIN <span className="font-mono font-semibold text-foreground tracking-widest">{showPin ? rental.customers.payment_pin : '•••••'}</span>
                         {showPin ? <EyeOff size={11} /> : <Eye size={11} />}
                       </button>
                     )}
@@ -2044,10 +2044,10 @@ export default function Storage() {
       { data: deploymentData },
     ] = await Promise.all([
       supabase.from('storage_units').select('*').order('unit_number'),
-      supabase.from('storage_tenancies').select('*, customers(name, pin)').is('end_date', null),
+      supabase.from('storage_tenancies').select('*, customers(name, payment_pin)').is('end_date', null),
       supabase.from('storage_payments').select('tenancy_id, period_label').gte('period_label', cutoff),
       supabase.from('assets').select('*, asset_types(name, is_storage)').eq('archived', false).order('label'),
-      supabase.from('portable_storage_rentals').select('*, customers(name, pin, has_payment_method, stripe_customer_id)'),
+      supabase.from('portable_storage_rentals').select('*, customers(name, payment_pin, has_payment_method, stripe_customer_id)'),
       supabase.from('portable_storage_payments').select('asset_id, period_label').gte('period_label', cutoff),
       supabase.from('active_deployments').select('asset_id'),
     ])

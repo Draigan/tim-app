@@ -474,9 +474,9 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
                 </a>
               )}
               {form.notes && <p className="text-sm text-muted-foreground">{form.notes}</p>}
-              {customer?.pin && (
+              {customer?.payment_pin && (
                 <button onClick={() => setShowPin(v => !v)} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
-                  PIN <span className="font-mono font-semibold text-foreground tracking-widest">{showPin ? customer.pin : '••••'}</span>
+                  Payment PIN <span className="font-mono font-semibold text-foreground tracking-widest">{showPin ? customer.payment_pin : '•••••'}</span>
                   {showPin ? <EyeOff size={11} /> : <Eye size={11} />}
                 </button>
               )}
