@@ -22,6 +22,8 @@ const cents = value => {
 const dollars = value => Number((value / 100).toFixed(2))
 const SALES_TAX_RATE = 0.13
 const SALES_TAX_LABEL = 'HST'
+const LATE_FEE_RATE = 0.20
+const LATE_FEE_DAY = 6
 
 function taxCentsForSubtotal(subtotalCents) {
   return Math.round(subtotalCents * SALES_TAX_RATE)
@@ -147,6 +149,18 @@ function effectiveDueDateForPeriod(label, billingDay, moveInDate) {
   if (moveIn && periodEnd && periodEnd < moveIn) return null
   if (moveIn && dueDate < moveIn && (!periodEnd || moveIn <= periodEnd)) return moveIn
   return dueDate
+}
+
+function lateFeeDateForPeriod(label, billingDay, moveInDate) {
+  const dueDate = effectiveDueDateForPeriod(label, billingDay, moveInDate)
+  if (!dueDate || !isPeriodLabel(label)) return null
+  const [y, m] = label.split('-').map(Number)
+  const sixth = new Date(y, m - 1, LATE_FEE_DAY)
+  return dueDate > sixth ? addDays(dueDate, 5) : sixth
+}
+
+function lateFeeAmountForPeriod(label, billingDay, moveInDate, monthlyRate) {
+  return dollars(Math.round(periodChargeCents(label, billingDay, moveInDate, monthlyRate) * LATE_FEE_RATE))
 }
 
 function paidThroughFromPayments(payments, billingDay, existingPaidThroughDate = null) {
@@ -399,9 +413,12 @@ function PinModal({ open, onClose, onConfirm, charging, actionType, details }) {
                 <span className="text-muted-foreground">Unit</span>
                 <span className="font-medium">{unitNumber}</span>
               </div>
-              {periods.map(({ label, amount, subtotal }) => (
+              {periods.map(({ label, amount, subtotal, lateFeeAmount }) => (
                 <div key={label} className="flex justify-between px-4 py-2.5">
-                  <span className="text-muted-foreground">{formatPeriod(label)}</span>
+                  <span className="text-muted-foreground">
+                    {formatPeriod(label)}
+                    {lateFeeAmount > 0 ? ' + late fee' : ''}
+                  </span>
                   <span>${parseFloat(subtotal ?? amount ?? monthlyRate ?? 0).toFixed(2)}</span>
                 </div>
               ))}
@@ -528,7 +545,10 @@ function ChargeSuccessView({ result, onDone }) {
           </div>
           {periods.map(period => (
             <div key={period.label ?? period} className="flex justify-between px-4 py-2.5">
-              <span className="text-muted-foreground">{formatPeriod(period.label ?? period)}</span>
+              <span className="text-muted-foreground">
+                {formatPeriod(period.label ?? period)}
+                {period.lateFeeAmount > 0 ? ' + late fee' : ''}
+              </span>
               <span className="text-green-600">${parseFloat(period.subtotal ?? period.amount ?? monthlyRate ?? 0).toFixed(2)}</span>
             </div>
           ))}
@@ -574,12 +594,15 @@ export default function StorageBilling() {
   const [unit, setUnit]           = useState(null)
   const [tenancy, setTenancy]     = useState(null)
   const [history, setHistory]     = useState([])
+  const [lateFees, setLateFees]   = useState([])
   const [loading, setLoading]     = useState(true)
   const [tab, setTab]             = useState('history')
   const [chargeMonths, setChargeMonths] = useState(1)
   const [extras, setExtras]       = useState([])
   const [cashCollectTax, setCashCollectTax] = useState(false)
   const [charging, setCharging]   = useState(false)
+  const [lateFeeSaving, setLateFeeSaving] = useState('')
+  const [lateFeeError, setLateFeeError] = useState('')
   const [chargeError, setChargeError] = useState('')
   const [pinModalOpen, setPinModalOpen] = useState(false)
   const [pendingAction, setPendingAction] = useState('card')
@@ -601,15 +624,24 @@ export default function StorageBilling() {
       if (r) {
         setTenancy(r)
 
-        const { data: payments } = await supabase
-          .from('portable_storage_payments')
-          .select('*')
-          .eq('asset_id', assetId)
-          .order('period_label', { ascending: false })
+        const [{ data: payments }, { data: fees }] = await Promise.all([
+          supabase
+            .from('portable_storage_payments')
+            .select('*')
+            .eq('asset_id', assetId)
+            .order('period_label', { ascending: false }),
+          supabase
+            .from('storage_late_fees')
+            .select('*')
+            .eq('portable_rental_id', r.id)
+            .order('period_label', { ascending: false }),
+        ])
         if (payments) setHistory(sortPaymentsByPeriod(payments))
+        if (fees) setLateFees(fees)
       } else {
         setTenancy(null)
         setHistory([])
+        setLateFees([])
       }
     } else {
       const [{ data: u }, { data: t }] = await Promise.all([
@@ -625,15 +657,24 @@ export default function StorageBilling() {
       if (t) {
         setTenancy(t)
 
-        const { data: payments } = await supabase
-          .from('storage_payments')
-          .select('*')
-          .eq('tenancy_id', t.id)
-          .order('period_label', { ascending: false })
+        const [{ data: payments }, { data: fees }] = await Promise.all([
+          supabase
+            .from('storage_payments')
+            .select('*')
+            .eq('tenancy_id', t.id)
+            .order('period_label', { ascending: false }),
+          supabase
+            .from('storage_late_fees')
+            .select('*')
+            .eq('tenancy_id', t.id)
+            .order('period_label', { ascending: false }),
+        ])
         if (payments) setHistory(sortPaymentsByPeriod(payments))
+        if (fees) setLateFees(fees)
       } else {
         setTenancy(null)
         setHistory([])
+        setLateFees([])
       }
     }
 
@@ -642,7 +683,7 @@ export default function StorageBilling() {
 
   useEffect(() => { queueMicrotask(fetchUnit) }, [fetchUnit])
   useRealtime(
-    isPortable ? ['portable_storage_payments', 'portable_storage_rentals'] : ['storage_payments', 'storage_tenancies'],
+    isPortable ? ['portable_storage_payments', 'portable_storage_rentals', 'storage_late_fees'] : ['storage_payments', 'storage_tenancies', 'storage_late_fees'],
     fetchUnit
   )
 
@@ -677,8 +718,15 @@ export default function StorageBilling() {
   const paidSet       = new Set(history.map(p => p.period_label).filter(isPeriodLabel))
   const paidThroughDate = paidThroughFromPayments(history, tenancy.billing_day, tenancy.paid_through_date)
   const unpaidPeriods = periods.filter(p => !periodCovered(p, tenancy.billing_day, paidSet, paidThroughDate))
+  const openLateFeesByPeriod = new Map(
+    lateFees
+      .filter(fee => fee.status === 'open')
+      .map(fee => [fee.period_label, fee])
+  )
   const outstandingTotal = unpaidPeriods.reduce(
-    (sum, period) => sum + periodChargeAmount(period, tenancy.billing_day, tenancy.move_in_date, tenancy.monthly_rate),
+    (sum, period) => sum
+      + periodChargeAmount(period, tenancy.billing_day, tenancy.move_in_date, tenancy.monthly_rate)
+      + (Number(openLateFeesByPeriod.get(period)?.amount) || 0),
     0,
   )
   const today = parseLocalDate(dateStr(new Date()))
@@ -697,6 +745,16 @@ export default function StorageBilling() {
     setHistory(prev => sortPaymentsByPeriod([...payments, ...prev.filter(p => !labels.includes(p.period_label))]))
   }
 
+  function markLateFeesPaidInState(periodLabels) {
+    const paidLabels = new Set(periodLabels)
+    const resolvedAt = new Date().toISOString()
+    setLateFees(current => current.map(fee => (
+      paidLabels.has(fee.period_label) && fee.status === 'open'
+        ? { ...fee, status: 'paid', resolved_at: resolvedAt }
+        : fee
+    )))
+  }
+
   async function extendCurrentPaidThrough(periods, currentPaidThroughDate = paidThroughDate) {
     const nextPaidThroughDate = paidThroughFromPayments(
       periods.map(period_label => ({ period_label })),
@@ -712,6 +770,18 @@ export default function StorageBilling() {
     return nextPaidThroughDate
   }
 
+  function previewForPeriod(label) {
+    const baseSubtotal = periodChargeAmount(label, tenancy.billing_day, tenancy.move_in_date, tenancy.monthly_rate)
+    const lateFeeAmount = Number(openLateFeesByPeriod.get(label)?.amount) || 0
+    return {
+      label,
+      baseSubtotal,
+      lateFeeAmount,
+      ...taxableBreakdownFromSubtotal(baseSubtotal + lateFeeAmount),
+      alreadyPaid: false,
+    }
+  }
+
   function chargePeriods(months) {
     if (months === 0) return []
     const start = currentPeriodLabel(tenancy.billing_day)
@@ -723,11 +793,7 @@ export default function StorageBilling() {
       const amount = periodChargeAmount(label, tenancy.billing_day, tenancy.move_in_date, tenancy.monthly_rate)
       if (!periodCovered(label, tenancy.billing_day, paidSet, paidThroughDate) && amount > 0) labels.push(label)
     }
-    return labels.map(label => ({
-      label,
-      ...taxableBreakdownFromSubtotal(periodChargeAmount(label, tenancy.billing_day, tenancy.move_in_date, tenancy.monthly_rate)),
-      alreadyPaid: false,
-    }))
+    return labels.map(previewForPeriod)
   }
 
   const chargePreview = chargePeriods(chargeMonths)
@@ -793,6 +859,7 @@ export default function StorageBilling() {
         ...paymentAmountsForPeriod(period, cashCollectTax),
       }))
       mergeHistoryPayments(payments, paidPeriods)
+      markLateFeesPaidInState(paidPeriods)
       const nextPaidThroughDate = data.paid_through_date ?? await extendCurrentPaidThrough(paidPeriods)
       if (nextPaidThroughDate) setTenancy(t => ({ ...t, paid_through_date: nextPaidThroughDate }))
       setPinModalOpen(false)
@@ -801,10 +868,7 @@ export default function StorageBilling() {
       setCashCollectTax(false)
       setChargeSuccess({
         ...snapshot,
-        periods: paidPeriods.map(period => previewByLabel.get(period) ?? {
-          label: period,
-          ...taxableBreakdownFromSubtotal(periodChargeAmount(period, tenancy.billing_day, tenancy.move_in_date, tenancy.monthly_rate)),
-        }),
+        periods: paidPeriods.map(period => previewByLabel.get(period) ?? previewForPeriod(period)),
         paidThrough: nextPaidThroughDate,
       })
     } catch (err) {
@@ -824,6 +888,63 @@ export default function StorageBilling() {
   const cashTaxTotal       = cashCollectTax ? taxTotal : 0
   const cashGrandTotal     = subtotalTotal + cashTaxTotal
   const canMarkPaidCharge  = chargePreview.length > 0
+
+  function replaceLateFeeInState(nextFee) {
+    setLateFees(current => {
+      const withoutFee = current.filter(fee => fee.period_label !== nextFee.period_label)
+      return sortPaymentsByPeriod([nextFee, ...withoutFee])
+    })
+  }
+
+  async function toggleLateFee(period, enabled) {
+    const existing = openLateFeesByPeriod.get(period)
+    setLateFeeSaving(period)
+    setLateFeeError('')
+
+    try {
+      if (enabled) {
+        const amount = lateFeeAmountForPeriod(period, tenancy.billing_day, tenancy.move_in_date, tenancy.monthly_rate)
+        if (amount <= 0) return
+
+        const { data, error } = await supabase
+          .from('storage_late_fees')
+          .upsert(
+            {
+              ...(isPortable
+                ? { portable_rental_id: tenancy.id, asset_id: assetId }
+                : { tenancy_id: tenancy.id }),
+              period_label: period,
+              rate: LATE_FEE_RATE,
+              amount,
+              status: 'open',
+              applied_at: new Date().toISOString(),
+              resolved_at: null,
+            },
+            { onConflict: isPortable ? 'portable_rental_id,period_label' : 'tenancy_id,period_label' },
+          )
+          .select()
+          .single()
+
+        if (error) throw error
+        if (data) replaceLateFeeInState(data)
+      } else if (existing) {
+        const { data, error } = await supabase
+          .from('storage_late_fees')
+          .update({ status: 'waived', resolved_at: new Date().toISOString() })
+          .eq('id', existing.id)
+          .select()
+          .single()
+
+        if (error) throw error
+        if (data) replaceLateFeeInState(data)
+      }
+    } catch (err) {
+      console.error('late fee toggle error:', err)
+      setLateFeeError(err instanceof Error ? err.message : 'Could not update late fee.')
+    } finally {
+      setLateFeeSaving('')
+    }
+  }
 
   function openPinModal(action) {
     setChargeError('')
@@ -889,6 +1010,7 @@ export default function StorageBilling() {
             ...paymentAmountsForPeriod(period, true),
           }))
           mergeHistoryPayments(payments?.length ? payments : fallbackPayments, chargedPeriods)
+          markLateFeesPaidInState(chargedPeriods)
           nextPaidThroughDate = data.paid_through_date ?? await extendCurrentPaidThrough(chargedPeriods)
           if (nextPaidThroughDate) setTenancy(t => ({ ...t, paid_through_date: nextPaidThroughDate }))
         }
@@ -898,10 +1020,7 @@ export default function StorageBilling() {
         setCashCollectTax(false)
         setChargeSuccess({
           ...snapshot,
-          periods: chargedPeriods.map(period => previewByLabel.get(period) ?? {
-            label: period,
-            ...taxableBreakdownFromSubtotal(periodChargeAmount(period, tenancy.billing_day, tenancy.move_in_date, tenancy.monthly_rate)),
-          }),
+          periods: chargedPeriods.map(period => previewByLabel.get(period) ?? previewForPeriod(period)),
           paidThrough: nextPaidThroughDate,
         })
       } else if (data.status === 'skipped') {
@@ -972,15 +1091,39 @@ export default function StorageBilling() {
                   <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Outstanding</p>
                   <div className="rounded-xl border border-destructive/30 overflow-hidden">
                     {unpaidPeriods.map((period, i) => {
-                      const amount = periodChargeAmount(period, tenancy.billing_day, tenancy.move_in_date, tenancy.monthly_rate)
+                      const baseAmount = periodChargeAmount(period, tenancy.billing_day, tenancy.move_in_date, tenancy.monthly_rate)
+                      const lateFee = openLateFeesByPeriod.get(period)
+                      const lateFeeAmount = Number(lateFee?.amount) || 0
+                      const lateFeeDate = lateFeeDateForPeriod(period, tenancy.billing_day, tenancy.move_in_date)
+                      const lateFeeEligible = lateFeeDate && today && lateFeeDate <= today
+                      const lateFeeDisabled = lateFeeSaving === period || (!lateFee && !lateFeeEligible)
                       return (
-                        <div key={period} className={cn('flex items-center justify-between px-4 py-3 text-sm', i < unpaidPeriods.length - 1 && 'border-b border-destructive/20')}>
-                          <span className="font-medium">{formatPeriod(period)}</span>
-                          {amount > 0 && <span className="text-xs text-muted-foreground">${amount.toFixed(2)}</span>}
+                        <div key={period} className={cn('flex items-center justify-between gap-3 px-4 py-3 text-sm', i < unpaidPeriods.length - 1 && 'border-b border-destructive/20')}>
+                          <div className="min-w-0">
+                            <p className="font-medium">{formatPeriod(period)}</p>
+                            <p className="text-xs text-muted-foreground">
+                              ${baseAmount.toFixed(2)}
+                              {lateFeeAmount > 0 ? ` + $${lateFeeAmount.toFixed(2)} late fee` : lateFeeDate && !lateFeeEligible ? ` · Late fee ${formatLocalDate(dateStr(lateFeeDate), { month: 'short', day: 'numeric' })}` : ''}
+                            </p>
+                          </div>
+                          <div className="flex flex-shrink-0 items-center gap-3">
+                            <span className="text-xs font-medium text-muted-foreground">${(baseAmount + lateFeeAmount).toFixed(2)}</span>
+                            <label className={cn('flex items-center gap-1.5 text-xs', lateFeeDisabled ? 'text-muted-foreground/60' : 'text-muted-foreground')}>
+                              <input
+                                type="checkbox"
+                                checked={!!lateFee}
+                                disabled={lateFeeDisabled}
+                                onChange={e => toggleLateFee(period, e.target.checked)}
+                                className="h-4 w-4 accent-destructive"
+                              />
+                              Late fee
+                            </label>
+                          </div>
                         </div>
                       )
                     })}
                   </div>
+                  {lateFeeError && <p className="text-xs text-destructive pt-1">{lateFeeError}</p>}
                 </div>
               )}
 
@@ -1048,9 +1191,12 @@ export default function StorageBilling() {
               {/* Periods preview */}
               {chargePreview.length > 0 && (
                 <div className="rounded-xl border overflow-hidden">
-                  {chargePreview.map(({ label, subtotal, alreadyPaid }, i) => (
+                  {chargePreview.map(({ label, subtotal, lateFeeAmount, alreadyPaid }, i) => (
                     <div key={label} className={cn('flex items-center justify-between px-4 py-2.5 text-sm', i < chargePreview.length - 1 && 'border-b')}>
-                      <span className="font-medium">{formatPeriod(label)}</span>
+                      <div>
+                        <p className="font-medium">{formatPeriod(label)}</p>
+                        {lateFeeAmount > 0 && <p className="text-xs text-destructive">Includes ${lateFeeAmount.toFixed(2)} late fee</p>}
+                      </div>
                       <div className="flex items-center gap-2">
                         {subtotal > 0 && <span className="text-xs text-muted-foreground">${subtotal.toFixed(2)}</span>}
                         {alreadyPaid

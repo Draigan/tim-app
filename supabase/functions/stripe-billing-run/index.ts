@@ -29,6 +29,7 @@ const BILLING_ROLES = new Set(['admin', 'billing', 'billing_admin'])
 const BUSINESS_TIME_ZONE = 'America/Toronto'
 const SALES_TAX_RATE = 0.13
 const SALES_TAX_LABEL = 'HST'
+const LATE_FEE_LABEL = 'Late fee'
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -254,9 +255,65 @@ function amountCentsForPeriod(period: string, rental: any): number {
   return Math.round(monthlyRateCents * billableDays / totalDays)
 }
 
-function chargeablePeriods(periods: string[], rental: any): Array<{ period: string; amountCents: number }> {
+function amountToCents(value: unknown): number {
+  const amount = Number(value ?? 0)
+  return Number.isFinite(amount) && amount > 0 ? Math.round(amount * 100) : 0
+}
+
+async function openLateFeesForPeriods(
+  source: 'fixed' | 'portable',
+  sourceId: string,
+  periods: string[],
+): Promise<Map<string, number>> {
+  if (!periods.length) return new Map()
+
+  const column = source === 'portable' ? 'portable_rental_id' : 'tenancy_id'
+  const { data, error } = await supabase
+    .from('storage_late_fees')
+    .select('period_label, amount')
+    .eq(column, sourceId)
+    .eq('status', 'open')
+    .in('period_label', periods)
+
+  if (error) throw error
+
+  return new Map((data ?? []).map((fee: any) => [fee.period_label, amountToCents(fee.amount)]))
+}
+
+async function markLateFeesPaid(
+  source: 'fixed' | 'portable',
+  sourceId: string,
+  periods: string[],
+) {
+  if (!periods.length) return
+
+  const column = source === 'portable' ? 'portable_rental_id' : 'tenancy_id'
+  const { error } = await supabase
+    .from('storage_late_fees')
+    .update({ status: 'paid', resolved_at: new Date().toISOString() })
+    .eq(column, sourceId)
+    .eq('status', 'open')
+    .in('period_label', periods)
+
+  if (error) throw error
+}
+
+function chargeablePeriods(
+  periods: string[],
+  rental: any,
+  lateFeeCentsByPeriod = new Map<string, number>(),
+): Array<{ period: string; baseCents: number; lateFeeCents: number; amountCents: number }> {
   return periods
-    .map(period => ({ period, amountCents: amountCentsForPeriod(period, rental) }))
+    .map(period => {
+      const baseCents = amountCentsForPeriod(period, rental)
+      const lateFeeCents = lateFeeCentsByPeriod.get(period) ?? 0
+      return {
+        period,
+        baseCents,
+        lateFeeCents,
+        amountCents: baseCents + lateFeeCents,
+      }
+    })
     .filter(charge => charge.amountCents > 0)
 }
 
@@ -344,7 +401,10 @@ async function chargeUnit(tenancy: any, period: string, idempotencyKey?: string)
     return { status: 'skipped', reason: 'already_paid' }
   }
 
-  const periodSubtotalCents = amountCentsForPeriod(period, tenancy)
+  const lateFees = await openLateFeesForPeriods('fixed', tenancy.id, [period])
+  const baseSubtotalCents = amountCentsForPeriod(period, tenancy)
+  const lateFeeCents = lateFees.get(period) ?? 0
+  const periodSubtotalCents = baseSubtotalCents + lateFeeCents
   if (periodSubtotalCents <= 0) {
     return { status: 'skipped', reason: 'no_amount' }
   }
@@ -366,16 +426,19 @@ async function chargeUnit(tenancy: any, period: string, idempotencyKey?: string)
         monthly_rate: String(Number(tenancy.monthly_rate ?? 0)),
         period_amounts_cents: String(periodTotalCents),
         period_subtotal_amounts_cents: String(periodSubtotalCents),
+        period_base_amounts_cents: String(baseSubtotalCents),
+        period_late_fee_amounts_cents: String(lateFeeCents),
         period_tax_amounts_cents: String(periodTaxCents),
         tax_rate: String(SALES_TAX_RATE),
         tax_label: SALES_TAX_LABEL,
+        late_fee_label: LATE_FEE_LABEL,
         unit_number: tenancy.unit_number ?? '',
       },
     },
     idempotencyKey,
   )
 
-  await supabase.from('storage_payments').upsert(
+  const { error: paymentError } = await supabase.from('storage_payments').upsert(
     {
       tenancy_id: tenancy.id,
       period_label: period,
@@ -384,7 +447,9 @@ async function chargeUnit(tenancy: any, period: string, idempotencyKey?: string)
     },
     { onConflict: 'tenancy_id,period_label' }
   )
+  if (paymentError) throw paymentError
   await extendPaidThrough(tenancy, [period])
+  await markLateFeesPaid('fixed', tenancy.id, [period])
 
   return { status: 'charged' }
 }
@@ -435,7 +500,8 @@ async function chargePeriods(tenancy: any, periods: string[], extraAmount: numbe
     return { status: 'skipped', reason: 'no_rate', periods: [] }
   }
 
-  const periodCharges = chargeablePeriods(unpaidPeriods, tenancy)
+  const lateFees = await openLateFeesForPeriods('fixed', tenancy.id, unpaidPeriods)
+  const periodCharges = chargeablePeriods(unpaidPeriods, tenancy, lateFees)
   const periodSubtotalCents = periodCharges.reduce((sum, charge) => sum + charge.amountCents, 0)
   const periodTaxCents = periodCharges.reduce((sum, charge) => sum + taxCentsForSubtotal(charge.amountCents), 0)
   const periodTotalCents = periodSubtotalCents + periodTaxCents
@@ -456,11 +522,14 @@ async function chargePeriods(tenancy: any, periods: string[], extraAmount: numbe
     extra_tax_amount: String(dollarsFromCents(extraTaxCents)),
     tax_rate: String(SALES_TAX_RATE),
     tax_label: SALES_TAX_LABEL,
+    late_fee_label: LATE_FEE_LABEL,
   }
   if (periodCharges.length > 0) {
     metadata.period_label = periodCharges.map(charge => charge.period).join(',')
     metadata.period_amounts_cents = periodCharges.map(charge => totalCentsForSubtotal(charge.amountCents)).join(',')
     metadata.period_subtotal_amounts_cents = periodCharges.map(charge => charge.amountCents).join(',')
+    metadata.period_base_amounts_cents = periodCharges.map(charge => charge.baseCents).join(',')
+    metadata.period_late_fee_amounts_cents = periodCharges.map(charge => charge.lateFeeCents).join(',')
     metadata.period_tax_amounts_cents = periodCharges.map(charge => taxCentsForSubtotal(charge.amountCents)).join(',')
   }
 
@@ -484,8 +553,10 @@ async function chargePeriods(tenancy: any, periods: string[], extraAmount: numbe
       paid_at: new Date().toISOString(),
       ...paymentRecordAmounts(amountCents),
     }))
-    await supabase.from('storage_payments').upsert(inserts, { onConflict: 'tenancy_id,period_label' })
+    const { error: paymentError } = await supabase.from('storage_payments').upsert(inserts, { onConflict: 'tenancy_id,period_label' })
+    if (paymentError) throw paymentError
     await extendPaidThrough(tenancy, periodCharges.map(charge => charge.period))
+    await markLateFeesPaid('fixed', tenancy.id, periodCharges.map(charge => charge.period))
   }
 
   return { status: 'charged', periods: periodCharges.map(charge => charge.period), amount: pi.amount / 100 }
@@ -516,7 +587,8 @@ async function chargePortablePeriods(rental: any, periods: string[], extraAmount
     return { status: 'skipped', reason: 'no_rate', periods: [] }
   }
 
-  const periodCharges = chargeablePeriods(unpaidPeriods, rental)
+  const lateFees = await openLateFeesForPeriods('portable', rental.id, unpaidPeriods)
+  const periodCharges = chargeablePeriods(unpaidPeriods, rental, lateFees)
   const periodSubtotalCents = periodCharges.reduce((sum, charge) => sum + charge.amountCents, 0)
   const periodTaxCents = periodCharges.reduce((sum, charge) => sum + taxCentsForSubtotal(charge.amountCents), 0)
   const periodTotalCents = periodSubtotalCents + periodTaxCents
@@ -539,11 +611,14 @@ async function chargePortablePeriods(rental: any, periods: string[], extraAmount
     extra_tax_amount: String(dollarsFromCents(extraTaxCents)),
     tax_rate: String(SALES_TAX_RATE),
     tax_label: SALES_TAX_LABEL,
+    late_fee_label: LATE_FEE_LABEL,
   }
   if (periodCharges.length > 0) {
     metadata.period_label = periodCharges.map(charge => charge.period).join(',')
     metadata.period_amounts_cents = periodCharges.map(charge => totalCentsForSubtotal(charge.amountCents)).join(',')
     metadata.period_subtotal_amounts_cents = periodCharges.map(charge => charge.amountCents).join(',')
+    metadata.period_base_amounts_cents = periodCharges.map(charge => charge.baseCents).join(',')
+    metadata.period_late_fee_amounts_cents = periodCharges.map(charge => charge.lateFeeCents).join(',')
     metadata.period_tax_amounts_cents = periodCharges.map(charge => taxCentsForSubtotal(charge.amountCents)).join(',')
   }
 
@@ -567,8 +642,10 @@ async function chargePortablePeriods(rental: any, periods: string[], extraAmount
       paid_at: new Date().toISOString(),
       ...paymentRecordAmounts(amountCents),
     }))
-    await supabase.from('portable_storage_payments').upsert(inserts, { onConflict: 'asset_id,period_label' })
+    const { error: paymentError } = await supabase.from('portable_storage_payments').upsert(inserts, { onConflict: 'asset_id,period_label' })
+    if (paymentError) throw paymentError
     await extendPortablePaidThrough(rental, periodCharges.map(charge => charge.period))
+    await markLateFeesPaid('portable', rental.id, periodCharges.map(charge => charge.period))
   }
 
   return { status: 'charged', periods: periodCharges.map(charge => charge.period), amount: pi.amount / 100, paid_through_date: rental.paid_through_date ?? null }
@@ -624,13 +701,20 @@ async function recordPortableCashPayment(body: Record<string, unknown>) {
     return json({ ok: true, status: 'skipped', reason: 'already_paid', periods: [], payments: [] })
   }
 
+  const lateFees = await openLateFeesForPeriods('portable', rental.id, periods)
+  const periodCharges = chargeablePeriods(periods, rental, lateFees)
+  if (!periodCharges.length) {
+    return json({ ok: true, status: 'skipped', reason: 'no_amount', periods: [], payments: [] })
+  }
+  const paidPeriods = periodCharges.map(charge => charge.period)
+
   const { data: payments, error: paymentError } = await supabase.from('portable_storage_payments')
     .upsert(
-      periods.map(period => ({
+      periodCharges.map(({ period, amountCents }) => ({
         asset_id: assetId,
         period_label: period,
         paid_at: new Date().toISOString(),
-        ...paymentRecordAmounts(amountCentsForPeriod(period, rental), collectTax),
+        ...paymentRecordAmounts(amountCents, collectTax),
       })),
       { onConflict: 'asset_id,period_label' },
     )
@@ -638,12 +722,13 @@ async function recordPortableCashPayment(body: Record<string, unknown>) {
 
   if (paymentError) return json({ error: paymentError.message }, 500)
 
-  await extendPortablePaidThrough(rental, periods)
+  await extendPortablePaidThrough(rental, paidPeriods)
+  await markLateFeesPaid('portable', rental.id, paidPeriods)
 
   return json({
     ok: true,
     status: 'recorded',
-    periods,
+    periods: paidPeriods,
     payments: payments ?? [],
     paid_through_date: rental.paid_through_date ?? null,
   })
@@ -690,14 +775,21 @@ async function recordCashPayment(body: Record<string, unknown>) {
     return json({ ok: true, status: 'skipped', reason: 'already_paid', periods: [], payments: [] })
   }
 
+  const lateFees = await openLateFeesForPeriods('fixed', tenancy.id, periods)
+  const periodCharges = chargeablePeriods(periods, tenancy, lateFees)
+  if (!periodCharges.length) {
+    return json({ ok: true, status: 'skipped', reason: 'no_amount', periods: [], payments: [] })
+  }
+  const paidPeriods = periodCharges.map(charge => charge.period)
+
   const { data: payments, error: paymentError } = await supabase.from('storage_payments')
     .upsert(
-      periods.map(period => ({
+      periodCharges.map(({ period, amountCents }) => ({
         unit_id: tenancy.unit_id,
         tenancy_id: tenancy.id,
         period_label: period,
         paid_at: new Date().toISOString(),
-        ...paymentRecordAmounts(amountCentsForPeriod(period, tenancy), collectTax),
+        ...paymentRecordAmounts(amountCents, collectTax),
       })),
       { onConflict: 'tenancy_id,period_label' },
     )
@@ -705,12 +797,13 @@ async function recordCashPayment(body: Record<string, unknown>) {
 
   if (paymentError) return json({ error: paymentError.message }, 500)
 
-  await extendPaidThrough(tenancy, periods)
+  await extendPaidThrough(tenancy, paidPeriods)
+  await markLateFeesPaid('fixed', tenancy.id, paidPeriods)
 
   return json({
     ok: true,
     status: 'recorded',
-    periods,
+    periods: paidPeriods,
     payments: payments ?? [],
     paid_through_date: tenancy.paid_through_date ?? null,
   })
