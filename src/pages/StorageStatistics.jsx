@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   CheckCircle2,
   Clock,
+  Copy,
   CreditCard,
   DollarSign,
   Package,
@@ -17,10 +18,11 @@ import {
 import { Button } from '@/components/ui/button'
 import StorageViewMenu from '@/components/StorageViewMenu'
 import { supabase } from '@/lib/supabase'
-import { cn } from '@/lib/utils'
+import { cn, formatPhone } from '@/lib/utils'
 import { useRealtime } from '@/lib/useRealtime'
 
 const DAY_MS = 86400000
+const COPY_UNPAID_STATUSES = new Set(['overdue', 'due_soon', 'unpaid'])
 
 function lastDayOf(year, month0) {
   return new Date(year, month0 + 1, 0).getDate()
@@ -169,7 +171,7 @@ function buildStats({
         tenant: tenancy.customers?.name ?? tenancy.tenant_name ?? 'Unknown customer',
         customerId: tenancy.customer_id,
         hasPaymentMethod: tenancy.customers?.has_payment_method === true,
-        phone: tenancy.tenant_phone,
+        phone: tenancy.customers?.phone ?? tenancy.tenant_phone,
         rate: Number(tenancy.monthly_rate) || 0,
         billingDay: tenancy.billing_day,
         moveInDate: tenancy.move_in_date,
@@ -188,7 +190,7 @@ function buildStats({
         tenant: rental.customers?.name ?? rental.tenant_name ?? 'Unknown customer',
         customerId: rental.customer_id,
         hasPaymentMethod: rental.customers?.has_payment_method === true,
-        phone: rental.tenant_phone,
+        phone: rental.customers?.phone ?? rental.tenant_phone,
         rate: Number(rental.monthly_rate) || 0,
         billingDay: rental.billing_day,
         moveInDate: rental.move_in_date,
@@ -271,6 +273,20 @@ function buildStats({
     .filter(record => record.rate > 0)
     .sort((a, b) => b.rate - a.rate)
 
+  const unpaidContactsByCustomer = new Map()
+  billingRecords
+    .filter(record => COPY_UNPAID_STATUSES.has(record.status))
+    .forEach(record => {
+      const key = record.customerId ?? `${record.tenant}:${record.phone ?? ''}`
+      if (!unpaidContactsByCustomer.has(key)) {
+        unpaidContactsByCustomer.set(key, {
+          customerId: record.customerId,
+          tenant: record.tenant,
+          phone: record.phone,
+        })
+      }
+    })
+
   const vacantUnits = units
     .filter(unit => !activeUnitIds.has(unit.id))
     .sort((a, b) => a.unit_number.localeCompare(b.unit_number, undefined, { numeric: true }))
@@ -315,6 +331,8 @@ function buildStats({
       missingCardRows: [...uniqueMissingCards.values()].slice(0, 8),
       overdueRows: billingRecords.filter(record => record.status === 'overdue').slice(0, 8),
       dueSoonRows: billingRecords.filter(record => record.status === 'due_soon').slice(0, 8),
+      unpaidContactRows: [...unpaidContactsByCustomer.values()]
+        .sort((a, b) => a.tenant.localeCompare(b.tenant)),
       openCreditCount: openCredits.length,
       openCreditTotal,
     },
@@ -355,7 +373,7 @@ async function loadStorageStats() {
     supabase.from('storage_units').select('id, unit_number, size, area, created_at').order('unit_number'),
     supabase
       .from('storage_tenancies')
-      .select('id, unit_id, customer_id, tenant_name, tenant_phone, monthly_rate, billing_day, payment_frequency, move_in_date, end_date, paid_through_date, created_at, customers(id, name, has_payment_method)')
+      .select('id, unit_id, customer_id, tenant_name, tenant_phone, monthly_rate, billing_day, payment_frequency, move_in_date, end_date, paid_through_date, created_at, customers(id, name, phone, has_payment_method)')
       .order('created_at', { ascending: false }),
     supabase
       .from('storage_payments')
@@ -368,7 +386,7 @@ async function loadStorageStats() {
       .order('label'),
     supabase
       .from('portable_storage_rentals')
-      .select('id, asset_id, customer_id, tenant_name, tenant_phone, monthly_rate, billing_day, payment_frequency, move_in_date, paid_through_date, created_at, customers(id, name, has_payment_method)'),
+      .select('id, asset_id, customer_id, tenant_name, tenant_phone, monthly_rate, billing_day, payment_frequency, move_in_date, paid_through_date, created_at, customers(id, name, phone, has_payment_method)'),
     supabase
       .from('portable_storage_payments')
       .select('asset_id, period_label, paid_at, amount, subtotal_amount, tax_amount')
@@ -489,10 +507,30 @@ function CompactRow({ label, value, detail }) {
   )
 }
 
+async function writeClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  document.body.appendChild(textarea)
+  textarea.select()
+  const copied = document.execCommand('copy')
+  document.body.removeChild(textarea)
+  if (!copied) throw new Error('Clipboard copy failed.')
+}
+
 export default function StorageStatistics() {
   const [stats, setStats] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [copyNotice, setCopyNotice] = useState('')
+  const [copyError, setCopyError] = useState('')
 
   const refresh = useCallback(async () => {
     try {
@@ -544,6 +582,25 @@ export default function StorageStatistics() {
   const monthlyCut = stats ? stats.overview.monthlyRunRate * monthlyCutRate : 0
   const fixedMonthlyCut = stats ? stats.overview.fixedMonthly * monthlyCutRate : 0
   const portableMonthlyCut = stats ? stats.overview.portableMonthly * monthlyCutRate : 0
+  const unpaidContactText = useMemo(() => {
+    if (!stats) return ''
+    return stats.billing.unpaidContactRows
+      .map(row => `${row.tenant} - ${formatPhone(row.phone) || 'No phone'}`)
+      .join('\n')
+  }, [stats])
+
+  async function copyUnpaidContacts() {
+    if (!unpaidContactText) return
+    try {
+      await writeClipboard(unpaidContactText)
+      setCopyError('')
+      setCopyNotice(`Copied ${stats.billing.unpaidContactRows.length} unpaid contact${stats.billing.unpaidContactRows.length === 1 ? '' : 's'}.`)
+    } catch (err) {
+      console.error('copy unpaid contacts error:', err)
+      setCopyNotice('')
+      setCopyError('Could not copy unpaid contacts.')
+    }
+  }
 
   return (
     <div className="h-full flex flex-col bg-background">
@@ -654,7 +711,21 @@ export default function StorageStatistics() {
             </div>
           </Section>
 
-          <Section title="Billing Health">
+          <Section
+            title="Billing Health"
+            action={
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5"
+                disabled={!stats.billing.unpaidContactRows.length}
+                onClick={copyUnpaidContacts}
+              >
+                {copyNotice ? <CheckCircle2 size={14} /> : <Copy size={14} />}
+                {copyNotice ? 'Copied' : `Copy unpaid (${stats.billing.unpaidContactRows.length})`}
+              </Button>
+            }
+          >
             <div className="rounded-lg border bg-card px-4 py-3 space-y-3">
               <div className="flex items-center justify-between">
                 <p className="text-sm font-medium">{statusTotal} active billing item{statusTotal !== 1 ? 's' : ''}</p>
@@ -692,6 +763,11 @@ export default function StorageStatistics() {
                   )
                 })}
               </div>
+              {(copyNotice || copyError) && (
+                <p className={cn('text-xs', copyError ? 'text-destructive' : 'text-green-600')}>
+                  {copyError || copyNotice}
+                </p>
+              )}
             </div>
 
             <div className="grid lg:grid-cols-2 gap-3">
