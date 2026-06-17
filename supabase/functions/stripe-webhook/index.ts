@@ -1,8 +1,12 @@
 import Stripe from 'https://esm.sh/stripe@16?target=deno'
+import webpush from 'npm:web-push'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY')!, { apiVersion: '2026-04-22.dahlia' as any })
 const webhookSecret = Deno.env.get('STRIPE_WEBHOOK_SECRET')!
+const ADMIN_EMAIL = 'tim@timberfell.ca'
+
+let webPushConfigured = false
 
 const supabase = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -42,6 +46,66 @@ function paidThroughForPeriod(period: string, billingDay?: number | null): strin
 
 function dollarsFromCents(value: number): number {
   return Number((value / 100).toFixed(2))
+}
+
+function formatCad(value: number): string {
+  const amount = Number.isFinite(value) ? value : 0
+  return `$${amount.toFixed(2)}`
+}
+
+function plural(count: number, single: string, many = `${single}s`): string {
+  return count === 1 ? single : many
+}
+
+function configureWebPush(): boolean {
+  if (webPushConfigured) return true
+
+  const publicKey = Deno.env.get('VAPID_PUBLIC_KEY')
+  const privateKey = Deno.env.get('VAPID_PRIVATE_KEY')
+  if (!publicKey || !privateKey) {
+    console.warn('Portal payment notification skipped: VAPID keys are not configured.')
+    return false
+  }
+
+  webpush.setVapidDetails(`mailto:${ADMIN_EMAIL}`, publicKey, privateKey)
+  webPushConfigured = true
+  return true
+}
+
+async function pushToAdmin(title: string, body: string, url: string) {
+  if (!configureWebPush()) return
+
+  const { data: { users } } = await supabase.auth.admin.listUsers({ perPage: 100 })
+  const adminUser = users.find(u => u.email === ADMIN_EMAIL)
+  if (!adminUser) return
+
+  const { data: subs, error } = await supabase
+    .from('push_subscriptions')
+    .select('*')
+    .eq('user_id', adminUser.id)
+
+  if (error) throw error
+  if (!subs?.length) return
+
+  const payload = JSON.stringify({ title, body, url })
+  const results = await Promise.allSettled(
+    subs.map(sub =>
+      webpush.sendNotification(
+        { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+        payload,
+      )
+    )
+  )
+
+  const stale = subs.filter((_, i) => {
+    const result = results[i]
+    const code = result.status === 'rejected' ? (result.reason as any)?.statusCode : null
+    return code === 410 || code === 404
+  })
+
+  if (stale.length > 0) {
+    await supabase.from('push_subscriptions').delete().in('endpoint', stale.map(s => s.endpoint))
+  }
 }
 
 function periodAmountsFromMetadata(value: unknown, labels: string[]): number[] | null {
@@ -166,6 +230,50 @@ async function markStorageLateFeesPaid(idKey: 'tenancy_id' | 'portable_rental_id
   }
 }
 
+function uniqueLabels(items: any[]): string[] {
+  return Array.from(new Set(
+    items
+      .map((item: any) => typeof item.unit_label === 'string' ? item.unit_label.trim() : '')
+      .filter(Boolean)
+  ))
+}
+
+async function portalCustomerName(customerId: unknown): Promise<string | null> {
+  if (typeof customerId !== 'string' || !customerId) return null
+
+  const { data, error } = await supabase
+    .from('customers')
+    .select('name')
+    .eq('id', customerId)
+    .maybeSingle()
+
+  if (error) {
+    console.error('Could not load portal payment customer for notification.', error)
+    return null
+  }
+
+  return typeof data?.name === 'string' && data.name.trim() ? data.name.trim() : null
+}
+
+async function notifyPortalPayment(portalPayment: any, items: any[], amount: number) {
+  const customer = await portalCustomerName(portalPayment.customer_id)
+  const labels = uniqueLabels(items)
+  const displayedLabels = labels.slice(0, 3).join(', ')
+  const extraLabelCount = labels.length > 3 ? ` +${labels.length - 3} more` : ''
+  const labelText = displayedLabels ? ` for ${displayedLabels}${extraLabelCount}` : ''
+  const periods = new Set(items.map((item: any) => item.period_label).filter(isPeriodLabel))
+  const periodText = periods.size
+    ? `${periods.size} ${plural(periods.size, 'billing month')}`
+    : `${items.length} ${plural(items.length, 'charge')}`
+  const who = customer ?? 'A customer'
+
+  await pushToAdmin(
+    'Online Payment Received',
+    `${who} paid ${formatCad(amount)} online${labelText} (${periodText}).`,
+    '/admin-revenue',
+  )
+}
+
 async function recordPortalPayment(session: Stripe.Checkout.Session) {
   const portalPaymentId = session.metadata?.portal_payment_id
   if (!portalPaymentId) return
@@ -241,6 +349,14 @@ async function recordPortalPayment(session: Stripe.Checkout.Session) {
     .eq('id', portalPaymentId)
 
   if (updateError) throw updateError
+
+  const paidAmount = typeof session.amount_total === 'number'
+    ? dollarsFromCents(session.amount_total)
+    : Number(portalPayment.amount ?? 0)
+
+  await notifyPortalPayment(portalPayment, items, paidAmount).catch(err => {
+    console.error('Portal payment notification failed.', err)
+  })
 }
 
 Deno.serve(async (req) => {

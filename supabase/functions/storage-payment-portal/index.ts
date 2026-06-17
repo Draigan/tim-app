@@ -13,6 +13,7 @@ const BUSINESS_TIME_ZONE = 'America/Toronto'
 const SALES_TAX_RATE = 0.13
 const SALES_TAX_LABEL = 'HST'
 const MAX_PORTAL_PERIODS = 24
+const MAX_PREPAY_MONTHS = 12
 
 function cors(req: Request) {
   return {
@@ -165,18 +166,21 @@ function todayLabel(): string {
   return dateLabel(today.year, today.month, today.day)
 }
 
-function generatePeriods(rental: any): string[] {
+function generatePeriods(rental: any, monthsAhead = 0): string[] {
   if (!rental.billing_day) return []
   const current = currentPeriodLabel(rental.billing_day)
+  const [currentYear, currentMonth] = current.split('-').map(Number)
+  const lastAllowed = addMonths(currentYear, currentMonth, Math.max(0, monthsAhead))
+  const limit = periodLabel(lastAllowed.year, lastAllowed.month)
   const first = periodLabelForDate(rental.move_in_date, rental.billing_day) ?? current
-  if (first > current) return []
+  if (first > limit) return []
 
   const [startYear, startMonth] = first.split('-').map(Number)
   const periods: string[] = []
-  for (let offset = 0; offset < 48; offset++) {
+  for (let offset = 0; offset < 48 + monthsAhead; offset++) {
     const next = addMonths(startYear, startMonth, offset)
     const label = periodLabel(next.year, next.month)
-    if (label > current) break
+    if (label > limit) break
     periods.push(label)
   }
   return periods
@@ -198,6 +202,9 @@ function amountToCents(value: unknown): number {
 
 function chargeResponse(charge: PortalCharge) {
   return {
+    kind: charge.kind,
+    unit_key: charge.unit_key,
+    month_index: charge.month_index,
     period_label: charge.period_label,
     period: formatPeriod(charge.period_label),
     unit_label: charge.unit_label,
@@ -210,6 +217,9 @@ function chargeResponse(charge: PortalCharge) {
 
 type PortalCharge = {
   source: 'fixed' | 'portable'
+  kind: 'due' | 'prepay'
+  unit_key: string
+  month_index: number
   tenancy_id?: string
   unit_id?: string
   portable_rental_id?: string
@@ -332,16 +342,23 @@ async function collectOutstandingCharges(customerId: string): Promise<PortalChar
     const paidSet = storagePaid.get(tenancy.id) ?? new Set<string>()
     const unitNumber = (tenancy.storage_units as any)?.unit_number
     const unitLabel = unitNumber ? `Unit ${unitNumber}` : 'Storage unit'
+    const current = currentPeriodLabel(tenancy.billing_day)
+    let prepayIndex = 0
 
-    for (const period of generatePeriods(tenancy)) {
+    for (const period of generatePeriods(tenancy, MAX_PREPAY_MONTHS)) {
       if (periodCovered(period, tenancy, paidSet)) continue
+      const isPrepay = period > current
+      // Future months are billed in full: no proration, no late fees.
       const baseCents = amountCentsForPeriod(period, tenancy)
-      const lateFeeCents = storageLateFees.get(`${tenancy.id}:${period}`) ?? 0
+      const lateFeeCents = isPrepay ? 0 : (storageLateFees.get(`${tenancy.id}:${period}`) ?? 0)
       const subtotalCents = baseCents + lateFeeCents
       if (subtotalCents <= 0) continue
       const taxCents = taxCentsForSubtotal(subtotalCents)
       charges.push({
         source: 'fixed',
+        kind: isPrepay ? 'prepay' : 'due',
+        unit_key: `fixed:${tenancy.id}`,
+        month_index: isPrepay ? prepayIndex++ : 0,
         tenancy_id: tenancy.id,
         unit_id: tenancy.unit_id,
         unit_label: unitLabel,
@@ -360,16 +377,22 @@ async function collectOutstandingCharges(customerId: string): Promise<PortalChar
     if (!rental.billing_day || Number(rental.monthly_rate ?? 0) <= 0) continue
     const paidSet = portablePaid.get(rental.asset_id) ?? new Set<string>()
     const unitLabel = (rental.assets as any)?.label ?? 'Portable storage'
+    const current = currentPeriodLabel(rental.billing_day)
+    let prepayIndex = 0
 
-    for (const period of generatePeriods(rental)) {
+    for (const period of generatePeriods(rental, MAX_PREPAY_MONTHS)) {
       if (periodCovered(period, rental, paidSet)) continue
+      const isPrepay = period > current
       const baseCents = amountCentsForPeriod(period, rental)
-      const lateFeeCents = portableLateFees.get(`${rental.id}:${period}`) ?? 0
+      const lateFeeCents = isPrepay ? 0 : (portableLateFees.get(`${rental.id}:${period}`) ?? 0)
       const subtotalCents = baseCents + lateFeeCents
       if (subtotalCents <= 0) continue
       const taxCents = taxCentsForSubtotal(subtotalCents)
       charges.push({
         source: 'portable',
+        kind: isPrepay ? 'prepay' : 'due',
+        unit_key: `portable:${rental.id}`,
+        month_index: isPrepay ? prepayIndex++ : 0,
         portable_rental_id: rental.id,
         asset_id: rental.asset_id,
         unit_label: unitLabel,
@@ -420,10 +443,10 @@ function checkoutPath(name: string, fallback: string): string {
   return value?.startsWith('/') ? value : fallback
 }
 
-function normalizeMonths(value: unknown, max: number): number {
+function normalizePrepayMonths(value: unknown): number {
   const parsed = Number(value)
-  if (!Number.isFinite(parsed)) return 1
-  return Math.max(1, Math.min(Math.floor(parsed), Math.min(max, MAX_PORTAL_PERIODS)))
+  if (!Number.isFinite(parsed)) return 0
+  return Math.max(0, Math.min(Math.floor(parsed), MAX_PREPAY_MONTHS))
 }
 
 async function ensureStripeCustomer(customer: any): Promise<string> {
@@ -459,31 +482,38 @@ Deno.serve(async (req) => {
     const customer = verified.customer
 
     const outstanding = await collectOutstandingCharges(customer.id)
-    const summary = summarize(outstanding)
+    const dueAll = outstanding.filter(charge => charge.kind === 'due')
+    const due = dueAll.slice(0, MAX_PORTAL_PERIODS)
+    const prepay = outstanding.filter(charge => charge.kind === 'prepay')
+    const dueSummary = summarize(due)
 
     if (action === 'lookup') {
+      const dueMonths = new Set(due.map(charge => charge.period_label)).size
+      const unitCount = new Set(outstanding.map(charge => charge.unit_key)).size
+      const prepayAvailable = prepay.reduce((max, charge) => Math.max(max, charge.month_index + 1), 0)
       return json(req, {
         ok: true,
         customer: { name: firstName(customer.name) },
         summary: {
-          periods_due: outstanding.length,
-          max_selectable: Math.min(outstanding.length, MAX_PORTAL_PERIODS),
-          subtotal: summary.subtotal,
-          tax: summary.tax,
-          total: summary.total,
+          due_subtotal: dueSummary.subtotal,
+          due_tax: dueSummary.tax,
+          due_total: dueSummary.total,
+          due_charge_count: due.length,
+          due_month_count: dueMonths,
+          due_truncated: dueAll.length > due.length,
+          unit_count: unitCount,
+          prepay_available_months: Math.min(prepayAvailable, MAX_PREPAY_MONTHS),
           tax_label: SALES_TAX_LABEL,
           tax_rate: SALES_TAX_RATE,
         },
-        periods: outstanding.slice(0, MAX_PORTAL_PERIODS).map(chargeResponse),
+        due: due.map(chargeResponse),
+        prepay: prepay.map(chargeResponse),
       })
     }
 
-    if (!outstanding.length) {
-      return json(req, { error: 'This payment account does not have an outstanding balance.' }, 400)
-    }
-
-    const selectedCount = normalizeMonths(body.months ?? body.periods, outstanding.length)
-    const selected = outstanding.slice(0, selectedCount)
+    const prepayMonths = normalizePrepayMonths(body.prepay_months)
+    const prepaySelected = prepay.filter(charge => charge.month_index < prepayMonths)
+    const selected = [...due, ...prepaySelected]
     const selectedSummary = summarize(selected)
     if (selectedSummary.total_cents <= 0) {
       return json(req, { error: 'No payable balance selected.' }, 400)
@@ -493,7 +523,7 @@ Deno.serve(async (req) => {
       .from('storage_portal_payment_sessions')
       .insert({
         customer_id: customer.id,
-        selected_count: selectedCount,
+        selected_count: selected.length,
         items: selected,
         subtotal_amount: selectedSummary.subtotal,
         tax_amount: selectedSummary.tax,
@@ -532,6 +562,7 @@ Deno.serve(async (req) => {
         customer_id: customer.id,
       },
       payment_intent_data: {
+        receipt_email: customer.email ?? undefined,
         metadata: {
           source: 'storage_payment_portal',
           portal_payment_id: portalPayment.id,

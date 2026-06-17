@@ -142,6 +142,8 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
   const [copyingCardLink, setCopyingCardLink] = useState(false)
   const [cardLinkCopied, setCardLinkCopied] = useState(false)
   const [cardLinkError, setCardLinkError] = useState('')
+  const [showCardLinkInline, setShowCardLinkInline] = useState(false)
+  const [cardLinkUrl, setCardLinkUrl] = useState('')
   const [sendingInvite, setSendingInvite] = useState(false)
   const [inviteSent, setInviteSent]     = useState(false)
   const [confirmSendInvite, setConfirmSendInvite] = useState(false)
@@ -291,13 +293,11 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
 
   async function handleCopyCardLink() {
     setCopyingCardLink(true)
-    setCardLinkCopied(false)
     setCardLinkError('')
     try {
       const url = await createStripeSetupUrl({ invite: true })
-      await copyText(url)
-      setCardLinkCopied(true)
-      setTimeout(() => setCardLinkCopied(false), 3000)
+      setCardLinkUrl(url)
+      setShowCardLinkInline(true)
     } catch (err) {
       console.error('copy stripe setup link error:', err)
       setCardLinkError(err instanceof Error ? err.message : 'Could not copy card invite.')
@@ -486,42 +486,62 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
           {/* Card on file */}
           {!isNew && !editing && (
             <div className="space-y-2">
-              <div className="flex items-center gap-2 flex-wrap">
-                {cardSaved ? (
-                  <div className="flex items-center gap-2 text-sm text-green-600">
-                    <CheckCircle2 size={15} />
-                    Card on file
+              {showCardLinkInline ? (
+                <div className="space-y-3 rounded-xl border border-blue-500/30 bg-blue-500/5 p-4">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-sm font-medium text-blue-700">Stripe card setup link</p>
+                    <button
+                      onClick={() => setShowCardLinkInline(false)}
+                      className="text-muted-foreground hover:text-foreground"
+                    >
+                      <X size={14} />
+                    </button>
                   </div>
-                ) : (
-                  <Button variant="outline" size="sm" className="gap-2" disabled={savingCard} onClick={handleSaveCard}>
-                    <CreditCard size={14} />
-                    {savingCard ? 'Opening…' : 'Save card'}
-                  </Button>
-                )}
-                <Button variant="outline" size="sm" className="gap-2" disabled={copyingCardLink} onClick={handleCopyCardLink}>
-                  {cardLinkCopied ? <CheckCircle2 size={14} /> : <Copy size={14} />}
-                  {copyingCardLink ? 'Copying…' : cardLinkCopied ? 'Copied!' : 'Copy invite'}
-                </Button>
-                {form.phone && (
-                  <Button variant="outline" size="sm" className="gap-2" disabled={sendingInvite} onClick={() => setConfirmSendInvite(true)}>
-                    <Send size={14} />
-                    {inviteSent ? 'Sent!' : 'Send card invite'}
-                  </Button>
-                )}
-                {customer?.stripe_customer_id && (
-                  <a
-                    href={`https://dashboard.stripe.com/customers/${customer.stripe_customer_id}`}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    <Button variant="outline" size="sm" className="gap-2">
-                      <ExternalLink size={14} />
-                      Stripe
+                  <div className="bg-background border rounded-lg p-3 text-xs font-mono break-all text-muted-foreground select-all">
+                    {cardLinkUrl}
+                  </div>
+                  <p className="text-xs text-blue-600">Tap and hold to select all, then copy</p>
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {cardSaved ? (
+                      <div className="flex items-center gap-2 text-sm text-green-600">
+                        <CheckCircle2 size={15} />
+                        Card on file
+                      </div>
+                    ) : (
+                      <Button variant="outline" size="sm" className="gap-2" disabled={savingCard} onClick={handleSaveCard}>
+                        <CreditCard size={14} />
+                        {savingCard ? 'Opening…' : 'Save card'}
+                      </Button>
+                    )}
+                    <Button variant="outline" size="sm" className="gap-2" disabled={copyingCardLink} onClick={handleCopyCardLink}>
+                      <Copy size={14} />
+                      {copyingCardLink ? 'Getting link…' : 'Copy invite'}
                     </Button>
-                  </a>
-                )}
-              </div>
-              {cardLinkError && <p className="text-xs text-destructive">{cardLinkError}</p>}
+                    {form.phone && (
+                      <Button variant="outline" size="sm" className="gap-2" disabled={sendingInvite} onClick={() => setConfirmSendInvite(true)}>
+                        <Send size={14} />
+                        {inviteSent ? 'Sent!' : 'Send card invite'}
+                      </Button>
+                    )}
+                    {customer?.stripe_customer_id && (
+                      <a
+                        href={`https://dashboard.stripe.com/customers/${customer.stripe_customer_id}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <Button variant="outline" size="sm" className="gap-2">
+                          <ExternalLink size={14} />
+                          Stripe
+                        </Button>
+                      </a>
+                    )}
+                  </div>
+                  {cardLinkError && <p className="text-xs text-destructive">{cardLinkError}</p>}
+                </>
+              )}
             </div>
           )}
 

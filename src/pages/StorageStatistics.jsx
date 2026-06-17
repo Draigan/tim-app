@@ -23,6 +23,30 @@ import { useRealtime } from '@/lib/useRealtime'
 
 const DAY_MS = 86400000
 const COPY_UNPAID_STATUSES = new Set(['overdue', 'due_soon', 'unpaid'])
+const STATISTICS_EXCLUDED_CUSTOMER_NAMES = new Set([
+  'test customer 1',
+  'test customer 2',
+  'test customer',
+  'draigan le',
+  'tim finley',
+  'unknown customer',
+])
+
+function normalizeCustomerName(value) {
+  return String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase()
+}
+
+function isExcludedStatisticsCustomer(...names) {
+  const normalizedNames = names.map(normalizeCustomerName).filter(Boolean)
+  if (!normalizedNames.length) return STATISTICS_EXCLUDED_CUSTOMER_NAMES.has('unknown customer')
+  return normalizedNames.some(name => STATISTICS_EXCLUDED_CUSTOMER_NAMES.has(name))
+}
+
+function customerSpendKey({ customerId, name, phone }) {
+  if (customerId) return `customer:${customerId}`
+  const normalizedPhone = String(phone ?? '').replace(/\D/g, '')
+  return `name:${normalizeCustomerName(name) || 'unknown'}:${normalizedPhone}`
+}
 
 function lastDayOf(year, month0) {
   return new Date(year, month0 + 1, 0).getDate()
@@ -158,6 +182,8 @@ function buildStats({
 
   const storagePaymentKeys = new Set(storagePayments.map(payment => `${payment.tenancy_id}:${payment.period_label}`))
   const portablePaymentKeys = new Set(portablePayments.map(payment => `${payment.asset_id}:${payment.period_label}`))
+  const tenancyById = new Map(tenancies.map(tenancy => [tenancy.id, tenancy]))
+  const portableRentalByAssetId = new Map(portableRentals.map(rental => [rental.asset_id, rental]))
 
   const billingRecords = [
     ...activeTenancies.map(tenancy => {
@@ -209,6 +235,66 @@ function buildStats({
     ...storagePayments.map(payment => ({ ...payment, source: 'fixed' })),
     ...portablePayments.map(payment => ({ ...payment, source: 'portable' })),
   ]
+  const customerSpendingByKey = new Map()
+
+  function addCustomerSpend({ source, payment, customerId, name, phone, hasPaymentMethod }) {
+    const amount = amountOf(payment)
+    if (amount <= 0) return
+
+    const key = customerSpendKey({ customerId, name, phone })
+    const existing = customerSpendingByKey.get(key) ?? {
+      key,
+      customerId,
+      customer: name || 'Unknown customer',
+      phone,
+      total: 0,
+      fixedTotal: 0,
+      portableTotal: 0,
+      paymentCount: 0,
+      hasPaymentMethod: false,
+      firstPaidAt: null,
+      lastPaidAt: null,
+    }
+    existing.total += amount
+    existing.paymentCount += 1
+    existing.hasPaymentMethod = existing.hasPaymentMethod || hasPaymentMethod === true
+    if (source === 'fixed') existing.fixedTotal += amount
+    else existing.portableTotal += amount
+
+    const paidAt = parseDateTime(payment.paid_at)
+    if (paidAt && (!existing.firstPaidAt || paidAt < existing.firstPaidAt)) existing.firstPaidAt = paidAt
+    if (paidAt && (!existing.lastPaidAt || paidAt > existing.lastPaidAt)) existing.lastPaidAt = paidAt
+    customerSpendingByKey.set(key, existing)
+  }
+
+  storagePayments.forEach(payment => {
+    const tenancy = tenancyById.get(payment.tenancy_id)
+    if (!tenancy) return
+    addCustomerSpend({
+      source: 'fixed',
+      payment,
+      customerId: tenancy.customer_id,
+      name: tenancy.customers?.name ?? tenancy.tenant_name,
+      phone: tenancy.customers?.phone ?? tenancy.tenant_phone,
+      hasPaymentMethod: tenancy.customers?.has_payment_method === true,
+    })
+  })
+
+  portablePayments.forEach(payment => {
+    const rental = portableRentalByAssetId.get(payment.asset_id)
+    if (!rental) return
+    addCustomerSpend({
+      source: 'portable',
+      payment,
+      customerId: rental.customer_id,
+      name: rental.customers?.name ?? rental.tenant_name,
+      phone: rental.customers?.phone ?? rental.tenant_phone,
+      hasPaymentMethod: rental.customers?.has_payment_method === true,
+    })
+  })
+
+  const customerSpending = [...customerSpendingByKey.values()]
+    .sort((a, b) => b.total - a.total || a.customer.localeCompare(b.customer))
 
   const paidThisMonth = allPayments.filter(payment => {
     const paidAt = parseDateTime(payment.paid_at)
@@ -243,13 +329,26 @@ function buildStats({
   })
 
   const uniqueMissingCards = new Map()
+  const uniqueCardsOnFile = new Map()
   billingRecords
-    .filter(record => record.customerId && !record.hasPaymentMethod)
     .forEach(record => {
-      if (!uniqueMissingCards.has(record.customerId)) {
-        uniqueMissingCards.set(record.customerId, record)
+      const key = customerSpendKey({
+        customerId: record.customerId,
+        name: record.tenant,
+        phone: record.phone,
+      })
+      const row = { ...record, cardKey: key }
+      if (!record.hasPaymentMethod && !uniqueMissingCards.has(key)) {
+        uniqueMissingCards.set(key, row)
+      }
+      if (record.hasPaymentMethod && !uniqueCardsOnFile.has(key)) {
+        uniqueCardsOnFile.set(key, row)
       }
     })
+  const missingCardRows = [...uniqueMissingCards.values()]
+    .sort((a, b) => a.tenant.localeCompare(b.tenant))
+  const cardOnFileRows = [...uniqueCardsOnFile.values()]
+    .sort((a, b) => a.tenant.localeCompare(b.tenant))
 
   const newMoveIns = [
     ...activeTenancies.map(tenancy => ({ type: 'fixed', date: tenancy.move_in_date })),
@@ -328,7 +427,9 @@ function buildStats({
       unpaidCount: statusCounts.unpaid ?? 0,
       upcomingCount: statusCounts.upcoming ?? 0,
       missingCardCount: uniqueMissingCards.size,
-      missingCardRows: [...uniqueMissingCards.values()].slice(0, 8),
+      missingCardRows,
+      cardOnFileCount: uniqueCardsOnFile.size,
+      cardOnFileRows,
       overdueRows: billingRecords.filter(record => record.status === 'overdue').slice(0, 8),
       dueSoonRows: billingRecords.filter(record => record.status === 'due_soon').slice(0, 8),
       unpaidContactRows: [...unpaidContactsByCustomer.values()]
@@ -344,6 +445,7 @@ function buildStats({
       revenueByPeriod,
       maxPeriodRevenue,
       currentLabel,
+      customerSpending,
     },
     activity: {
       newMoveInsLast30: newMoveIns.length,
@@ -359,7 +461,6 @@ function buildStats({
 }
 
 async function loadStorageStats() {
-  const historyCutoff = monthLabel(addMonths(new Date(), -11))
   const [
     unitsResult,
     tenanciesResult,
@@ -377,8 +478,7 @@ async function loadStorageStats() {
       .order('created_at', { ascending: false }),
     supabase
       .from('storage_payments')
-      .select('tenancy_id, period_label, paid_at, amount, subtotal_amount, tax_amount')
-      .gte('period_label', historyCutoff),
+      .select('tenancy_id, period_label, paid_at, amount, subtotal_amount, tax_amount'),
     supabase
       .from('assets')
       .select('id, label, size, archived, asset_types(name, is_storage)')
@@ -389,13 +489,12 @@ async function loadStorageStats() {
       .select('id, asset_id, customer_id, tenant_name, tenant_phone, monthly_rate, billing_day, payment_frequency, move_in_date, paid_through_date, created_at, customers(id, name, phone, has_payment_method)'),
     supabase
       .from('portable_storage_payments')
-      .select('asset_id, period_label, paid_at, amount, subtotal_amount, tax_amount')
-      .gte('period_label', historyCutoff),
+      .select('asset_id, period_label, paid_at, amount, subtotal_amount, tax_amount'),
     supabase
       .from('customer_credits')
-      .select('id, customer_id, amount, status, created_at')
+      .select('id, customer_id, amount, status, created_at, customers(name)')
       .eq('status', 'open'),
-    supabase.from('active_deployments').select('asset_id'),
+    supabase.from('active_deployments').select('asset_id, customer_name'),
   ])
 
   const error = [
@@ -411,15 +510,40 @@ async function loadStorageStats() {
 
   if (error) throw error
 
+  const tenancies = tenanciesResult.data ?? []
+  const portableRentals = portableRentalsResult.data ?? []
+  const credits = creditsResult.data ?? []
+  const excludedTenancies = tenancies.filter(tenancy =>
+    isExcludedStatisticsCustomer(tenancy.customers?.name, tenancy.tenant_name)
+  )
+  const excludedPortableRentals = portableRentals.filter(rental =>
+    isExcludedStatisticsCustomer(rental.customers?.name, rental.tenant_name)
+  )
+  const excludedCredits = credits.filter(credit =>
+    isExcludedStatisticsCustomer(credit.customers?.name)
+  )
+  const excludedTenancyIds = new Set(excludedTenancies.map(tenancy => tenancy.id))
+  const excludedPortableAssetIds = new Set(excludedPortableRentals.map(rental => rental.asset_id))
+  const excludedCustomerIds = new Set([
+    ...excludedTenancies.map(tenancy => tenancy.customer_id),
+    ...excludedPortableRentals.map(rental => rental.customer_id),
+    ...excludedCredits.map(credit => credit.customer_id),
+  ].filter(Boolean))
+
   return buildStats({
     units: unitsResult.data ?? [],
-    tenancies: tenanciesResult.data ?? [],
-    storagePayments: storagePaymentsResult.data ?? [],
+    tenancies: tenancies.filter(tenancy => !excludedTenancyIds.has(tenancy.id)),
+    storagePayments: (storagePaymentsResult.data ?? []).filter(payment => !excludedTenancyIds.has(payment.tenancy_id)),
     assets: assetsResult.data ?? [],
-    portableRentals: portableRentalsResult.data ?? [],
-    portablePayments: portablePaymentsResult.data ?? [],
-    openCredits: creditsResult.data ?? [],
-    deployments: deploymentsResult.data ?? [],
+    portableRentals: portableRentals.filter(rental => !excludedPortableAssetIds.has(rental.asset_id)),
+    portablePayments: (portablePaymentsResult.data ?? []).filter(payment => !excludedPortableAssetIds.has(payment.asset_id)),
+    openCredits: credits.filter(credit =>
+      !excludedCustomerIds.has(credit.customer_id) &&
+      !isExcludedStatisticsCustomer(credit.customers?.name)
+    ),
+    deployments: (deploymentsResult.data ?? []).filter(deployment =>
+      !isExcludedStatisticsCustomer(deployment.customer_name)
+    ),
   })
 }
 
@@ -503,6 +627,28 @@ function CompactRow({ label, value, detail }) {
         {detail && <p className="text-xs text-muted-foreground truncate">{detail}</p>}
       </div>
       <p className="text-sm font-semibold flex-shrink-0">{value}</p>
+    </div>
+  )
+}
+
+function CustomerSpendingRow({ row }) {
+  const detail = [
+    row.phone && formatPhone(row.phone),
+    row.fixedTotal > 0 && `${money(row.fixedTotal, 2)} fixed`,
+    row.portableTotal > 0 && `${money(row.portableTotal, 2)} portable`,
+    row.lastPaidAt && `Last paid ${row.lastPaidAt.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`,
+  ].filter(Boolean).join(' · ')
+
+  return (
+    <div className="px-4 py-3 flex items-center justify-between gap-3">
+      <div className="min-w-0">
+        <p className="text-sm font-medium truncate">{row.customer}</p>
+        {detail && <p className="text-xs text-muted-foreground truncate mt-0.5">{detail}</p>}
+      </div>
+      <div className="text-right flex-shrink-0">
+        <p className="text-sm font-semibold">{money(row.total, 2)}</p>
+        <p className="text-xs text-muted-foreground">{row.paymentCount} payment{row.paymentCount !== 1 ? 's' : ''}</p>
+      </div>
     </div>
   )
 }
@@ -711,6 +857,26 @@ export default function StorageStatistics() {
             </div>
           </Section>
 
+          <Section title="Customer Spending">
+            <div className="rounded-lg border bg-card overflow-hidden">
+              <div className="px-4 py-3 border-b flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-medium">
+                  {stats.payments.customerSpending.length} customer{stats.payments.customerSpending.length !== 1 ? 's' : ''} with storage payments
+                </p>
+                <p className="text-xs text-muted-foreground">All recorded fixed and portable storage payments</p>
+              </div>
+              {stats.payments.customerSpending.length > 0 ? (
+                <div className="divide-y">
+                  {stats.payments.customerSpending.map(row => (
+                    <CustomerSpendingRow key={row.key} row={row} />
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground px-4 py-3">No storage payments recorded.</p>
+              )}
+            </div>
+          </Section>
+
           <Section
             title="Billing Health"
             action={
@@ -791,13 +957,20 @@ export default function StorageStatistics() {
           </Section>
 
           <Section title="Customer Risk">
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
               <MetricCard
                 title="Customers missing cards"
                 value={stats.billing.missingCardCount}
                 detail="Active storage customers"
                 icon={CreditCard}
                 tone={stats.billing.missingCardCount ? 'amber' : 'green'}
+              />
+              <MetricCard
+                title="Cards on file"
+                value={stats.billing.cardOnFileCount}
+                detail="Active storage customers"
+                icon={CreditCard}
+                tone="green"
               />
               <MetricCard
                 title="Open credits"
@@ -820,14 +993,28 @@ export default function StorageStatistics() {
               />
             </div>
 
-            {stats.billing.missingCardRows.length > 0 && (
+            <div className="grid lg:grid-cols-2 gap-3">
               <div className="space-y-2">
                 <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Missing Payment Cards</h3>
-                {stats.billing.missingCardRows.map(row => (
-                  <BillingRow key={`card-${row.customerId}-${row.id}`} row={{ ...row, status: 'unpaid' }} />
-                ))}
+                {stats.billing.missingCardRows.length > 0 ? (
+                  stats.billing.missingCardRows.map(row => (
+                    <BillingRow key={`missing-card-${row.cardKey}-${row.id}`} row={{ ...row, status: 'unpaid' }} />
+                  ))
+                ) : (
+                  <p className="text-sm text-muted-foreground rounded-lg border px-3 py-3">No active storage customers missing cards.</p>
+                )}
               </div>
-            )}
+              <div className="space-y-2">
+                <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Cards On File</h3>
+                {stats.billing.cardOnFileRows.length > 0 ? (
+                  stats.billing.cardOnFileRows.map(row => (
+                    <BillingRow key={`card-on-file-${row.cardKey}-${row.id}`} row={{ ...row, status: 'paid' }} />
+                  ))
+                ) : (
+                  <p className="text-sm text-muted-foreground rounded-lg border px-3 py-3">No active storage customers have cards on file.</p>
+                )}
+              </div>
+            </div>
           </Section>
 
           <Section title="Capacity">
