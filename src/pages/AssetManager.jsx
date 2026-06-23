@@ -56,7 +56,7 @@ export default function AssetManager() {
       supabase.from('active_deployments').select('asset_id'),
       supabase.from('asset_types').select('*').order('name'),
       supabase.from('storage_units').select('id, unit_number, size, area, notes').order('unit_number'),
-      supabase.from('storage_tenancies').select('unit_id, tenant_name').is('end_date', null),
+      supabase.from('storage_tenancies').select('unit_id, tenant_name').eq('storage_kind', 'fixed_unit').is('end_date', null),
     ])
     if (assetData) setAssets(assetData)
     if (deployments) setDeployedIds(new Set(deployments.map(d => d.asset_id)))

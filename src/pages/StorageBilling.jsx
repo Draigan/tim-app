@@ -24,6 +24,22 @@ const SALES_TAX_RATE = 0.13
 const SALES_TAX_LABEL = 'HST'
 const LATE_FEE_RATE = 0.20
 const LATE_FEE_DAY = 6
+const CUSTOMER_STORAGE_TYPE_LABELS = {
+  boat: 'Boat',
+  trailer: 'Trailer',
+  rv: 'RV',
+  custom: 'Custom',
+}
+
+function customerStorageTypeLabel(item) {
+  if (item?.item_type === 'custom') return item.custom_item_type || 'Custom'
+  return CUSTOMER_STORAGE_TYPE_LABELS[item?.item_type] ?? 'Storage'
+}
+
+function customerStorageLabel(item) {
+  const type = customerStorageTypeLabel(item)
+  return item?.item_label ? `${type} · ${item.item_label}` : type
+}
 
 function taxCentsForSubtotal(subtotalCents) {
   return Math.round(subtotalCents * SALES_TAX_RATE)
@@ -587,9 +603,10 @@ function ChargeSuccessView({ result, onDone }) {
 // ─── page ─────────────────────────────────────────────────────────────────────
 
 export default function StorageBilling() {
-  const { unitId, assetId } = useParams()
+  const { unitId, assetId, tenancyId } = useParams()
   const navigate   = useNavigate()
   const isPortable = !!assetId
+  const isCustomerItem = !!tenancyId
 
   const [unit, setUnit]           = useState(null)
   const [tenancy, setTenancy]     = useState(null)
@@ -643,12 +660,52 @@ export default function StorageBilling() {
         setHistory([])
         setLateFees([])
       }
+    } else if (isCustomerItem) {
+      const { data: t } = await supabase
+        .from('storage_tenancies')
+        .select('*, customers(name, has_payment_method, stripe_customer_id)')
+        .eq('id', tenancyId)
+        .eq('storage_kind', 'customer_item')
+        .is('end_date', null)
+        .maybeSingle()
+
+      if (t) {
+        setUnit({
+          id: t.id,
+          unit_number: t.item_label,
+          item_type: t.item_type,
+          custom_item_type: t.custom_item_type,
+          item_label: t.item_label,
+        })
+        setTenancy(t)
+
+        const [{ data: payments }, { data: fees }] = await Promise.all([
+          supabase
+            .from('storage_payments')
+            .select('*')
+            .eq('tenancy_id', t.id)
+            .order('period_label', { ascending: false }),
+          supabase
+            .from('storage_late_fees')
+            .select('*')
+            .eq('tenancy_id', t.id)
+            .order('period_label', { ascending: false }),
+        ])
+        if (payments) setHistory(sortPaymentsByPeriod(payments))
+        if (fees) setLateFees(fees)
+      } else {
+        setUnit(null)
+        setTenancy(null)
+        setHistory([])
+        setLateFees([])
+      }
     } else {
       const [{ data: u }, { data: t }] = await Promise.all([
         supabase.from('storage_units').select('id, unit_number').eq('id', unitId).single(),
         supabase.from('storage_tenancies')
           .select('*, customers(name, has_payment_method, stripe_customer_id)')
           .eq('unit_id', unitId)
+          .eq('storage_kind', 'fixed_unit')
           .is('end_date', null)
           .maybeSingle(),
       ])
@@ -679,7 +736,7 @@ export default function StorageBilling() {
     }
 
     setLoading(false)
-  }, [assetId, isPortable, unitId])
+  }, [assetId, isCustomerItem, isPortable, tenancyId, unitId])
 
   useEffect(() => { queueMicrotask(fetchUnit) }, [fetchUnit])
   useRealtime(
@@ -704,11 +761,11 @@ export default function StorageBilling() {
           <ArrowLeft size={20} />
         </button>
         <h1 className="text-lg font-semibold">
-          {isPortable ? unit.unit_number : `Unit ${unit.unit_number}`}
+          {isPortable ? unit.unit_number : isCustomerItem ? customerStorageLabel(unit) : `Unit ${unit.unit_number}`}
         </h1>
       </div>
       <div className="flex-1 flex items-center justify-center">
-        <p className="text-sm text-muted-foreground">{isPortable ? 'No active rental' : 'No active tenant'}</p>
+        <p className="text-sm text-muted-foreground">{isPortable ? 'No active rental' : isCustomerItem ? 'No active storage' : 'No active tenant'}</p>
       </div>
     </div>
   )
@@ -738,7 +795,7 @@ export default function StorageBilling() {
   const tenantName    = tenancy.customers?.name || tenancy.tenant_name
   const displayName   = isPortable
     ? `${unit.unit_number}${unit.size ? ` · ${unit.size}` : ''}`
-    : `Unit ${unit.unit_number}`
+    : isCustomerItem ? customerStorageLabel(tenancy) : `Unit ${unit.unit_number}`
 
   function mergeHistoryPayments(payments, periodLabels) {
     const labels = periodLabels ?? payments.map(p => p.period_label)
@@ -837,7 +894,7 @@ export default function StorageBilling() {
         headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'record_cash_payment',
-          ...(isPortable ? { portable_asset_id: assetId } : { cash_unit_id: unitId }),
+          ...(isPortable ? { portable_asset_id: assetId } : isCustomerItem ? { tenancy_id: tenancy.id } : { cash_unit_id: unitId }),
           periods: toMark,
           collect_tax: cashCollectTax,
           billing_pin: pin,
@@ -982,7 +1039,7 @@ export default function StorageBilling() {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          ...(isPortable ? { portable_asset_id: assetId } : { unit_id: unitId }),
+          ...(isPortable ? { portable_asset_id: assetId } : isCustomerItem ? { tenancy_id: tenancy.id } : { unit_id: unitId }),
           periods: chargePreview.map(p => p.label),
           extra_amount: extrasTotal,
           billing_pin: pin,

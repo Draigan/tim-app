@@ -200,7 +200,7 @@ export default function StorageFloorplan() {
       { data: posData },
     ] = await Promise.all([
       supabase.from('storage_units').select('*').order('unit_number'),
-      supabase.from('storage_tenancies').select('*, customers(id, name, pin, has_payment_method)').is('end_date', null),
+      supabase.from('storage_tenancies').select('*, customers(id, name, pin, has_payment_method)').eq('storage_kind', 'fixed_unit').is('end_date', null),
       supabase.from('storage_payments').select('tenancy_id, period_label').gte('period_label', cutoff),
       supabase.from('storage_unit_positions').select('*'),
     ])

@@ -383,11 +383,41 @@ function cardBorder(status) {
 const tenantName = (item) => item?.customers?.name || item?.tenant_name || null
 
 const FREQ_LABELS = { monthly: 'Monthly', one_time: 'One-time' }
+const CUSTOMER_STORAGE_TYPES = [
+  { value: 'boat', label: 'Boat' },
+  { value: 'trailer', label: 'Trailer' },
+  { value: 'rv', label: 'RV' },
+  { value: 'custom', label: 'Custom' },
+]
 const MONTH_OPTIONS = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
 ]
 const EMPTY_ASSIGN = { monthly_rate: '150', billing_day: '1', payment_frequency: 'monthly', move_in_date: localDateStr(), notes: '' }
+const EMPTY_CUSTOMER_STORAGE = {
+  item_type: 'boat',
+  custom_item_type: '',
+  item_label: '',
+  monthly_rate: '150',
+  billing_day: '1',
+  payment_frequency: 'monthly',
+  move_in_date: localDateStr(),
+  notes: '',
+}
+
+function customerStorageTypeLabel(item) {
+  if (item?.item_type === 'custom') return item.custom_item_type || 'Custom'
+  return CUSTOMER_STORAGE_TYPES.find(type => type.value === item?.item_type)?.label ?? 'Storage'
+}
+
+function customerStorageLabel(item) {
+  const type = customerStorageTypeLabel(item)
+  return item?.item_label ? `${type} · ${item.item_label}` : type
+}
+
+function storageItemLabel(item) {
+  return item?.storage_kind === 'customer_item' ? customerStorageLabel(item) : `Unit ${item?.unit_number ?? ''}`
+}
 
 function datePartsFromValue(value) {
   const [year, month, day] = String(value || '').split('-').map(Number)
@@ -508,6 +538,160 @@ function FixedUnitCard({ unit, isPaid, onTap }) {
   )
 }
 
+function CustomerStorageCard({ item, isPaid, onTap }) {
+  const status = paymentStatus(item.billing_day, item.payment_frequency, isPaid, item.move_in_date, item.paid_through_date)
+
+  return (
+    <button
+      className={cn('w-full text-left bg-card border rounded-xl p-4 flex items-center gap-3 hover:bg-accent transition-colors', status && cardBorder(status))}
+      onClick={() => onTap(item)}
+    >
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="font-semibold truncate">{customerStorageLabel(item)}</span>
+          <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-full flex-shrink-0">
+            {customerStorageTypeLabel(item)}
+          </span>
+        </div>
+        <div className="flex items-center gap-3 mt-0.5">
+          {tenantName(item) && <span className="text-sm text-muted-foreground truncate">{tenantName(item)}</span>}
+          {item.monthly_rate && <span className="text-xs text-muted-foreground">${item.monthly_rate}/mo</span>}
+          {item.tenant_phone && <span className="text-xs text-muted-foreground">{formatPhone(item.tenant_phone)}</span>}
+        </div>
+        {item.notes && <p className="text-xs text-muted-foreground mt-1 truncate">{item.notes}</p>}
+      </div>
+      {status && <StatusBadge status={status} billingDay={item.billing_day} moveInDate={item.move_in_date} />}
+      <ChevronRight size={16} className="text-muted-foreground flex-shrink-0" />
+    </button>
+  )
+}
+
+function AddCustomerStorageSheet({ open, onOpenChange, onSaved }) {
+  const [customer, setCustomer] = useState(null)
+  const [form, setForm] = useState(EMPTY_CUSTOMER_STORAGE)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (!open) return
+    setCustomer(null)
+    setForm(EMPTY_CUSTOMER_STORAGE)
+    setSaving(false)
+    setError('')
+  }, [open])
+
+  function set(field, value) {
+    setForm(current => ({ ...current, [field]: value }))
+  }
+
+  async function handleSave() {
+    if (!customer || !form.item_label.trim() || !form.billing_day) return
+    if (form.item_type === 'custom' && !form.custom_item_type.trim()) return
+    setSaving(true)
+    setError('')
+    const { error: insertError } = await supabase.from('storage_tenancies').insert({
+      unit_id: null,
+      storage_kind: 'customer_item',
+      item_type: form.item_type,
+      custom_item_type: form.item_type === 'custom' ? form.custom_item_type.trim() : null,
+      item_label: form.item_label.trim(),
+      customer_id: customer.id,
+      tenant_name: customer.name || null,
+      tenant_phone: customer.phone || null,
+      monthly_rate: form.monthly_rate ? Number(form.monthly_rate) : null,
+      billing_day: form.billing_day ? Number(form.billing_day) : null,
+      payment_frequency: form.payment_frequency || null,
+      move_in_date: form.move_in_date || null,
+      notes: form.notes.trim() || null,
+    })
+    setSaving(false)
+    if (insertError) {
+      setError(insertError.message)
+      return
+    }
+    onSaved()
+    onOpenChange(false)
+  }
+
+  const canSave = customer
+    && form.item_label.trim()
+    && form.billing_day
+    && (form.item_type !== 'custom' || form.custom_item_type.trim())
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent side="bottom" className="max-h-[90vh] overflow-y-auto">
+        <SheetHeader className="mb-5">
+          <SheetTitle>Add Customer Storage</SheetTitle>
+        </SheetHeader>
+        <div className="space-y-4">
+          <div>
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Customer</p>
+            <CustomerPicker value={customer} onChange={setCustomer} />
+          </div>
+
+          <div className="space-y-3">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Item</p>
+            <div className="grid grid-cols-4 gap-1.5">
+              {CUSTOMER_STORAGE_TYPES.map(type => (
+                <button
+                  key={type.value}
+                  type="button"
+                  onClick={() => set('item_type', type.value)}
+                  className={`text-xs py-2 rounded-lg border transition-colors ${form.item_type === type.value ? 'bg-primary text-primary-foreground border-primary' : 'text-muted-foreground hover:text-foreground'}`}
+                >
+                  {type.label}
+                </button>
+              ))}
+            </div>
+            {form.item_type === 'custom' && (
+              <div>
+                <p className="text-xs text-muted-foreground mb-1.5">Custom Type</p>
+                <Input value={form.custom_item_type} onChange={e => set('custom_item_type', e.target.value)} placeholder="Skid steer, equipment, etc." />
+              </div>
+            )}
+            <div>
+              <p className="text-xs text-muted-foreground mb-1.5">Description</p>
+              <Input value={form.item_label} onChange={e => set('item_label', e.target.value)} placeholder="Blue Bayliner, white enclosed trailer, RV plate…" />
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Billing</p>
+            <div className="flex gap-3">
+              <div className="flex-1">
+                <p className="text-xs text-muted-foreground mb-1.5">Monthly Rate ($)</p>
+                <Input value={form.monthly_rate} onChange={e => set('monthly_rate', e.target.value)} placeholder="150" type="number" min="0" />
+              </div>
+              <div className="flex-1">
+                <p className="text-xs text-muted-foreground mb-1.5">Billing Day</p>
+                <Input value={form.billing_day} onChange={e => set('billing_day', e.target.value)} placeholder="1" type="number" min="1" max="31" />
+              </div>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground mb-1.5">Move-in Date</p>
+              <StorageDateSelect value={form.move_in_date} onChange={value => set('move_in_date', value)} />
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground mb-1.5">Notes</p>
+              <Input value={form.notes} onChange={e => set('notes', e.target.value)} placeholder="Parking spot, keys, access info…" />
+            </div>
+          </div>
+
+          {error && <p className="text-sm text-destructive">{error}</p>}
+
+          <div className="flex gap-2 pt-1">
+            <Button variant="outline" className="flex-1" onClick={() => onOpenChange(false)} disabled={saving}>Cancel</Button>
+            <Button className="flex-1" disabled={!canSave || saving} onClick={handleSave}>
+              {saving ? 'Saving…' : 'Start Storage'}
+            </Button>
+          </div>
+        </div>
+      </SheetContent>
+    </Sheet>
+  )
+}
+
 // ─── storage sheet ────────────────────────────────────────────────────────────
 
 export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }) {
@@ -593,6 +777,9 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
 
   function startEdit() {
     setEditForm({
+      item_type:         item.item_type      ?? 'boat',
+      custom_item_type:  item.custom_item_type ?? '',
+      item_label:        item.item_label     ?? '',
       monthly_rate:      item.monthly_rate  ?? '',
       billing_day:       item.billing_day   ?? '',
       payment_frequency: item.payment_frequency ?? 'monthly',
@@ -604,13 +791,21 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
 
   async function handleSaveEdit() {
     setSaving(true)
-    await supabase.from('storage_tenancies').update({
+    const payload = {
       monthly_rate:      editForm.monthly_rate ? Number(editForm.monthly_rate) : null,
       billing_day:       editForm.billing_day  ? Number(editForm.billing_day)  : null,
       payment_frequency: editForm.payment_frequency || null,
       move_in_date:      editForm.move_in_date  || null,
       notes:             editForm.notes.trim()  || null,
-    }).eq('id', item.tenancy_id)
+    }
+    if (item.storage_kind === 'customer_item') {
+      Object.assign(payload, {
+        item_type: editForm.item_type || 'boat',
+        custom_item_type: editForm.item_type === 'custom' ? editForm.custom_item_type.trim() || null : null,
+        item_label: editForm.item_label.trim() || item.item_label,
+      })
+    }
+    await supabase.from('storage_tenancies').update(payload).eq('id', item.tenancy_id)
     setSaving(false)
     setEditing(false)
     onAssigned()
@@ -667,10 +862,13 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
     setCharging(true)
     try {
       const { data: { session } } = await supabase.auth.getSession()
+      const chargeTarget = item.storage_kind === 'customer_item'
+        ? { tenancy_id: item.tenancy_id }
+        : { unit_id: item.id }
       const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-billing-run`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ unit_id: item.id, billing_pin: billingPin, request_id: newBillingRequestId() }),
+        body: JSON.stringify({ ...chargeTarget, billing_pin: billingPin, request_id: newBillingRequestId() }),
       })
       const data = await res.json()
       if (!res.ok || data.error) {
@@ -736,11 +934,14 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
     setCharging(true)
     try {
       const { data: { session } } = await supabase.auth.getSession()
+      const chargeTarget = item.storage_kind === 'customer_item'
+        ? { tenancy_id: item.tenancy_id }
+        : { unit_id: item.id }
       const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-billing-run`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          unit_id: item.id,
+          ...chargeTarget,
           months: oneTimeMonths,
           billing_pin: billingPin,
           request_id: newBillingRequestId(),
@@ -776,16 +977,19 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
     try {
       const { data: { session } } = await supabase.auth.getSession()
       const behind = behindCount > 1 ? `${behindCount} months behind` : behindCount === 1 ? 'overdue' : 'outstanding'
+      const label = storageItemLabel(item)
+      const unitType = item.storage_kind === 'customer_item' ? 'customer_item' : 'fixed'
+      const refId = item.storage_kind === 'customer_item' ? item.tenancy_id : item.id
       const body =
-        `Hi ${tenantName(item)}, this is a reminder that your storage unit ${item.unit_number} payment is ${behind}.` +
+        `Hi ${tenantName(item)}, this is a reminder that your ${label} storage payment is ${behind}.` +
         ` Please arrange payment at your earliest convenience.`
       await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-sms`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to: item.tenant_phone, body, ref_id: item.id, unit_type: 'fixed' }),
+        body: JSON.stringify({ to: item.tenant_phone, body, ref_id: refId, unit_type: unitType }),
       })
       setSmsLog(prev => [{
-        id: crypto.randomUUID(), ref_id: item.id, unit_type: 'fixed',
+        id: crypto.randomUUID(), ref_id: refId, unit_type: unitType,
         phone: item.tenant_phone, sent_date: new Date().toISOString().slice(0, 10),
         days_overdue: null, message: body, created_at: new Date().toISOString(),
       }, ...prev])
@@ -882,7 +1086,7 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
 
     if (consumedIds.length > 0) {
       await supabase.from('customer_credits')
-        .update({ status: 'applied', resolved_at: new Date().toISOString(), notes: `Applied to Unit ${item.unit_number}` })
+        .update({ status: 'applied', resolved_at: new Date().toISOString(), notes: `Applied to ${storageItemLabel(item)}` })
         .in('id', consumedIds)
     }
 
@@ -894,7 +1098,7 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
         amount: remainder.amount,
         reason: 'remaining_customer_credit',
         period_labels: remainder.period_labels,
-        notes: `Remaining credit after applying paid time through ${coverage.paidThroughDate} to Unit ${item.unit_number}`,
+        notes: `Remaining credit after applying paid time through ${coverage.paidThroughDate} to ${storageItemLabel(item)}`,
       })
     }
 
@@ -1006,13 +1210,13 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
           await supabase.from('customer_credits').insert({
             customer_id: item.customer_id,
             source_tenancy_id: item.tenancy_id,
-            source_unit_id: item.id,
+            source_unit_id: item.storage_kind === 'customer_item' ? null : item.id,
             amount: dollars(creditCents),
             reason: 'vacate_prepaid_storage',
             period_labels: futurePaidPeriods,
             notes: effectivePaidThroughDate
-              ? `Unit ${item.unit_number} paid-through balance skipped on vacate (${effectivePaidThroughDate})`
-              : `Unit ${item.unit_number} prepaid months skipped on vacate`,
+              ? `${storageItemLabel(item)} paid-through balance skipped on vacate (${effectivePaidThroughDate})`
+              : `${storageItemLabel(item)} prepaid months skipped on vacate`,
           })
         }
       }
@@ -1032,7 +1236,7 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
       .then(async ({ data: allUnits }) => {
         if (!allUnits) return
         const { data: occupied } = await supabase
-          .from('storage_tenancies').select('unit_id').is('end_date', null)
+          .from('storage_tenancies').select('unit_id').eq('storage_kind', 'fixed_unit').is('end_date', null)
         const occupiedIds = new Set((occupied || []).map(t => t.unit_id))
         occupiedIds.add(item.id)
         setVacantUnits(allUnits.filter(u => !occupiedIds.has(u.id)))
@@ -1042,6 +1246,8 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
 
   if (!item) return null
 
+  const isCustomerItem = item.storage_kind === 'customer_item'
+  const itemLabel = storageItemLabel(item)
   const vacant = !tenantName(item)
   const status = vacant ? null : paymentStatus(item.billing_day, item.payment_frequency, isPaid, item.move_in_date, item.paid_through_date)
   const periods = generatePeriods(item.billing_day, item.move_in_date)
@@ -1105,7 +1311,7 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
       >
         <SheetHeader className="mb-5">
           <SheetTitle className="flex items-center justify-between pr-6">
-            <span>Unit {item.unit_number}</span>
+            <span>{itemLabel}</span>
             {status && <StatusBadge status={status} billingDay={item.billing_day} moveInDate={item.move_in_date} />}
           </SheetTitle>
         </SheetHeader>
@@ -1264,6 +1470,33 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
           <div className="space-y-5">
             {editing ? (
               <div className="space-y-3">
+                {isCustomerItem && (
+                  <>
+                    <div>
+                      <p className="text-xs text-muted-foreground mb-1.5">Item Type</p>
+                      <div className="grid grid-cols-4 gap-1.5">
+                        {CUSTOMER_STORAGE_TYPES.map(type => (
+                          <button key={type.value} type="button"
+                            onClick={() => setEditForm(f => ({ ...f, item_type: type.value }))}
+                            className={`text-xs py-2 rounded-lg border transition-colors ${editForm.item_type === type.value ? 'bg-primary text-primary-foreground border-primary' : 'text-muted-foreground hover:text-foreground'}`}
+                          >
+                            {type.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {editForm.item_type === 'custom' && (
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-1.5">Custom Type</p>
+                        <Input value={editForm.custom_item_type} onChange={e => setEditForm(f => ({ ...f, custom_item_type: e.target.value }))} placeholder="Equipment, vehicle, etc." />
+                      </div>
+                    )}
+                    <div>
+                      <p className="text-xs text-muted-foreground mb-1.5">Description</p>
+                      <Input value={editForm.item_label} onChange={e => setEditForm(f => ({ ...f, item_label: e.target.value }))} placeholder="Blue Bayliner, RV plate, trailer colour…" />
+                    </div>
+                  </>
+                )}
                 <div className="flex gap-3">
                   <div className="flex-1">
                     <p className="text-xs text-muted-foreground mb-1.5">Monthly Rate ($)</p>
@@ -1345,7 +1578,7 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
             {!editing && (
               <>
                 <button
-                  onClick={() => { onClose(); navigate(`/storage/${item.id}/billing`) }}
+                  onClick={() => { onClose(); navigate(isCustomerItem ? `/storage/customer/${item.tenancy_id}/billing` : `/storage/${item.id}/billing`) }}
                   className="w-full flex items-center justify-between bg-card border rounded-xl px-4 py-3 hover:bg-accent transition-colors"
                 >
                   <div>
@@ -1374,22 +1607,22 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
 
                 {!confirmVacate ? (
                   <Button variant="outline" className="w-full text-destructive hover:text-destructive" onClick={() => setConfirmVacate(true)}>
-                    Mark Vacant
+                    {isCustomerItem ? 'End Storage' : 'Mark Vacant'}
                   </Button>
                 ) : vacateStep === 'confirm' ? (
                   <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-4 space-y-3">
-                    <p className="text-sm font-medium">Mark unit {item.unit_number} as vacant?</p>
-                    <p className="text-xs text-muted-foreground">The tenant's payment history is preserved. Their tenancy record is closed.</p>
+                    <p className="text-sm font-medium">{isCustomerItem ? `End storage for ${itemLabel}?` : `Mark unit ${item.unit_number} as vacant?`}</p>
+                    <p className="text-xs text-muted-foreground">The customer's payment history is preserved. Their storage record is closed.</p>
                     <div>
-                      <p className="text-xs text-muted-foreground mb-1.5">Type <span className="font-mono font-semibold text-foreground">{item.unit_number}</span> to confirm</p>
-                      <Input value={vacateInput} onChange={e => setVacateInput(e.target.value)} placeholder={item.unit_number} autoFocus />
+                      <p className="text-xs text-muted-foreground mb-1.5">Type <span className="font-mono font-semibold text-foreground">{isCustomerItem ? item.item_label : item.unit_number}</span> to confirm</p>
+                      <Input value={vacateInput} onChange={e => setVacateInput(e.target.value)} placeholder={isCustomerItem ? item.item_label : item.unit_number} autoFocus />
                     </div>
                     <div className="flex gap-2">
                       <Button variant="outline" className="flex-1" onClick={() => { setConfirmVacate(false); setVacateInput('') }}>Cancel</Button>
                       <Button variant="destructive" className="flex-1"
-	                        disabled={saving || vacateInput !== item.unit_number}
+	                        disabled={saving || vacateInput !== (isCustomerItem ? item.item_label : item.unit_number)}
 	                        onClick={() => {
-	                          if (hasTransferablePaidValue) {
+	                          if (hasTransferablePaidValue && !isCustomerItem) {
 	                            startVacateTransferStep()
 	                          } else {
 	                            handleVacate(null)
@@ -2019,6 +2252,9 @@ export default function Storage() {
   const [query, setQuery]                   = useState('')
   const [units, setUnits]                   = useState([])
   const [paidIds, setPaidIds]               = useState(new Set())
+  const [customerStorageItems, setCustomerStorageItems] = useState([])
+  const [customerStoragePaidIds, setCustomerStoragePaidIds] = useState(new Set())
+  const [showAddCustomerStorage, setShowAddCustomerStorage] = useState(false)
   const [selected, setSelected]             = useState(null)
   const [portableAssets, setPortableAssets] = useState([])
   const [rentals, setRentals]               = useState({})
@@ -2037,6 +2273,7 @@ export default function Storage() {
     const [
       { data: unitData },
       { data: tenancyData },
+      { data: customerStorageData },
       { data: paymentData },
       { data: assetData },
       { data: rentalData },
@@ -2044,7 +2281,8 @@ export default function Storage() {
       { data: deploymentData },
     ] = await Promise.all([
       supabase.from('storage_units').select('*').order('unit_number'),
-      supabase.from('storage_tenancies').select('*, customers(name, payment_pin)').is('end_date', null),
+      supabase.from('storage_tenancies').select('*, customers(name, payment_pin)').eq('storage_kind', 'fixed_unit').is('end_date', null),
+      supabase.from('storage_tenancies').select('*, customers(name, payment_pin, has_payment_method, stripe_customer_id)').eq('storage_kind', 'customer_item').is('end_date', null).order('item_label'),
       supabase.from('storage_payments').select('tenancy_id, period_label').gte('period_label', cutoff),
       supabase.from('assets').select('*, asset_types(name, is_storage)').eq('archived', false).order('label'),
       supabase.from('portable_storage_rentals').select('*, customers(name, payment_pin, has_payment_method, stripe_customer_id)'),
@@ -2098,6 +2336,47 @@ export default function Storage() {
       setPaidIds(paid)
     }
 
+    if (customerStorageData) {
+      const items = customerStorageData.map(t => ({
+        id: t.id,
+        tenancy_id: t.id,
+        storage_kind: t.storage_kind,
+        item_type: t.item_type,
+        custom_item_type: t.custom_item_type,
+        item_label: t.item_label,
+        customer_id: t.customer_id || null,
+        tenant_name: t.tenant_name || null,
+        tenant_phone: t.tenant_phone || null,
+        monthly_rate: t.monthly_rate || null,
+        billing_day: t.billing_day || null,
+        payment_frequency: t.payment_frequency || null,
+        move_in_date: t.move_in_date || null,
+        paid_through_date: t.paid_through_date || null,
+        notes: t.notes || null,
+        customers: t.customers || null,
+      }))
+      setCustomerStorageItems(items)
+
+      const itemByTenancy = {}
+      items.forEach(item => { itemByTenancy[item.tenancy_id] = item })
+
+      const paid = new Set(
+        items
+          .filter(item => isPaidThroughToday(item.paid_through_date))
+          .map(item => item.id)
+      )
+
+      paymentData
+        ?.filter(payment => {
+          const item = itemByTenancy[payment.tenancy_id]
+          return item && payment.period_label === currentPeriodLabel(item.billing_day)
+        })
+        .map(payment => itemByTenancy[payment.tenancy_id]?.id)
+        .filter(Boolean)
+        .forEach(id => paid.add(id))
+      setCustomerStoragePaidIds(paid)
+    }
+
     if (assetData) {
       setPortableAssets(assetData.filter(a => a.asset_types?.is_storage))
     }
@@ -2148,6 +2427,19 @@ export default function Storage() {
       if (tenantName(a) && !tenantName(b)) return -1
       const sa = paymentStatus(a.billing_day, a.payment_frequency, paidIds.has(a.id), a.move_in_date, a.paid_through_date)
       const sb = paymentStatus(b.billing_day, b.payment_frequency, paidIds.has(b.id), b.move_in_date, b.paid_through_date)
+      return (STATUS_ORDER[sa] ?? 4) - (STATUS_ORDER[sb] ?? 4)
+    })
+
+  const filteredCustomerStorage = customerStorageItems
+    .filter(item => {
+      if (q && !match(customerStorageLabel(item), customerStorageTypeLabel(item), tenantName(item), item.tenant_phone, item.notes)) return false
+      if (filter === 'all') return true
+      return filter === 'paid' ? customerStoragePaidIds.has(item.id) : !customerStoragePaidIds.has(item.id)
+    })
+    .sort((a, b) => {
+      if (sort === 'alpha') return customerStorageLabel(a).localeCompare(customerStorageLabel(b), undefined, { numeric: true })
+      const sa = paymentStatus(a.billing_day, a.payment_frequency, customerStoragePaidIds.has(a.id), a.move_in_date, a.paid_through_date)
+      const sb = paymentStatus(b.billing_day, b.payment_frequency, customerStoragePaidIds.has(b.id), b.move_in_date, b.paid_through_date)
       return (STATUS_ORDER[sa] ?? 4) - (STATUS_ORDER[sb] ?? 4)
     })
 
@@ -2256,6 +2548,34 @@ export default function Storage() {
               </div>
             </div>
 
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                  Customer Storage ({filteredCustomerStorage.length})
+                </h2>
+                <Button size="sm" variant="outline" onClick={() => setShowAddCustomerStorage(true)}>
+                  <Plus size={14} />
+                  Add
+                </Button>
+              </div>
+              <div className="space-y-2">
+                {filteredCustomerStorage.map(item => (
+                  <CustomerStorageCard
+                    key={item.id}
+                    item={item}
+                    isPaid={customerStoragePaidIds.has(item.id)}
+                    onTap={setSelected}
+                  />
+                ))}
+                {customerStorageItems.length === 0 && (
+                  <p className="text-muted-foreground text-sm text-center mt-4">No boats, trailers, or RVs yet</p>
+                )}
+                {q && filteredCustomerStorage.length === 0 && customerStorageItems.length > 0 && (
+                  <p className="text-muted-foreground text-sm text-center mt-4">No customer storage matches "{query}"</p>
+                )}
+              </div>
+            </div>
+
             {portableAssets.length > 0 && (
               <div>
                 <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
@@ -2277,10 +2597,16 @@ export default function Storage() {
 
       <StorageSheet
         item={selected}
-        isPaid={selected ? paidIds.has(selected.id) : false}
+        isPaid={selected ? (selected.storage_kind === 'customer_item' ? customerStoragePaidIds.has(selected.id) : paidIds.has(selected.id)) : false}
         onClose={() => setSelected(null)}
         onTogglePaid={() => {}}
         onAssigned={fetchAll}
+      />
+
+      <AddCustomerStorageSheet
+        open={showAddCustomerStorage}
+        onOpenChange={setShowAddCustomerStorage}
+        onSaved={fetchAll}
       />
 
       <PortableStorageSheet

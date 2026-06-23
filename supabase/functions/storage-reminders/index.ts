@@ -282,10 +282,25 @@ Deno.serve(async (req) => {
     let sent = 0
     const errors: string[] = []
 
-    // ── Fixed units — query active tenancies directly ────────────────────────
+    const customerStorageTypeLabel = (tenancy: any) => {
+      if (tenancy?.item_type === 'custom') return tenancy.custom_item_type || 'Custom'
+      const labels: Record<string, string> = { boat: 'Boat', trailer: 'Trailer', rv: 'RV', custom: 'Custom' }
+      return labels[String(tenancy?.item_type ?? '')] ?? 'Storage'
+    }
+
+    const tenancyStorageLabel = (tenancy: any) => {
+      if (tenancy?.storage_kind === 'customer_item') {
+        const type = customerStorageTypeLabel(tenancy)
+        return tenancy.item_label ? `${type} ${tenancy.item_label}` : type
+      }
+      const unitNumber = (tenancy.storage_units as any)?.unit_number ?? tenancy.unit_id
+      return `storage unit ${unitNumber}`
+    }
+
+    // ── Fixed units and customer-owned storage items ─────────────────────────
     const { data: tenancies } = await supabase
       .from('storage_tenancies')
-      .select('id, unit_id, tenant_name, tenant_phone, billing_day, monthly_rate, move_in_date, paid_through_date, storage_units(unit_number)')
+      .select('id, unit_id, storage_kind, item_type, custom_item_type, item_label, tenant_name, tenant_phone, billing_day, monthly_rate, move_in_date, paid_through_date, storage_units(unit_number)')
       .eq('payment_frequency', 'monthly')
       .not('billing_day', 'is', null)
       .not('tenant_phone', 'is', null)
@@ -293,7 +308,8 @@ Deno.serve(async (req) => {
       .is('end_date', null)
 
     for (const tenancy of tenancies ?? []) {
-      if (sentToday.has(tenancy.unit_id)) continue
+      const refId = tenancy.storage_kind === 'customer_item' ? tenancy.id : tenancy.unit_id
+      if (!refId || sentToday.has(refId)) continue
       if (isPaidThroughToday(tenancy.paid_through_date, today)) continue
 
       const overdue = daysOverdue(tenancy.billing_day, tenancy.move_in_date)
@@ -315,10 +331,11 @@ Deno.serve(async (req) => {
         amountForPeriod(period, tenancy.billing_day, tenancy.move_in_date, tenancy.monthly_rate)
       )
 
-      const unitNumber = (tenancy.storage_units as any)?.unit_number ?? tenancy.unit_id
+      const unitType = tenancy.storage_kind === 'customer_item' ? 'customer_item' : 'fixed'
+      const label = tenancyStorageLabel(tenancy)
       const message = buildMessage(
         tenancy.tenant_name,
-        `storage unit ${unitNumber}`,
+        label,
         unpaidPeriods,
         unpaidAmounts,
         tenancy.monthly_rate,
@@ -329,12 +346,12 @@ Deno.serve(async (req) => {
       try {
         await sendTwilio(tenancy.tenant_phone, message)
         await supabase.from('sms_reminder_log').insert({
-          ref_id: tenancy.unit_id, unit_type: 'fixed', phone: tenancy.tenant_phone,
+          ref_id: refId, unit_type: unitType, phone: tenancy.tenant_phone,
           sent_date: today, days_overdue: overdue, message,
         })
         sent++
       } catch (e) {
-        errors.push(`unit ${unitNumber}: ${e}`)
+        errors.push(`${label}: ${e}`)
       }
     }
 

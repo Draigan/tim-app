@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { createElement, useState } from 'react'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
-import { Map, Package, Settings, Warehouse, MoreHorizontal, Users, CalendarDays, LayoutGrid, History, ChevronRight, Star, Lock } from 'lucide-react'
+import { Map, Package, Settings, Warehouse, MoreHorizontal, Users, CalendarDays, LayoutGrid, History, ChevronRight, Star, Lock, ReceiptText } from 'lucide-react'
 import { Sheet, SheetContent } from '@/components/ui/sheet'
 import { cn } from '@/lib/utils'
 import { useIsAdmin } from '@/lib/useIsAdmin'
@@ -10,6 +10,7 @@ const MORE_ITEMS = [
   { to: '/calendar',       icon: CalendarDays, label: 'Calendar',        description: 'Schedule and reservations' },
   { to: '/asset-manager',  icon: LayoutGrid,   label: 'Asset Manager',   description: 'Add and configure assets' },
   { to: '/history',        icon: History,      label: 'History',         description: 'Deployment history' },
+  { to: '/online-payments', icon: ReceiptText,  label: 'Online Payments', description: 'Tax collected payments' },
   { to: '/review-request', icon: Star,         label: 'Review Request',  description: 'Send a review request by SMS' },
   { to: '/settings',       icon: Settings,     label: 'Settings',        description: 'Users, notifications, help' },
 ]
@@ -18,8 +19,13 @@ function MoreSheet({ open, onClose }) {
   const navigate = useNavigate()
   const { pathname } = useLocation()
   const [showAdminPin, setShowAdminPin] = useState(false)
+  const [showOnlinePaymentsPin, setShowOnlinePaymentsPin] = useState(false)
 
   function go(to) {
+    if (to === '/online-payments') {
+      setShowOnlinePaymentsPin(true)
+      return
+    }
     onClose()
     navigate(to)
   }
@@ -30,24 +36,27 @@ function MoreSheet({ open, onClose }) {
         <SheetContent side="bottom" className="pb-8">
           <div className="pt-2 pb-1">
             <div className="space-y-1">
-              {MORE_ITEMS.map(({ to, icon: Icon, label, description }) => (
+              {MORE_ITEMS.map(item => (
                 <button
-                  key={to}
-                  onClick={() => go(to)}
+                  key={item.to}
+                  onClick={() => go(item.to)}
                   className={cn(
                     'w-full flex items-center gap-4 px-2 py-3 rounded-xl transition-colors hover:bg-accent',
-                    pathname === to && 'text-primary'
+                    pathname === item.to && 'text-primary'
                   )}
                 >
                   <div className={cn(
                     'w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0',
-                    pathname === to ? 'bg-primary/15' : 'bg-muted'
+                    pathname === item.to ? 'bg-primary/15' : 'bg-muted'
                   )}>
-                    <Icon size={20} className={pathname === to ? 'text-primary' : 'text-foreground'} />
+                    {createElement(item.icon, {
+                      size: 20,
+                      className: pathname === item.to ? 'text-primary' : 'text-foreground',
+                    })}
                   </div>
                   <div className="flex-1 text-left">
-                    <p className={cn('text-sm font-medium', pathname === to && 'text-primary')}>{label}</p>
-                    <p className="text-xs text-muted-foreground">{description}</p>
+                    <p className={cn('text-sm font-medium', pathname === item.to && 'text-primary')}>{item.label}</p>
+                    <p className="text-xs text-muted-foreground">{item.description}</p>
                   </div>
                   <ChevronRight size={16} className="text-muted-foreground flex-shrink-0" />
                 </button>
@@ -86,6 +95,23 @@ function MoreSheet({ open, onClose }) {
         pinLabel="Enter admin PIN"
         confirmLabel="Enter"
       />
+
+      <PinModal
+        open={showOnlinePaymentsPin}
+        onClose={() => setShowOnlinePaymentsPin(false)}
+        onConfirm={async (pin) => {
+          if (pin !== '4321') return { error: 'Incorrect PIN' }
+          sessionStorage.setItem('onlinePaymentsUnlocked', '1')
+          setShowOnlinePaymentsPin(false)
+          onClose()
+          navigate('/online-payments')
+        }}
+        title="Online Payments"
+        subtitle="Enter PIN to access tax payments"
+        icon={ReceiptText}
+        pinLabel="Enter admin PIN"
+        confirmLabel="Enter"
+      />
     </>
   )
 }
@@ -108,11 +134,11 @@ export default function BottomNav() {
   return (
     <>
       <nav className="border-t bg-background flex flex-shrink-0 select-none" style={{ paddingBottom: '4px' }}>
-        {navItems.map(({ to, icon: Icon, label }) => (
+        {navItems.map(item => (
           <NavLink
-            key={to}
-            to={to}
-            end={to === '/'}
+            key={item.to}
+            to={item.to}
+            end={item.to === '/'}
             className={({ isActive }) =>
               cn(
                 'flex-1 flex flex-col items-center gap-0.5 pt-3 pb-0 text-xs transition-colors',
@@ -122,8 +148,11 @@ export default function BottomNav() {
           >
             {({ isActive }) => (
               <>
-                <Icon size={22} className={isActive ? 'drop-shadow-[0_0_8px_rgba(74,222,128,0.9)]' : ''} />
-                {label}
+                {createElement(item.icon, {
+                  size: 22,
+                  className: isActive ? 'drop-shadow-[0_0_8px_rgba(74,222,128,0.9)]' : '',
+                })}
+                {item.label}
               </>
             )}
           </NavLink>

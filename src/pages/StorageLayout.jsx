@@ -167,7 +167,7 @@ export default function StorageLayout() {
       { data: paymentData },
     ] = await Promise.all([
       supabase.from('storage_units').select('*').order('unit_number'),
-      supabase.from('storage_tenancies').select('*').is('end_date', null),
+      supabase.from('storage_tenancies').select('*').eq('storage_kind', 'fixed_unit').is('end_date', null),
       supabase.from('storage_payments').select('tenancy_id, period_label').gte('period_label', cutoff),
     ])
 

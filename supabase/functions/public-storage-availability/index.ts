@@ -140,7 +140,7 @@ Deno.serve(async (req) => {
       portableRentalsResult,
     ] = await Promise.all([
       supabase.from('storage_units').select('id, unit_number, size'),
-      supabase.from('storage_tenancies').select('unit_id').is('end_date', null),
+      supabase.from('storage_tenancies').select('unit_id').eq('storage_kind', 'fixed_unit').is('end_date', null),
       supabase.from('asset_types').select('id, name').eq('is_storage', true),
       supabase.from('deployments').select('asset_id').is('picked_up_at', null),
       supabase.from('portable_storage_rentals').select('asset_id'),

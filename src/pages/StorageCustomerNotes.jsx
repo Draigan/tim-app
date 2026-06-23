@@ -21,6 +21,18 @@ function compactAssignments(assignments) {
     .join(' / ')
 }
 
+const CUSTOMER_STORAGE_TYPE_LABELS = { boat: 'Boat', trailer: 'Trailer', rv: 'RV', custom: 'Custom' }
+
+function tenancyAssignmentLabel(tenancy) {
+  if (tenancy?.storage_kind === 'customer_item') {
+    const type = tenancy.item_type === 'custom'
+      ? tenancy.custom_item_type || 'Custom'
+      : CUSTOMER_STORAGE_TYPE_LABELS[tenancy.item_type] ?? 'Storage'
+    return tenancy.item_label ? `${type} ${tenancy.item_label}` : type
+  }
+  return `Unit ${tenancy.storage_units?.unit_number ?? 'Unknown'}`
+}
+
 function mergeCustomer(map, source) {
   if (!source.customer_id) return
   const existing = map.get(source.customer_id) ?? {
@@ -48,7 +60,7 @@ async function loadStorageCustomers() {
   ] = await Promise.all([
     supabase
       .from('storage_tenancies')
-      .select('id, customer_id, tenant_name, tenant_phone, storage_units(unit_number), customers(id, name, phone, email)')
+      .select('id, storage_kind, item_type, custom_item_type, item_label, customer_id, tenant_name, tenant_phone, storage_units(unit_number), customers(id, name, phone, email)')
       .is('end_date', null),
     supabase
       .from('portable_storage_rentals')
@@ -71,8 +83,8 @@ async function loadStorageCustomers() {
     mergeCustomer(byCustomer, {
       ...tenancy,
       assignment: {
-        type: 'fixed',
-        label: `Unit ${tenancy.storage_units?.unit_number ?? 'Unknown'}`,
+        type: tenancy.storage_kind === 'customer_item' ? 'customer_item' : 'fixed',
+        label: tenancyAssignmentLabel(tenancy),
       },
     })
   })

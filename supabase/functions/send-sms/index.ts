@@ -113,6 +113,34 @@ async function validateSmsTarget(params: {
     return null
   }
 
+  if (unitType === 'customer_item') {
+    const { data: tenancy, error } = await supabaseAdmin
+      .from('storage_tenancies')
+      .select('id, storage_kind, item_type, custom_item_type, item_label, tenant_phone, customers(phone)')
+      .eq('id', refId)
+      .eq('storage_kind', 'customer_item')
+      .is('end_date', null)
+      .maybeSingle()
+
+    if (error) return json({ error: error.message }, 500)
+    if (!tenancy) return json({ error: 'customer storage item not found for SMS target' }, 404)
+
+    if (!phoneMatches(to, [tenancy.tenant_phone, (tenancy.customers as any)?.phone])) {
+      return json({ error: 'SMS phone does not match this storage item.' }, 403)
+    }
+
+    const typeLabels: Record<string, string> = { boat: 'Boat', trailer: 'Trailer', rv: 'RV', custom: 'Custom' }
+    const itemType = tenancy.item_type === 'custom'
+      ? tenancy.custom_item_type || 'Custom'
+      : typeLabels[String(tenancy.item_type ?? '')] ?? 'Storage'
+    const label = tenancy.item_label ? `${itemType} ${tenancy.item_label}` : itemType
+    if (!bodyIncludes(body, tenancy.item_label) && !bodyIncludes(body, label)) {
+      return json({ error: 'SMS body must reference the stored item.' }, 400)
+    }
+
+    return null
+  }
+
   if (unitType === 'portable') {
     const { data: rental, error } = await supabaseAdmin
       .from('portable_storage_rentals')
@@ -135,7 +163,7 @@ async function validateSmsTarget(params: {
     return null
   }
 
-  return json({ error: 'unit_type must be fixed or portable' }, 400)
+  return json({ error: 'unit_type must be fixed, customer_item, or portable' }, 400)
 }
 
 async function sendTwilio(to: string, body: string): Promise<void> {

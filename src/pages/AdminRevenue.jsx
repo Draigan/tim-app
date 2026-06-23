@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, CheckCircle2, MoreHorizontal } from 'lucide-react'
+import { ArrowLeft, CheckCircle2, MoreHorizontal, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
@@ -9,10 +9,21 @@ import { cn } from '@/lib/utils'
 
 const ADMIN_SHARE = 0.25
 const START_DATE = '2026-06-05'
+const CUSTOMER_STORAGE_TYPE_LABELS = { boat: 'Boat', trailer: 'Trailer', rv: 'RV', custom: 'Custom' }
 
 function fmtDate(iso) {
   if (!iso) return ''
   return new Date(iso).toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+function tenancyLabel(tenancy, unit) {
+  if (tenancy?.storage_kind === 'customer_item') {
+    const type = tenancy.item_type === 'custom'
+      ? tenancy.custom_item_type || 'Custom'
+      : CUSTOMER_STORAGE_TYPE_LABELS[tenancy.item_type] ?? 'Storage'
+    return tenancy.item_label ? `${type} ${tenancy.item_label}` : type
+  }
+  return unit ? `Unit ${unit.unit_number}` : 'Unknown unit'
 }
 
 export default function AdminRevenue() {
@@ -25,6 +36,9 @@ export default function AdminRevenue() {
   const [partialAmount, setPartialAmount] = useState('')
   const [saving, setSaving] = useState(false)
   const [showHidden, setShowHidden] = useState(false)
+  const [manualModal, setManualModal] = useState(false)
+  const [manualAmount, setManualAmount] = useState('')
+  const [manualNote, setManualNote] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -35,15 +49,17 @@ export default function AdminRevenue() {
       { data: portablePayments },
       { data: portableAssets },
       { data: portableRentals },
+      { data: manualPayments },
       { data: received },
       { data: hidden },
     ] = await Promise.all([
       supabase.from('storage_payments').select('id, tenancy_id, amount, subtotal_amount, tax_amount, paid_at').gte('paid_at', START_DATE).order('paid_at', { ascending: false }),
-      supabase.from('storage_tenancies').select('id, unit_id, tenant_name, customers(name)'),
+      supabase.from('storage_tenancies').select('id, unit_id, storage_kind, item_type, custom_item_type, item_label, tenant_name, customers(name)'),
       supabase.from('storage_units').select('id, unit_number'),
       supabase.from('portable_storage_payments').select('id, asset_id, amount, subtotal_amount, tax_amount, paid_at').gte('paid_at', START_DATE).order('paid_at', { ascending: false }),
       supabase.from('assets').select('id, label, size'),
       supabase.from('portable_storage_rentals').select('asset_id, tenant_name, customers(name)'),
+      supabase.from('admin_manual_payments').select('id, amount, note, paid_at').gte('paid_at', START_DATE).order('paid_at', { ascending: false }),
       supabase.from('admin_payment_received').select('payment_type, payment_id, amount_received'),
       supabase.from('admin_payment_hidden').select('payment_type, payment_id'),
     ])
@@ -77,7 +93,7 @@ export default function AdminRevenue() {
       const unit    = tenancy ? unitMap.get(tenancy.unit_id) : null
       return buildRow(
         'fixed', p.id,
-        unit ? `Unit ${unit.unit_number}` : 'Unknown unit',
+        tenancyLabel(tenancy, unit),
         tenancy?.customers?.name || tenancy?.tenant_name || null,
         Number(p.amount || 0),
         p.subtotal_amount === null || p.subtotal_amount === undefined ? null : Number(p.subtotal_amount || 0),
@@ -100,13 +116,26 @@ export default function AdminRevenue() {
       )
     })
 
-    const all = [...fixedRows, ...portableRows].sort((a, b) => new Date(b.paidAt) - new Date(a.paidAt))
+    const manualRows = (manualPayments ?? []).map(p => buildRow(
+      'manual', p.id,
+      'Cash payment',
+      p.note || null,
+      Number(p.amount || 0),
+      Number(p.amount || 0),
+      0,
+      p.paid_at
+    ))
+
+    const all = [...fixedRows, ...portableRows, ...manualRows].sort((a, b) => new Date(b.paidAt) - new Date(a.paidAt))
     setPayments(all.filter(p => !hiddenSet.has(p.key)))
     setHiddenPayments(all.filter(p => hiddenSet.has(p.key)))
     setLoading(false)
   }, [])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    const timeout = window.setTimeout(load, 0)
+    return () => window.clearTimeout(timeout)
+  }, [load])
 
   async function hidePayment(payment) {
     await supabase.from('admin_payment_hidden').insert({ payment_type: payment.type, payment_id: payment.id })
@@ -135,8 +164,32 @@ export default function AdminRevenue() {
     load()
   }
 
+  async function addManualPayment() {
+    const amount = Number(manualAmount)
+    if (!Number.isFinite(amount) || amount <= 0) return
+
+    setSaving(true)
+    const { error } = await supabase.from('admin_manual_payments').insert({
+      amount: Number(amount.toFixed(2)),
+      note: manualNote.trim() || null,
+    })
+    setSaving(false)
+
+    if (error) {
+      console.error('manual payment insert failed', error)
+      return
+    }
+
+    setManualModal(false)
+    setManualAmount('')
+    setManualNote('')
+    load()
+  }
+
   const pending      = payments.filter(p => p.remaining > 0.01)
   const totalPending = pending.reduce((s, p) => s + p.remaining, 0)
+  const manualAmountValue = Number(manualAmount)
+  const manualCut = Number.isFinite(manualAmountValue) && manualAmountValue > 0 ? manualAmountValue * ADMIN_SHARE : 0
 
   return (
     <div className="h-full flex flex-col">
@@ -145,6 +198,10 @@ export default function AdminRevenue() {
           <ArrowLeft size={20} />
         </button>
         <h1 className="text-lg font-semibold">Admin</h1>
+        <Button size="sm" className="ml-auto gap-1.5" onClick={() => setManualModal(true)}>
+          <Plus size={14} />
+          Add cash
+        </Button>
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
@@ -177,6 +234,7 @@ export default function AdminRevenue() {
             {payments.map(payment => {
               const isFullyReceived = payment.remaining <= 0.01
               const isPartial       = payment.totalReceived > 0.01 && !isFullyReceived
+              const isManual        = payment.type === 'manual'
 
               return (
                 <div
@@ -211,11 +269,11 @@ export default function AdminRevenue() {
                     <div className="flex items-center justify-between gap-3">
                       <div className="space-y-0.5">
                         <p className="text-xs text-muted-foreground">
-                          ${payment.amount.toFixed(2)} paid
+                          ${payment.amount.toFixed(2)} {isManual ? 'cash' : 'paid'}
                         </p>
                         <p className="text-xs text-muted-foreground">
-                          ${payment.subtotalAmount.toFixed(2)} rent
-                          {payment.taxAmount > 0 ? ` · $${payment.taxAmount.toFixed(2)} HST` : ''}
+                          ${payment.subtotalAmount.toFixed(2)} {isManual ? 'total' : 'rent'}
+                          {!isManual && payment.taxAmount > 0 ? ` · $${payment.taxAmount.toFixed(2)} HST` : ''}
                           {' · '}
                           <span className="font-semibold text-foreground">your cut: ${payment.adminShare.toFixed(2)}</span>
                         </p>
@@ -290,11 +348,11 @@ export default function AdminRevenue() {
                         </div>
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        ${payment.amount.toFixed(2)} paid
+                        ${payment.amount.toFixed(2)} {payment.type === 'manual' ? 'cash' : 'paid'}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        ${payment.subtotalAmount.toFixed(2)} rent
-                        {payment.taxAmount > 0 ? ` · $${payment.taxAmount.toFixed(2)} HST` : ''}
+                        ${payment.subtotalAmount.toFixed(2)} {payment.type === 'manual' ? 'total' : 'rent'}
+                        {payment.type !== 'manual' && payment.taxAmount > 0 ? ` · $${payment.taxAmount.toFixed(2)} HST` : ''}
                         {' · '}
                         <span className="font-semibold text-foreground">your cut: ${payment.adminShare.toFixed(2)}</span>
                       </p>
@@ -322,35 +380,39 @@ export default function AdminRevenue() {
           <SheetHeader className="mb-4">
             <SheetTitle>Record payment received</SheetTitle>
           </SheetHeader>
-          {acceptModal && (
+          {acceptModal && (() => {
+            const isManual = acceptModal.type === 'manual'
+            return (
             <div className="space-y-4">
               <div className="rounded-xl border divide-y text-sm">
                 <div className="flex justify-between px-4 py-2.5">
-                  <span className="text-muted-foreground">Unit</span>
+                  <span className="text-muted-foreground">{isManual ? 'Source' : 'Unit'}</span>
                   <span className="font-medium">{acceptModal.label}</span>
                 </div>
                 {acceptModal.tenantName && (
                   <div className="flex justify-between px-4 py-2.5">
-                    <span className="text-muted-foreground">Tenant</span>
+                    <span className="text-muted-foreground">{isManual ? 'Note' : 'Tenant'}</span>
                     <span className="font-medium">{acceptModal.tenantName}</span>
                   </div>
                 )}
                 <div className="flex justify-between px-4 py-2.5">
-                  <span className="text-muted-foreground">Tenant paid</span>
+                  <span className="text-muted-foreground">{isManual ? 'Cash received' : 'Tenant paid'}</span>
                   <span className="font-medium">${acceptModal.amount.toFixed(2)}</span>
                 </div>
-                <div className="flex justify-between px-4 py-2.5">
-                  <span className="text-muted-foreground">Rent before tax</span>
-                  <span className="font-medium">${acceptModal.subtotalAmount.toFixed(2)}</span>
-                </div>
-                {acceptModal.taxAmount > 0 && (
+                {!isManual && (
+                  <div className="flex justify-between px-4 py-2.5">
+                    <span className="text-muted-foreground">Rent before tax</span>
+                    <span className="font-medium">${acceptModal.subtotalAmount.toFixed(2)}</span>
+                  </div>
+                )}
+                {!isManual && acceptModal.taxAmount > 0 && (
                   <div className="flex justify-between px-4 py-2.5">
                     <span className="text-muted-foreground">HST</span>
                     <span className="font-medium">${acceptModal.taxAmount.toFixed(2)}</span>
                   </div>
                 )}
                 <div className="flex justify-between px-4 py-2.5">
-                  <span className="text-muted-foreground">Your 25% of rent</span>
+                  <span className="text-muted-foreground">{isManual ? 'Your 25% cut' : 'Your 25% of rent'}</span>
                   <span className="font-medium">${acceptModal.adminShare.toFixed(2)}</span>
                 </div>
                 {acceptModal.totalReceived > 0.01 && (
@@ -399,7 +461,70 @@ export default function AdminRevenue() {
                 </div>
               </div>
             </div>
-          )}
+          )})()}
+        </SheetContent>
+      </Sheet>
+
+      {/* Manual cash modal */}
+      <Sheet open={manualModal} onOpenChange={v => {
+        setManualModal(v)
+        if (!v) {
+          setManualAmount('')
+          setManualNote('')
+        }
+      }}>
+        <SheetContent side="bottom" className="max-h-[75vh]">
+          <SheetHeader className="mb-4">
+            <SheetTitle>Add cash payment</SheetTitle>
+          </SheetHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-muted-foreground" htmlFor="manual-cash-amount">Cash amount</label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
+                <Input
+                  id="manual-cash-amount"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={manualAmount}
+                  onChange={e => setManualAmount(e.target.value)}
+                  placeholder="0.00"
+                  className="pl-7"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-muted-foreground" htmlFor="manual-cash-note">Note</label>
+              <Input
+                id="manual-cash-note"
+                value={manualNote}
+                onChange={e => setManualNote(e.target.value)}
+                placeholder="Optional"
+              />
+            </div>
+
+            <div className="rounded-xl border divide-y text-sm">
+              <div className="flex justify-between px-4 py-2.5">
+                <span className="text-muted-foreground">Cash amount</span>
+                <span className="font-medium">${(Number.isFinite(manualAmountValue) && manualAmountValue > 0 ? manualAmountValue : 0).toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between px-4 py-2.5">
+                <span className="text-muted-foreground">Your 25% cut</span>
+                <span className="font-semibold">${manualCut.toFixed(2)}</span>
+              </div>
+            </div>
+
+            <Button
+              className="w-full gap-2"
+              disabled={saving || !Number.isFinite(manualAmountValue) || manualAmountValue <= 0}
+              onClick={addManualPayment}
+            >
+              <Plus size={14} />
+              {saving ? 'Saving…' : 'Add cash payment'}
+            </Button>
+          </div>
         </SheetContent>
       </Sheet>
     </div>

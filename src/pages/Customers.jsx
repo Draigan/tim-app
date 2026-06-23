@@ -26,6 +26,23 @@ function fmtPeriod(label) {
 }
 
 const EMPTY_FORM = { name: '', phone: '', email: '', address: '', notes: '' }
+const CUSTOMER_STORAGE_TYPE_LABELS = { boat: 'Boat', trailer: 'Trailer', rv: 'RV', custom: 'Custom' }
+
+function customerStorageLabel(tenancy) {
+  if (tenancy?.storage_kind !== 'customer_item') {
+    return tenancy?.storage_units?.unit_number ? `Unit ${tenancy.storage_units.unit_number}` : 'Storage'
+  }
+  const type = tenancy.item_type === 'custom'
+    ? tenancy.custom_item_type || 'Custom'
+    : CUSTOMER_STORAGE_TYPE_LABELS[tenancy.item_type] ?? 'Storage'
+  return tenancy.item_label ? `${type} ${tenancy.item_label}` : type
+}
+
+function customerStorageBillingPath(tenancy) {
+  return tenancy?.storage_kind === 'customer_item'
+    ? `/storage/customer/${tenancy.id}/billing`
+    : tenancy?.storage_units?.id ? `/storage/${tenancy.storage_units.id}/billing` : null
+}
 
 // ─── customer card ────────────────────────────────────────────────────────────
 
@@ -162,7 +179,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
         .order('picked_up_at', { ascending: false })
         .limit(10),
       supabase.from('storage_tenancies')
-        .select('id, move_in_date, end_date, monthly_rate, paid_through_date, storage_units(id, unit_number), storage_payments(period_label, amount, paid_at)')
+        .select('id, storage_kind, item_type, custom_item_type, item_label, move_in_date, end_date, monthly_rate, paid_through_date, storage_units(id, unit_number), storage_payments(period_label, amount, paid_at)')
         .eq('customer_id', customer.id)
         .order('end_date', { ascending: false, nullsFirst: true }),
       supabase.from('portable_storage_rentals').select('asset_id', { count: 'exact', head: true }).eq('customer_id', customer.id),
@@ -601,20 +618,19 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
               <div className="space-y-2">
                 {storageTenancies.map(t => {
                   const isActive = !t.end_date
-                  const unitNum = t.storage_units?.unit_number
-                  const unitId = t.storage_units?.id
+                  const storagePath = customerStorageBillingPath(t)
                   const payments = t.storage_payments ?? []
                   const lastPeriod = [...payments].sort((a, b) => (b.period_label || '').localeCompare(a.period_label || ''))[0]?.period_label
                   return (
                     <button
                       key={t.id}
-                      onClick={() => { if (unitId) { onClose(); navigate(`/storage/${unitId}/billing`) } }}
+                      onClick={() => { if (storagePath) { onClose(); navigate(storagePath) } }}
                       className="w-full text-left flex items-center gap-3 bg-card border rounded-xl px-4 py-3 hover:bg-accent transition-colors"
                     >
                       <Archive size={14} className="text-muted-foreground flex-shrink-0" />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
-                          <p className="text-sm font-medium">Unit {unitNum}</p>
+                          <p className="text-sm font-medium">{customerStorageLabel(t)}</p>
                           <span className={`text-xs px-1.5 py-0.5 rounded-full ${isActive ? 'bg-green-500/10 text-green-700' : 'bg-muted text-muted-foreground'}`}>
                             {isActive ? 'Active' : 'Past'}
                           </span>

@@ -13,6 +13,24 @@ function fmtPeriod(label) {
   return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })
 }
 
+const CUSTOMER_STORAGE_TYPE_LABELS = { boat: 'Boat', trailer: 'Trailer', rv: 'RV', custom: 'Custom' }
+
+function storageRecordLabel(record) {
+  if (record?.storage_kind !== 'customer_item') {
+    return record?.storage_units?.unit_number ? `Unit ${record.storage_units.unit_number}` : 'Storage'
+  }
+  const type = record.item_type === 'custom'
+    ? record.custom_item_type || 'Custom'
+    : CUSTOMER_STORAGE_TYPE_LABELS[record.item_type] ?? 'Storage'
+  return record.item_label ? `${type} ${record.item_label}` : type
+}
+
+function storageRecordPath(record) {
+  return record?.storage_kind === 'customer_item'
+    ? `/storage/customer/${record.id}/billing`
+    : record?.storage_units?.id ? `/storage/${record.storage_units.id}/billing` : null
+}
+
 function duration(droppedAt, pickedUpAt) {
   const end = pickedUpAt ? new Date(pickedUpAt) : new Date()
   const days = Math.round((end - new Date(droppedAt)) / (1000 * 60 * 60 * 24))
@@ -111,7 +129,7 @@ export default function History() {
     setStorageLoading(true)
     const { data } = await supabase
       .from('storage_tenancies')
-      .select('id, move_in_date, end_date, monthly_rate, paid_through_date, tenant_name, customers(name), storage_units(id, unit_number), storage_payments(period_label, amount, paid_at)')
+      .select('id, storage_kind, item_type, custom_item_type, item_label, move_in_date, end_date, monthly_rate, paid_through_date, tenant_name, customers(name), storage_units(id, unit_number), storage_payments(period_label, amount, paid_at)')
       .order('end_date', { ascending: false, nullsFirst: true })
     if (data) setStorageRecords(data)
     setStorageLoading(false)
@@ -486,27 +504,26 @@ export default function History() {
               const filtered = storageRecords.filter(t => {
                 if (!q) return true
                 const name = t.customers?.name || t.tenant_name || ''
-                const unit = String(t.storage_units?.unit_number || '')
-                return [name, unit].some(f => f.toLowerCase().includes(q))
+                const label = storageRecordLabel(t)
+                return [name, label].some(f => f.toLowerCase().includes(q))
               })
               return (
                 <div className="space-y-2 pb-2">
                   {filtered.map(t => {
                     const isActive = !t.end_date
                     const name = t.customers?.name || t.tenant_name
-                    const unitNum = t.storage_units?.unit_number
-                    const unitId = t.storage_units?.id
+                    const storagePath = storageRecordPath(t)
                     const payments = t.storage_payments ?? []
                     const lastPeriod = [...payments].sort((a, b) => (b.period_label || '').localeCompare(a.period_label || ''))[0]?.period_label
                     return (
                       <button
                         key={t.id}
-                        onClick={() => unitId && navigate(`/storage/${unitId}/billing`)}
+                        onClick={() => storagePath && navigate(storagePath)}
                         className="w-full text-left bg-card border rounded-xl p-4 hover:bg-accent transition-colors"
                       >
                         <div className="flex items-start justify-between gap-2 mb-1.5">
                           <div className="flex items-center gap-2">
-                            <span className="font-semibold">Unit {unitNum}</span>
+                            <span className="font-semibold">{storageRecordLabel(t)}</span>
                             <span className={`text-xs px-2 py-0.5 rounded-full ${isActive ? 'bg-green-500/10 text-green-700' : 'bg-muted text-muted-foreground'}`}>
                               {isActive ? 'Active' : 'Ended'}
                             </span>

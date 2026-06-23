@@ -14,6 +14,26 @@ const SALES_TAX_RATE = 0.13
 const SALES_TAX_LABEL = 'HST'
 const MAX_PORTAL_PERIODS = 24
 const MAX_PREPAY_MONTHS = 12
+const CUSTOMER_STORAGE_TYPE_LABELS: Record<string, string> = {
+  boat: 'Boat',
+  trailer: 'Trailer',
+  rv: 'RV',
+  custom: 'Custom',
+}
+
+function customerStorageTypeLabel(tenancy: any): string {
+  if (tenancy?.item_type === 'custom') return tenancy.custom_item_type || 'Custom'
+  return CUSTOMER_STORAGE_TYPE_LABELS[String(tenancy?.item_type ?? '')] ?? 'Storage'
+}
+
+function tenancyStorageLabel(tenancy: any): string {
+  if (tenancy?.storage_kind === 'customer_item') {
+    const type = customerStorageTypeLabel(tenancy)
+    return tenancy.item_label ? `${type} ${tenancy.item_label}` : type
+  }
+  const unitNumber = (tenancy.storage_units as any)?.unit_number
+  return unitNumber ? `Unit ${unitNumber}` : 'Storage unit'
+}
 
 function cors(req: Request) {
   return {
@@ -270,7 +290,7 @@ async function collectOutstandingCharges(customerId: string): Promise<PortalChar
   const [{ data: tenancies, error: tenancyError }, { data: rentals, error: rentalError }] = await Promise.all([
     supabase
       .from('storage_tenancies')
-      .select('id, unit_id, monthly_rate, billing_day, payment_frequency, move_in_date, paid_through_date, storage_units(unit_number)')
+      .select('id, unit_id, storage_kind, item_type, custom_item_type, item_label, monthly_rate, billing_day, payment_frequency, move_in_date, paid_through_date, storage_units(unit_number)')
       .eq('customer_id', customerId)
       .eq('payment_frequency', 'monthly')
       .is('end_date', null),
@@ -340,8 +360,7 @@ async function collectOutstandingCharges(customerId: string): Promise<PortalChar
   for (const tenancy of tenancies ?? []) {
     if (!tenancy.billing_day || Number(tenancy.monthly_rate ?? 0) <= 0) continue
     const paidSet = storagePaid.get(tenancy.id) ?? new Set<string>()
-    const unitNumber = (tenancy.storage_units as any)?.unit_number
-    const unitLabel = unitNumber ? `Unit ${unitNumber}` : 'Storage unit'
+    const unitLabel = tenancyStorageLabel(tenancy)
     const current = currentPeriodLabel(tenancy.billing_day)
     let prepayIndex = 0
 

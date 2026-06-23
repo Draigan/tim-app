@@ -30,6 +30,25 @@ const BUSINESS_TIME_ZONE = 'America/Toronto'
 const SALES_TAX_RATE = 0.13
 const SALES_TAX_LABEL = 'HST'
 const LATE_FEE_LABEL = 'Late fee'
+const CUSTOMER_STORAGE_TYPE_LABELS: Record<string, string> = {
+  boat: 'Boat',
+  trailer: 'Trailer',
+  rv: 'RV',
+  custom: 'Custom',
+}
+
+function customerStorageTypeLabel(tenancy: any): string {
+  if (tenancy?.item_type === 'custom') return tenancy.custom_item_type || 'Custom'
+  return CUSTOMER_STORAGE_TYPE_LABELS[String(tenancy?.item_type ?? '')] ?? 'Storage'
+}
+
+function tenancyLabel(tenancy: any): string {
+  if (tenancy?.storage_kind === 'customer_item') {
+    const type = customerStorageTypeLabel(tenancy)
+    return tenancy.item_label ? `${type} - ${tenancy.item_label}` : type
+  }
+  return (tenancy?.storage_units as any)?.unit_number ?? tenancy?.unit_number ?? ''
+}
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -420,7 +439,7 @@ async function chargeUnit(tenancy: any, period: string, idempotencyKey?: string)
       off_session: true,
       confirm: true,
       metadata: {
-        unit_id: tenancy.unit_id,
+        unit_id: tenancy.unit_id ?? '',
         tenancy_id: tenancy.id,
         period_label: period,
         monthly_rate: String(Number(tenancy.monthly_rate ?? 0)),
@@ -432,7 +451,7 @@ async function chargeUnit(tenancy: any, period: string, idempotencyKey?: string)
         tax_rate: String(SALES_TAX_RATE),
         tax_label: SALES_TAX_LABEL,
         late_fee_label: LATE_FEE_LABEL,
-        unit_number: tenancy.unit_number ?? '',
+        unit_number: tenancyLabel(tenancy),
       },
     },
     idempotencyKey,
@@ -513,9 +532,9 @@ async function chargePeriods(tenancy: any, periods: string[], extraAmount: numbe
   }
 
   const metadata: Record<string, string> = {
-    unit_id: tenancy.unit_id,
+    unit_id: tenancy.unit_id ?? '',
     tenancy_id: tenancy.id,
-    unit_number: tenancy.unit_number ?? '',
+    unit_number: tenancyLabel(tenancy),
     months: String(periodCharges.length),
     monthly_rate: String(monthlyRate),
     extra_amount: String(extraAmount),
@@ -740,25 +759,31 @@ async function recordCashPayment(body: Record<string, unknown>) {
   }
   const collectTax = shouldCollectTax(body)
 
+  const tenancyId = typeof body.tenancy_id === 'string' ? body.tenancy_id.trim() : ''
   const unitId = typeof body.cash_unit_id === 'string'
     ? body.cash_unit_id
     : typeof body.unit_id === 'string'
       ? body.unit_id
       : ''
-  if (!unitId) return json({ error: 'unit_id required' }, 400)
+  if (!unitId && !tenancyId) return json({ error: 'unit_id or tenancy_id required' }, 400)
 
   const requestedPeriods = normalizePeriods(body.periods)
   if (!requestedPeriods?.length) return json({ error: 'periods required' }, 400)
 
-  const { data: tenancy, error: tenancyError } = await supabase
+  let tenancyQuery = supabase
     .from('storage_tenancies')
     .select('*, storage_units(unit_number)')
-    .eq('unit_id', unitId)
     .is('end_date', null)
+
+  tenancyQuery = tenancyId
+    ? tenancyQuery.eq('id', tenancyId)
+    : tenancyQuery.eq('unit_id', unitId)
+
+  const { data: tenancy, error: tenancyError } = await tenancyQuery
     .maybeSingle()
 
   if (tenancyError) return json({ error: tenancyError.message }, 500)
-  if (!tenancy) return json({ error: 'no active tenancy for unit' }, 404)
+  if (!tenancy) return json({ error: 'no active tenancy found' }, 404)
 
   const { data: existing, error: existingError } = await supabase
     .from('storage_payments')
@@ -886,23 +911,27 @@ Deno.serve(async (req) => {
       return json({ ok: true, ...result })
     }
 
-    // ── single unit charge (manual "Charge now" or one-time) ─────────────────
-    if (body.unit_id) {
+    // ── single fixed unit or customer-storage charge ─────────────────────────
+    if (body.unit_id || body.tenancy_id) {
       const authError = await authorizeManualBilling(req, body)
       if (authError) return authError
 
-      // Look up the active tenancy for this unit
-      const { data: tenancy, error } = await supabase
+      const tenancyId = typeof body.tenancy_id === 'string' ? body.tenancy_id.trim() : ''
+      let tenancyQuery = supabase
         .from('storage_tenancies')
         .select('*, customers(stripe_customer_id, stripe_payment_method_id), storage_units(unit_number)')
-        .eq('unit_id', body.unit_id)
         .is('end_date', null)
+
+      tenancyQuery = tenancyId
+        ? tenancyQuery.eq('id', tenancyId)
+        : tenancyQuery.eq('unit_id', body.unit_id)
+
+      const { data: tenancy, error } = await tenancyQuery
         .maybeSingle()
 
-      if (error || !tenancy) return new Response(JSON.stringify({ error: 'no active tenancy for unit' }), { status: 404, headers: CORS })
+      if (error || !tenancy) return new Response(JSON.stringify({ error: 'no active tenancy found' }), { status: 404, headers: CORS })
 
-      // Flatten unit_number for metadata
-      tenancy.unit_number = (tenancy.storage_units as any)?.unit_number ?? ''
+      tenancy.unit_number = tenancyLabel(tenancy)
 
       const extraAmount = normalizeExtraAmount(body.extra_amount)
       const requestedPeriods = normalizePeriods(body.periods)
@@ -958,7 +987,7 @@ Deno.serve(async (req) => {
     }
 
     if (req.headers.get('Authorization')) {
-      return json({ error: 'unit_id required for manual billing.' }, 400)
+      return json({ error: 'unit_id or tenancy_id required for manual billing.' }, 400)
     }
 
     // ── daily cron: charge all due units ─────────────────────────────────────
@@ -989,7 +1018,7 @@ Deno.serve(async (req) => {
     const results = { charged: 0, skipped: 0, failed: 0 }
 
     for (const tenancy of due) {
-      tenancy.unit_number = (tenancy.storage_units as any)?.unit_number ?? ''
+      tenancy.unit_number = tenancyLabel(tenancy)
       try {
         const billingPeriod = currentPeriodLabel(tenancy.billing_day)
         const idempotencyKey = makeIdempotencyKey('cron', tenancy.id, billingPeriod)
