@@ -2548,6 +2548,22 @@ export default function Storage() {
               </div>
             </div>
 
+            {portableAssets.length > 0 && (
+              <div>
+                <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+                  Portable Units ({filteredPortable.length})
+                </h2>
+                <div className="space-y-2">
+                  {filteredPortable.map(a => (
+                    <PortableUnitCard key={a.id} asset={a} rental={rentals[a.id]} isPaid={portablePaidIds.has(a.id)} isDeployed={deployedIds.has(a.id)} onTap={setSelectedPortable} />
+                  ))}
+                  {q && filteredPortable.length === 0 && (
+                    <p className="text-muted-foreground text-sm text-center mt-4">No portable units match "{query}"</p>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div>
               <div className="flex items-center justify-between mb-2">
                 <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
@@ -2575,22 +2591,6 @@ export default function Storage() {
                 )}
               </div>
             </div>
-
-            {portableAssets.length > 0 && (
-              <div>
-                <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-                  Portable Units ({filteredPortable.length})
-                </h2>
-                <div className="space-y-2">
-                  {filteredPortable.map(a => (
-                    <PortableUnitCard key={a.id} asset={a} rental={rentals[a.id]} isPaid={portablePaidIds.has(a.id)} isDeployed={deployedIds.has(a.id)} onTap={setSelectedPortable} />
-                  ))}
-                  {q && filteredPortable.length === 0 && (
-                    <p className="text-muted-foreground text-sm text-center mt-4">No portable units match "{query}"</p>
-                  )}
-                </div>
-              </div>
-            )}
           </>
         )}
       </div>
