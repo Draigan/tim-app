@@ -24,7 +24,7 @@ function emailsFromEnv(...names: string[]): string[] {
 const BILLING_ADMIN_EMAILS = emailsFromEnv('BILLING_ADMIN_EMAILS', 'ADMIN_EMAILS')
 const BILLING_ROLES = new Set(['admin', 'billing', 'billing_admin'])
 const INVITE_DAYS = 30
-const DEFAULT_RETURN_ORIGIN = Deno.env.get('APP_PUBLIC_ORIGIN') ?? 'https://fenelonless.ca'
+const DEFAULT_RETURN_ORIGIN = Deno.env.get('APP_PUBLIC_ORIGIN') ?? 'https://timberfellstorage.ca'
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -174,7 +174,7 @@ Deno.serve(async (req) => {
     const normalized = digits.length === 10 ? '+1' + digits : '+' + digits
     const firstName = customer.name?.split(' ')[0] ?? 'there'
     const msg = [
-      `Hi ${firstName}, Fenelon Less Storage, a Timberfell Company, is inviting you to save a payment card for automatic billing.`,
+      `Hi ${firstName}, Timberfell Storage is inviting you to save a payment card for automatic billing.`,
       `This secure link is valid for ${INVITE_DAYS} days and opens a fresh Stripe card page when you tap it.`,
       'Secure card link:',
       url,

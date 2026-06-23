@@ -62,7 +62,7 @@ const supabase = createClient(
 
 function allowedOrigins(): string[] {
   const raw = Deno.env.get('PUBLIC_STORAGE_AVAILABILITY_ORIGINS')?.trim()
-  if (!raw) return ['*']
+  if (!raw) return ['https://timberfellstorage.ca']
   return raw.split(',').map(origin => origin.trim()).filter(Boolean)
 }
 

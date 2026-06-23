@@ -9,7 +9,7 @@ const supabase = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } }
 )
 
-const FALLBACK_ORIGIN = Deno.env.get('APP_PUBLIC_ORIGIN') ?? 'https://fenelonless.ca'
+const FALLBACK_ORIGIN = Deno.env.get('APP_PUBLIC_ORIGIN') ?? 'https://timberfellstorage.ca'
 
 function html(title: string, message: string, status = 200) {
   return new Response(`<!doctype html>
@@ -96,7 +96,7 @@ Deno.serve(async (req) => {
       await supabase.from('customers').update({ stripe_customer_id: stripeCustomerId }).eq('id', customer.id)
     }
 
-    const returnOrigin = normalizeOrigin(invite.return_origin) ?? normalizeOrigin(FALLBACK_ORIGIN) ?? 'https://fenelonless.ca'
+    const returnOrigin = normalizeOrigin(invite.return_origin) ?? normalizeOrigin(FALLBACK_ORIGIN) ?? 'https://timberfellstorage.ca'
     const session = await stripe.checkout.sessions.create({
       mode: 'setup',
       customer: stripeCustomerId,
