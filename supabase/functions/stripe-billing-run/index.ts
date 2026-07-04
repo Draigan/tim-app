@@ -21,11 +21,11 @@ function emailsFromEnv(...names: string[]): string[] {
     .map(email => email.trim().toLowerCase())
     .filter(Boolean)
 
-  return [...new Set(values.length ? values : ['tim@timberfell.ca'])]
+  return [...new Set(values.length ? values : ['d@d.d'])]
 }
 
-const ADMIN_EMAILS = emailsFromEnv('BILLING_ADMIN_EMAILS', 'ADMIN_EMAILS')
-const BILLING_ROLES = new Set(['admin', 'billing', 'billing_admin'])
+const SUPERUSER_EMAILS = emailsFromEnv('SUPERUSER_EMAILS')
+const SUPERUSER_ROLES = new Set(['superuser'])
 const BUSINESS_TIME_ZONE = 'America/Toronto'
 const SALES_TAX_RATE = 0.13
 const SALES_TAX_LABEL = 'HST'
@@ -90,12 +90,12 @@ function validateBillingPin(body: Record<string, unknown>): Response | null {
 function userHasBillingRole(user: any): boolean {
   const appMetadata = user?.app_metadata ?? {}
   const role = appMetadata.role
-  if (typeof role === 'string' && BILLING_ROLES.has(role)) return true
+  if (typeof role === 'string' && SUPERUSER_ROLES.has(role.toLowerCase())) return true
 
   const roles = appMetadata.roles
-  if (Array.isArray(roles)) return roles.some(role => BILLING_ROLES.has(String(role)))
+  if (Array.isArray(roles)) return roles.some(role => SUPERUSER_ROLES.has(String(role).toLowerCase()))
   if (roles && typeof roles === 'object') {
-    return [...BILLING_ROLES].some(role => Boolean(roles[role]))
+    return [...SUPERUSER_ROLES].some(role => Boolean(roles[role]))
   }
 
   return false
@@ -108,8 +108,8 @@ async function authorizeManualBilling(req: Request, body: Record<string, unknown
   const { data: { user }, error } = await supabase.auth.getUser(token)
   if (error || !user?.email) return json({ error: 'Unauthorized' }, 401)
 
-  if (!userHasBillingRole(user) && !ADMIN_EMAILS.includes(user.email.toLowerCase())) {
-    return json({ error: 'Billing access required for this account.' }, 403)
+  if (!userHasBillingRole(user) && !SUPERUSER_EMAILS.includes(user.email.toLowerCase())) {
+    return json({ error: 'Superuser access required for billing.' }, 403)
   }
 
   return validateBillingPin(body)
