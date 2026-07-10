@@ -11,7 +11,7 @@ import { ArrowLeft, Truck, MapPin, Calendar, User, Phone, Pencil, BookMarked, Tr
 import { formatPhone, formatPhoneInput } from '@/lib/utils'
 import { ICON_OPTIONS, iconImgUrl } from '@/lib/icons'
 import { geocodeAddress } from '@/lib/mapbox'
-import { useIsAdmin } from '@/lib/useIsAdmin'
+import { useAccess } from '@/lib/useAccess'
 
 function fmtDate(d) {
   return new Date(d + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
@@ -250,7 +250,7 @@ export default function AssetDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
   const { state: routeState } = useLocation()
-  const isAdmin = useIsAdmin()
+  const { canManageAssets, canManageCalendar } = useAccess()
   const [asset, setAsset] = useState(null)
   const [deployments, setDeployments] = useState([])
   const [reservations, setReservations] = useState([])
@@ -293,7 +293,7 @@ export default function AssetDetail() {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 min-w-0">
             <h1 className="text-xl font-semibold truncate">{asset.label}</h1>
-            {isAdmin && (
+            {canManageAssets && (
               <button onClick={() => setShowEdit(true)} className="text-muted-foreground hover:text-foreground flex-shrink-0">
                 <Pencil size={14} />
               </button>
@@ -304,7 +304,7 @@ export default function AssetDetail() {
           </p>
         </div>
         <div className="flex flex-col gap-1.5 flex-shrink-0">
-          {isAdmin && (
+          {canManageCalendar && (
             <Button size="sm" variant="outline" onClick={() => setShowReserve(true)}>
               <BookMarked size={14} />
               Reserve
@@ -380,7 +380,7 @@ export default function AssetDetail() {
                           {fmtDate(res.from_date)} → {fmtDate(res.to_date)}
                         </span>
                       </div>
-                      {isAdmin && (
+                      {canManageCalendar && (
                         <button onClick={() => setConfirmDeleteRes(res)} className="text-muted-foreground hover:text-destructive flex-shrink-0">
                           <Trash2 size={14} />
                         </button>
@@ -451,13 +451,13 @@ export default function AssetDetail() {
 
       <EditAssetDialog
         asset={asset}
-        open={showEdit}
+        open={canManageAssets && showEdit}
         onOpenChange={setShowEdit}
         onSaved={() => { setShowEdit(false); load() }}
       />
       <ReserveDialog
         assetId={asset.id}
-        open={showReserve}
+        open={canManageCalendar && showReserve}
         onOpenChange={setShowReserve}
         onSaved={() => { setShowReserve(false); load() }}
       />

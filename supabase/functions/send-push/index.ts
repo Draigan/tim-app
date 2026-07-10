@@ -10,6 +10,7 @@ const CORS = {
 const ADMIN_EMAIL = 'tim@timberfell.ca'
 const MAX_TITLE_LENGTH = 80
 const MAX_BODY_LENGTH = 180
+const NOTIFICATION_INBOX_URL = '/notifications'
 
 webpush.setVapidDetails(
   `mailto:${ADMIN_EMAIL}`,
@@ -64,6 +65,34 @@ async function sendToSubs(subs: any[], payload: string) {
     await supabaseAdmin.from('push_subscriptions').delete().in('endpoint', stale)
   }
   return results.filter(r => r.status === 'fulfilled').length
+}
+
+async function createAppNotification({
+  title,
+  body,
+  url,
+  type = 'admin_push',
+  severity = 'info',
+  metadata = {},
+}: {
+  title: string
+  body: string
+  url: string
+  type?: string
+  severity?: 'info' | 'success' | 'warning' | 'error'
+  metadata?: Record<string, unknown>
+}) {
+  const { error } = await supabaseAdmin.from('app_notifications').insert({
+    audience: 'admin',
+    title,
+    body,
+    url,
+    type,
+    severity,
+    metadata,
+  })
+
+  if (error) throw error
 }
 
 async function chatPayloadForCaller(userId: string, body: Record<string, unknown>): Promise<string | Response> {
@@ -149,7 +178,22 @@ Deno.serve(async (req) => {
 
   // Normal mode: notify admin about employee actions
   if (exclude_user_id === adminUser.id) return json({ ok: true, sent: 0 })
-  const payload = JSON.stringify({ title: cleanedTitle, body: cleanedBody, url: safeUrl(url) })
+  const targetUrl = safeUrl(url)
+  const payload = JSON.stringify({ title: cleanedTitle, body: cleanedBody, url: NOTIFICATION_INBOX_URL })
+
+  await createAppNotification({
+    title: cleanedTitle,
+    body: cleanedBody,
+    url: targetUrl,
+    type: 'admin_push',
+    severity: 'info',
+    metadata: {
+      sender_user_id: user.id,
+    },
+  }).catch(err => {
+    console.error('Admin app notification failed.', err)
+  })
+
   const { data: subs } = await supabaseAdmin
     .from('push_subscriptions')
     .select('*')

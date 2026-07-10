@@ -27,10 +27,15 @@ self.addEventListener('push', event => {
 self.addEventListener('notificationclick', event => {
   event.notification.close()
   event.waitUntil(
-    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
-      const url = event.notification.data?.url ?? '/'
-      const match = list.find(c => 'focus' in c)
-      return match ? match.focus() : clients.openWindow(url)
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async list => {
+      const path = event.notification.data?.url ?? '/'
+      const url = new URL(path, self.location.origin).href
+      const match = list.find(c => 'focus' in c && new URL(c.url).origin === self.location.origin)
+      if (!match) return clients.openWindow(url)
+      if ('navigate' in match && new URL(match.url).href !== url) {
+        await match.navigate(url)
+      }
+      return match.focus()
     })
   )
 })

@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useRealtime } from '@/lib/useRealtime'
-import { useIsAdmin } from '@/lib/useIsAdmin'
+import { useAccess } from '@/lib/useAccess'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -22,7 +22,7 @@ function storageAreaLabel(area) {
 
 export default function AssetManager() {
   const navigate = useNavigate()
-  const isAdmin = useIsAdmin()
+  const { canManageAssets, canManageStorage } = useAccess()
   const [assets, setAssets] = useState([])
   const [deployedIds, setDeployedIds] = useState(new Set())
   const [types, setTypes] = useState([])
@@ -55,23 +55,25 @@ export default function AssetManager() {
       supabase.from('assets').select('*, asset_types(name, icon)').eq('archived', false).order('label'),
       supabase.from('active_deployments').select('asset_id'),
       supabase.from('asset_types').select('*').order('name'),
-      supabase.from('storage_units').select('id, unit_number, size, area, notes').order('unit_number'),
-      supabase.from('storage_tenancies').select('unit_id, tenant_name').eq('storage_kind', 'fixed_unit').is('end_date', null),
+      canManageStorage ? supabase.from('storage_units').select('id, unit_number, size, area, notes').order('unit_number') : Promise.resolve({ data: [] }),
+      canManageStorage ? supabase.from('storage_tenancies').select('unit_id, tenant_name').eq('storage_kind', 'fixed_unit').is('end_date', null) : Promise.resolve({ data: [] }),
     ])
     if (assetData) setAssets(assetData)
     if (deployments) setDeployedIds(new Set(deployments.map(d => d.asset_id)))
     if (typeData) setTypes(typeData)
-    if (unitData) {
+    if (canManageStorage && unitData) {
       const tenantByUnit = Object.fromEntries((tenancyData ?? []).map(t => [t.unit_id, t.tenant_name]))
       setStorageUnits(unitData.map(u => ({ ...u, tenant_name: tenantByUnit[u.id] ?? null })))
+    } else {
+      setStorageUnits([])
     }
-  }, [])
+  }, [canManageStorage])
 
   useEffect(() => {
     const timer = setTimeout(fetchAll, 0)
     return () => clearTimeout(timer)
   }, [fetchAll])
-  useRealtime(['assets', 'asset_types', 'deployments', 'storage_units', 'storage_tenancies'], fetchAll)
+  useRealtime(canManageStorage ? ['assets', 'asset_types', 'deployments', 'storage_units', 'storage_tenancies'] : ['assets', 'asset_types', 'deployments'], fetchAll)
 
   async function addType() {
     if (!newTypeName.trim()) return
@@ -175,7 +177,7 @@ export default function AssetManager() {
     return acc
   }, {})
 
-  if (!isAdmin) return <div className="flex items-center justify-center h-full text-muted-foreground text-sm">Not available</div>
+  if (!canManageAssets) return <div className="flex items-center justify-center h-full text-muted-foreground text-sm">Not available</div>
 
   return (
     <div className="h-full flex flex-col">
@@ -247,16 +249,18 @@ export default function AssetManager() {
                   <span className="text-sm font-medium">{type.name}</span>
                 </div>
                 <div className="flex items-center gap-3">
-                  <button
-                    title={type.is_storage ? 'Shown on Storage tab' : 'Not on Storage tab'}
-                    className={`transition-colors ${type.is_storage ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}`}
-                    onClick={async () => {
-                      await supabase.from('asset_types').update({ is_storage: !type.is_storage }).eq('id', type.id)
-                      fetchAll()
-                    }}
-                  >
-                    <Warehouse size={15} />
-                  </button>
+                  {canManageStorage && (
+                    <button
+                      title={type.is_storage ? 'Shown on Storage tab' : 'Not on Storage tab'}
+                      className={`transition-colors ${type.is_storage ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}`}
+                      onClick={async () => {
+                        await supabase.from('asset_types').update({ is_storage: !type.is_storage }).eq('id', type.id)
+                        fetchAll()
+                      }}
+                    >
+                      <Warehouse size={15} />
+                    </button>
+                  )}
                   <button
                     className="text-muted-foreground hover:text-destructive transition-colors disabled:opacity-40"
                     onClick={() => { setDeleteError(''); setConfirmDeleteType(type) }}
@@ -270,6 +274,7 @@ export default function AssetManager() {
           </div>
         </div>
 
+        {canManageStorage && (
         <div>
           <div className="flex items-center justify-between mb-3">
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Fixed Storage Units</p>
@@ -309,6 +314,7 @@ export default function AssetManager() {
             )}
           </div>
         </div>
+        )}
       </div>
 
       {/* Rename asset dialog */}
@@ -403,98 +409,102 @@ export default function AssetManager() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={showAddUnit} onOpenChange={v => { if (!v) { setShowAddUnit(false); setUnitError('') } }}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader><DialogTitle>New Storage Unit</DialogTitle></DialogHeader>
-          <div className="space-y-3 mt-2">
-            <div>
-              <p className="text-xs text-muted-foreground mb-1.5">Unit Number</p>
-              <Input placeholder="A1" value={newUnitNumber} onChange={e => setNewUnitNumber(e.target.value)} autoFocus />
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground mb-1.5">Size</p>
-              <Input placeholder='e.g. 10x20, 8ft' value={newUnitSize} onChange={e => setNewUnitSize(e.target.value)} />
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground mb-1.5">Notes</p>
-              <Input placeholder="Location, access info…" value={newUnitNotes} onChange={e => setNewUnitNotes(e.target.value)} />
-            </div>
-            {unitError && <p className="text-sm text-destructive">{unitError}</p>}
-            <div className="flex gap-2 pt-1">
-              <Button variant="outline" className="flex-1" onClick={() => setShowAddUnit(false)} disabled={savingUnit}>Cancel</Button>
-              <Button className="flex-1" onClick={addStorageUnit} disabled={!newUnitNumber.trim() || savingUnit}>
-                {savingUnit ? 'Adding…' : 'Add Unit'}
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+      {canManageStorage && (
+        <>
+          <Dialog open={showAddUnit} onOpenChange={v => { if (!v) { setShowAddUnit(false); setUnitError('') } }}>
+            <DialogContent className="max-w-sm">
+              <DialogHeader><DialogTitle>New Storage Unit</DialogTitle></DialogHeader>
+              <div className="space-y-3 mt-2">
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1.5">Unit Number</p>
+                  <Input placeholder="A1" value={newUnitNumber} onChange={e => setNewUnitNumber(e.target.value)} autoFocus />
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1.5">Size</p>
+                  <Input placeholder='e.g. 10x20, 8ft' value={newUnitSize} onChange={e => setNewUnitSize(e.target.value)} />
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1.5">Notes</p>
+                  <Input placeholder="Location, access info…" value={newUnitNotes} onChange={e => setNewUnitNotes(e.target.value)} />
+                </div>
+                {unitError && <p className="text-sm text-destructive">{unitError}</p>}
+                <div className="flex gap-2 pt-1">
+                  <Button variant="outline" className="flex-1" onClick={() => setShowAddUnit(false)} disabled={savingUnit}>Cancel</Button>
+                  <Button className="flex-1" onClick={addStorageUnit} disabled={!newUnitNumber.trim() || savingUnit}>
+                    {savingUnit ? 'Adding…' : 'Add Unit'}
+                  </Button>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
 
-      <Dialog open={!!editUnit} onOpenChange={open => { if (!open) { setEditUnit(null); setUnitError('') } }}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader><DialogTitle>Edit Storage Unit</DialogTitle></DialogHeader>
-          <div className="space-y-3 mt-2">
-            <div>
-              <p className="text-xs text-muted-foreground mb-1.5">Unit Number</p>
-              <Input
-                value={editUnitNumber}
-                onChange={e => setEditUnitNumber(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), saveStorageUnit())}
-                autoFocus
-              />
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground mb-1.5">Size</p>
-              <Input
-                placeholder="e.g. 10x20, 8ft"
-                value={editUnitSize}
-                onChange={e => setEditUnitSize(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), saveStorageUnit())}
-              />
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground mb-1.5">Area</p>
-              <Select value={editUnitArea} onValueChange={setEditUnitArea}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {STORAGE_AREAS.map(area => (
-                    <SelectItem key={area.value} value={area.value}>{area.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground mb-1.5">Notes</p>
-              <Input
-                placeholder="Location, access info…"
-                value={editUnitNotes}
-                onChange={e => setEditUnitNotes(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), saveStorageUnit())}
-              />
-            </div>
-            {unitError && <p className="text-sm text-destructive">{unitError}</p>}
-            <div className="flex gap-2 pt-1">
-              <Button variant="outline" className="flex-1" onClick={() => setEditUnit(null)} disabled={savingUnit}>Cancel</Button>
-              <Button className="flex-1" onClick={saveStorageUnit} disabled={!editUnitNumber.trim() || savingUnit}>
-                {savingUnit ? 'Saving…' : 'Save'}
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+          <Dialog open={!!editUnit} onOpenChange={open => { if (!open) { setEditUnit(null); setUnitError('') } }}>
+            <DialogContent className="max-w-sm">
+              <DialogHeader><DialogTitle>Edit Storage Unit</DialogTitle></DialogHeader>
+              <div className="space-y-3 mt-2">
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1.5">Unit Number</p>
+                  <Input
+                    value={editUnitNumber}
+                    onChange={e => setEditUnitNumber(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), saveStorageUnit())}
+                    autoFocus
+                  />
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1.5">Size</p>
+                  <Input
+                    placeholder="e.g. 10x20, 8ft"
+                    value={editUnitSize}
+                    onChange={e => setEditUnitSize(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), saveStorageUnit())}
+                  />
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1.5">Area</p>
+                  <Select value={editUnitArea} onValueChange={setEditUnitArea}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {STORAGE_AREAS.map(area => (
+                        <SelectItem key={area.value} value={area.value}>{area.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1.5">Notes</p>
+                  <Input
+                    placeholder="Location, access info…"
+                    value={editUnitNotes}
+                    onChange={e => setEditUnitNotes(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), saveStorageUnit())}
+                  />
+                </div>
+                {unitError && <p className="text-sm text-destructive">{unitError}</p>}
+                <div className="flex gap-2 pt-1">
+                  <Button variant="outline" className="flex-1" onClick={() => setEditUnit(null)} disabled={savingUnit}>Cancel</Button>
+                  <Button className="flex-1" onClick={saveStorageUnit} disabled={!editUnitNumber.trim() || savingUnit}>
+                    {savingUnit ? 'Saving…' : 'Save'}
+                  </Button>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
 
-      <Dialog open={!!confirmDeleteUnit} onOpenChange={open => !open && setConfirmDeleteUnit(null)}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader><DialogTitle>Delete unit "{confirmDeleteUnit?.unit_number}"?</DialogTitle></DialogHeader>
-          <p className="text-sm text-muted-foreground mt-1">This permanently removes the unit and all its payment history.</p>
-          <div className="flex gap-2 mt-4">
-            <Button variant="outline" className="flex-1" onClick={() => setConfirmDeleteUnit(null)}>Cancel</Button>
-            <Button variant="destructive" className="flex-1" onClick={deleteStorageUnit}>Delete</Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+          <Dialog open={!!confirmDeleteUnit} onOpenChange={open => !open && setConfirmDeleteUnit(null)}>
+            <DialogContent className="max-w-sm">
+              <DialogHeader><DialogTitle>Delete unit "{confirmDeleteUnit?.unit_number}"?</DialogTitle></DialogHeader>
+              <p className="text-sm text-muted-foreground mt-1">This permanently removes the unit and all its payment history.</p>
+              <div className="flex gap-2 mt-4">
+                <Button variant="outline" className="flex-1" onClick={() => setConfirmDeleteUnit(null)}>Cancel</Button>
+                <Button variant="destructive" className="flex-1" onClick={deleteStorageUnit}>Delete</Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+        </>
+      )}
     </div>
   )
 }

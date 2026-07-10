@@ -51,6 +51,12 @@ enabled = true
 verify_jwt = false
 entrypoint = "./functions/public-storage-availability/index.ts"
 
+[functions.storage-booking-checkout]
+enabled = true
+verify_jwt = false
+import_map = "./functions/storage-booking-checkout/deno.json"
+entrypoint = "./functions/storage-booking-checkout/index.ts"
+
 [functions.stripe-billing-run]
 enabled = true
 verify_jwt = false

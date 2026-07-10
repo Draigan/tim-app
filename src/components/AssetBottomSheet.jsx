@@ -6,10 +6,11 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { supabase } from '@/lib/supabase'
 import { geocodeAddress } from '@/lib/mapbox'
-import { getMarkerColor, formatPhone, formatPhoneInput } from '@/lib/utils'
+import { getMarkerColor, formatPhone, formatPhoneInput, getErrorMessage, newClientId, retryTransient, throwSupabaseError } from '@/lib/utils'
 import { Textarea } from '@/components/ui/textarea'
 import { Phone, MapPin, Calendar, User, ChevronLeft, Navigation, Star } from 'lucide-react'
 import { useNavigate, useLocation } from 'react-router-dom'
+import { useOnlineStatus } from '@/lib/useOnlineStatus'
 
 function expiryBadge(expiresAt) {
   if (!expiresAt) return { label: 'No expiry set', variant: 'secondary' }
@@ -29,6 +30,9 @@ function UpdateDialog({ deployment, open, onOpenChange, onSaved }) {
   const [expiresAt, setExpiresAt] = useState('')
   const [notes, setNotes] = useState('')
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+  const [newDeploymentId, setNewDeploymentId] = useState(() => newClientId())
+  const isOnline = useOnlineStatus()
   const timer = useRef(null)
 
   useEffect(() => {
@@ -40,10 +44,13 @@ function UpdateDialog({ deployment, open, onOpenChange, onSaved }) {
       setExpiresAt(deployment.expires_at ?? '')
       setNotes(deployment.notes ?? '')
       setSuggestions([])
+      setSaveError('')
+      setNewDeploymentId(newClientId())
     }
   }, [open, deployment])
 
   function handleAddressChange(value) {
+    if (saveError) setSaveError('')
     setAddress(value)
     setSelectedCoords(null)
     clearTimeout(timer.current)
@@ -55,6 +62,7 @@ function UpdateDialog({ deployment, open, onOpenChange, onSaved }) {
   }
 
   function selectSuggestion(feature) {
+    if (saveError) setSaveError('')
     setAddress(feature.place_name)
     setSelectedCoords({ lng: feature.center[0], lat: feature.center[1] })
     setSuggestions([])
@@ -62,34 +70,54 @@ function UpdateDialog({ deployment, open, onOpenChange, onSaved }) {
 
   async function handleSave() {
     if (!selectedCoords) return
+    if (!isOnline) {
+      setSaveError('Deployment updates require an internet connection.')
+      return
+    }
     setSaving(true)
+    setSaveError('')
     const addressChanged = address !== deployment.address
     const now = new Date().toISOString()
 
-    if (addressChanged) {
-      await supabase.from('deployments').update({ picked_up_at: now }).eq('id', deployment.id)
-      await supabase.from('deployments').insert({
-        asset_id: deployment.asset_id,
-        address,
-        lat: selectedCoords.lat,
-        lng: selectedCoords.lng,
-        customer_name: customerName || null,
-        customer_phone: customerPhone || null,
-        notes: notes || null,
-        expires_at: expiresAt || null,
-        dropped_at: now,
-      })
-    } else {
-      await supabase.from('deployments').update({
-        customer_name: customerName || null,
-        customer_phone: customerPhone || null,
-        expires_at: expiresAt || null,
-        notes: notes || null,
-      }).eq('id', deployment.id)
-    }
+    try {
+      await retryTransient(async () => {
+        if (addressChanged) {
+          throwSupabaseError(await supabase.from('deployments').update({ picked_up_at: now }).eq('id', deployment.id))
+          const insertResult = await supabase.from('deployments').insert({
+            id: newDeploymentId,
+            asset_id: deployment.asset_id,
+            address,
+            lat: selectedCoords.lat,
+            lng: selectedCoords.lng,
+            customer_name: customerName || null,
+            customer_phone: customerPhone || null,
+            notes: notes || null,
+            expires_at: expiresAt || null,
+            dropped_at: now,
+          })
+          if (insertResult.error?.code === '23505') {
+            return throwSupabaseError(
+              await supabase.from('deployments').select('id').eq('id', newDeploymentId).single()
+            )
+          }
+          return throwSupabaseError(insertResult)
+        }
 
-    setSaving(false)
-    onSaved()
+        return throwSupabaseError(await supabase.from('deployments').update({
+          customer_name: customerName || null,
+          customer_phone: customerPhone || null,
+          expires_at: expiresAt || null,
+          notes: notes || null,
+        }).eq('id', deployment.id))
+      })
+
+      onSaved()
+    } catch (err) {
+      console.error('deployment update failed:', err)
+      setSaveError(getErrorMessage(err, 'Could not update deployment. Check your connection and try again.'))
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -148,9 +176,13 @@ function UpdateDialog({ deployment, open, onOpenChange, onSaved }) {
             <p className="text-xs text-muted-foreground mb-1.5">Notes</p>
             <Input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Placement instructions…" />
           </div>
+          {saveError && <p className="text-sm text-destructive">{saveError}</p>}
+          {!isOnline && !saveError && (
+            <p className="text-sm text-destructive">Deployment updates require an internet connection.</p>
+          )}
           <div className="flex gap-2 pt-1">
             <Button variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>Cancel</Button>
-            <Button className="flex-1" onClick={handleSave} disabled={saving || !selectedCoords}>
+            <Button className="flex-1" onClick={handleSave} disabled={saving || !selectedCoords || !isOnline}>
               {saving ? 'Saving…' : 'Save'}
             </Button>
           </div>

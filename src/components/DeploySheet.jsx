@@ -4,11 +4,13 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sh
 import { Button } from '@/components/ui/button'
 import { supabase } from '@/lib/supabase'
 import { Search, X, Truck } from 'lucide-react'
+import { useOnlineStatus } from '@/lib/useOnlineStatus'
 
 export default function DeploySheet({ open, onClose }) {
   const [assets, setAssets] = useState([])
   const [loading, setLoading] = useState(false)
   const [query, setQuery] = useState('')
+  const isOnline = useOnlineStatus()
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -54,6 +56,12 @@ export default function DeploySheet({ open, onClose }) {
         </div>
 
         <div className="flex-1 overflow-y-auto mt-3 space-y-5">
+          {!isOnline && (
+            <p className="text-sm text-destructive rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
+              Deployment requires an internet connection.
+            </p>
+          )}
+
           {loading && <p className="text-sm text-muted-foreground text-center py-8">Loading…</p>}
 
           {!loading && filtered.length === 0 && (
@@ -73,7 +81,7 @@ export default function DeploySheet({ open, onClose }) {
                       {asset.size && <p className="text-sm text-muted-foreground">{asset.size}</p>}
                       {asset.notes && <p className="text-xs text-muted-foreground mt-0.5 truncate">{asset.notes}</p>}
                     </div>
-                    <Button size="sm" className="flex-shrink-0" onClick={() => { onClose(); navigate(`/deploy/${asset.id}`) }}>
+                    <Button size="sm" className="flex-shrink-0" disabled={!isOnline} onClick={() => { onClose(); navigate(`/deploy/${asset.id}`) }}>
                       <Truck size={14} />
                       Deploy
                     </Button>

@@ -9,7 +9,9 @@ const supabase = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } }
 )
 
-const FALLBACK_ORIGIN = Deno.env.get('APP_PUBLIC_ORIGIN') ?? 'https://timberfellstorage.ca'
+const FALLBACK_ORIGIN = Deno.env.get('CARD_SETUP_RETURN_ORIGIN')
+  ?? Deno.env.get('PAYMENT_PORTAL_ORIGIN')
+  ?? 'https://timberfellstorage.ca'
 
 function html(title: string, message: string, status = 200) {
   return new Response(`<!doctype html>
@@ -45,6 +47,23 @@ function normalizeOrigin(value: unknown): string | null {
   } catch {
     return null
   }
+}
+
+function allowedReturnOrigins(): string[] {
+  const fallback = normalizeOrigin(FALLBACK_ORIGIN) ?? 'https://timberfellstorage.ca'
+  const raw = Deno.env.get('CARD_SETUP_ALLOWED_RETURN_ORIGINS')?.trim()
+  if (!raw) return [fallback, 'https://www.timberfellstorage.ca']
+  return raw
+    .split(',')
+    .map(origin => normalizeOrigin(origin))
+    .filter(Boolean) as string[]
+}
+
+function cardSetupReturnOrigin(value: unknown): string {
+  const origin = normalizeOrigin(value)
+  const allowed = allowedReturnOrigins()
+  if (origin && allowed.includes(origin)) return origin
+  return allowed[0] ?? 'https://timberfellstorage.ca'
 }
 
 async function sha256Hex(value: string): Promise<string> {
@@ -96,7 +115,7 @@ Deno.serve(async (req) => {
       await supabase.from('customers').update({ stripe_customer_id: stripeCustomerId }).eq('id', customer.id)
     }
 
-    const returnOrigin = normalizeOrigin(invite.return_origin) ?? normalizeOrigin(FALLBACK_ORIGIN) ?? 'https://timberfellstorage.ca'
+    const returnOrigin = cardSetupReturnOrigin(invite.return_origin)
     const session = await stripe.checkout.sessions.create({
       mode: 'setup',
       customer: stripeCustomerId,

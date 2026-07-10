@@ -4,7 +4,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sh
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { supabase } from '@/lib/supabase'
-import { formatPhone, formatPhoneInput } from '@/lib/utils'
+import { formatPhone, formatPhoneInput, getErrorMessage, newClientId, retryTransient, throwSupabaseError } from '@/lib/utils'
 import { geocodeAddress } from '@/lib/mapbox'
 import { CUSTOMER_SAFE_COLUMNS } from '@/lib/customerFields'
 
@@ -18,6 +18,8 @@ export default function CustomerPicker({ value, onChange }) {
   const [form, setForm]           = useState(EMPTY_NEW)
   const [addrSuggestions, setAddrSuggestions] = useState([])
   const [creating, setCreating]   = useState(false)
+  const [createError, setCreateError] = useState('')
+  const [createCustomerId, setCreateCustomerId] = useState(() => newClientId())
   const inputRef  = useRef(null)
   const addrTimer = useRef(null)
 
@@ -46,6 +48,7 @@ export default function CustomerPicker({ value, onChange }) {
   }
 
   function setField(field, val) {
+    if (createError) setCreateError('')
     setForm(f => ({ ...f, [field]: val }))
   }
 
@@ -67,23 +70,42 @@ export default function CustomerPicker({ value, onChange }) {
   async function handleCreate() {
     if (!form.name.trim()) return
     setCreating(true)
-    const { data } = await supabase
-      .from('customers')
-      .insert({
-        name:    form.name.trim()    || null,
-        phone:   form.phone.trim()   || null,
-        email:   form.email.trim()   || null,
-        address: form.address.trim() || null,
-        notes:   form.notes.trim()   || null,
+    setCreateError('')
+    try {
+      const { data } = await retryTransient(async () => {
+        const result = await supabase
+          .from('customers')
+          .insert({
+            id:      createCustomerId,
+            name:    form.name.trim()    || null,
+            phone:   form.phone.trim()   || null,
+            email:   form.email.trim()   || null,
+            address: form.address.trim() || null,
+            notes:   form.notes.trim()   || null,
+          })
+          .select(CUSTOMER_SAFE_COLUMNS)
+          .single()
+
+        if (result.error?.code === '23505') {
+          return throwSupabaseError(
+            await supabase.from('customers').select(CUSTOMER_SAFE_COLUMNS).eq('id', createCustomerId).single()
+          )
+        }
+
+        return throwSupabaseError(result)
       })
-      .select(CUSTOMER_SAFE_COLUMNS)
-      .single()
-    setCreating(false)
-    if (data) {
+      if (!data) throw new Error('Could not create customer.')
+
       setCustomers(prev => [...prev, data].sort((a, b) => (a.name ?? '').localeCompare(b.name ?? '')))
       select(data)
       setShowCreate(false)
       setForm(EMPTY_NEW)
+      setCreateCustomerId(newClientId())
+    } catch (err) {
+      console.error('customer create failed:', err)
+      setCreateError(getErrorMessage(err, 'Could not create customer. Check your connection and try again.'))
+    } finally {
+      setCreating(false)
     }
   }
 
@@ -157,7 +179,15 @@ export default function CustomerPicker({ value, onChange }) {
         </div>
       )}
 
-      <Sheet open={showCreate} onOpenChange={v => { setShowCreate(v); if (!v) { setForm(EMPTY_NEW); setAddrSuggestions([]) } }}>
+      <Sheet open={showCreate} onOpenChange={v => {
+        setShowCreate(v)
+        if (!v) {
+          setForm(EMPTY_NEW)
+          setAddrSuggestions([])
+          setCreateError('')
+          setCreateCustomerId(newClientId())
+        }
+      }}>
         <SheetContent side="bottom" className="max-h-[90vh] overflow-y-auto">
           <SheetHeader className="mb-5">
             <SheetTitle>New Customer</SheetTitle>
@@ -205,6 +235,7 @@ export default function CustomerPicker({ value, onChange }) {
               <p className="text-xs text-muted-foreground mb-1.5">Notes</p>
               <Input value={form.notes} onChange={e => setField('notes', e.target.value)} placeholder="Anything useful…" />
             </div>
+            {createError && <p className="text-sm text-destructive">{createError}</p>}
             <div className="flex gap-2 pt-1">
               <Button variant="outline" className="flex-1" type="button" onClick={() => setShowCreate(false)}>Cancel</Button>
               <Button className="flex-1" type="button" disabled={!form.name.trim() || creating} onClick={handleCreate}>

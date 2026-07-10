@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, CheckCircle2, MoreHorizontal, Plus } from 'lucide-react'
+import { ArrowLeft, CheckCheck, CheckCircle2, MoreHorizontal, Plus, UserCheck } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import PinModal from '@/components/PinModal'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 
@@ -39,6 +40,10 @@ export default function AdminRevenue() {
   const [manualModal, setManualModal] = useState(false)
   const [manualAmount, setManualAmount] = useState('')
   const [manualNote, setManualNote] = useState('')
+  const [markAllPinOpen, setMarkAllPinOpen] = useState(false)
+  const [markingAll, setMarkingAll] = useState(false)
+  const [markClientModal, setMarkClientModal] = useState(null)
+  const [markingClient, setMarkingClient] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -54,11 +59,11 @@ export default function AdminRevenue() {
       { data: hidden },
     ] = await Promise.all([
       supabase.from('storage_payments').select('id, tenancy_id, amount, subtotal_amount, tax_amount, paid_at').gte('paid_at', START_DATE).order('paid_at', { ascending: false }),
-      supabase.from('storage_tenancies').select('id, unit_id, storage_kind, item_type, custom_item_type, item_label, tenant_name, customers(name)'),
+      supabase.from('storage_tenancies').select('id, unit_id, customer_id, storage_kind, item_type, custom_item_type, item_label, tenant_name, customers(name)'),
       supabase.from('storage_units').select('id, unit_number'),
       supabase.from('portable_storage_payments').select('id, asset_id, amount, subtotal_amount, tax_amount, paid_at').gte('paid_at', START_DATE).order('paid_at', { ascending: false }),
       supabase.from('assets').select('id, label, size'),
-      supabase.from('portable_storage_rentals').select('asset_id, tenant_name, customers(name)'),
+      supabase.from('portable_storage_rentals').select('asset_id, customer_id, tenant_name, customers(name)'),
       supabase.from('admin_manual_payments').select('id, amount, note, paid_at').gte('paid_at', START_DATE).order('paid_at', { ascending: false }),
       supabase.from('admin_payment_received').select('payment_type, payment_id, amount_received'),
       supabase.from('admin_payment_hidden').select('payment_type, payment_id'),
@@ -76,12 +81,15 @@ export default function AdminRevenue() {
       receivedMap.set(key, (receivedMap.get(key) ?? 0) + Number(r.amount_received || 0))
     }
 
-    function buildRow(type, id, label, tenantName, amount, subtotalAmount, taxAmount, paidAt) {
+    function buildRow(type, id, label, tenantName, amount, subtotalAmount, taxAmount, paidAt, clientKey = null) {
       const revenueAmount = subtotalAmount ?? amount
       const adminShare    = revenueAmount * ADMIN_SHARE
       const totalReceived = receivedMap.get(`${type}:${id}`) ?? 0
+      const clientName    = tenantName?.trim() || 'Unknown client'
       return {
         key: `${type}:${id}`, id, type, label, tenantName,
+        clientKey: clientKey || (tenantName?.trim() ? `tenant:${tenantName.trim().toLowerCase()}` : `payment:${type}:${id}`),
+        clientName,
         amount, subtotalAmount: revenueAmount, taxAmount, adminShare, totalReceived,
         remaining: adminShare - totalReceived,
         paidAt,
@@ -98,7 +106,8 @@ export default function AdminRevenue() {
         Number(p.amount || 0),
         p.subtotal_amount === null || p.subtotal_amount === undefined ? null : Number(p.subtotal_amount || 0),
         Number(p.tax_amount || 0),
-        p.paid_at
+        p.paid_at,
+        tenancy?.customer_id ? `customer:${tenancy.customer_id}` : null
       )
     })
 
@@ -112,7 +121,8 @@ export default function AdminRevenue() {
         Number(p.amount || 0),
         p.subtotal_amount === null || p.subtotal_amount === undefined ? null : Number(p.subtotal_amount || 0),
         Number(p.tax_amount || 0),
-        p.paid_at
+        p.paid_at,
+        rental?.customer_id ? `customer:${rental.customer_id}` : null
       )
     })
 
@@ -164,6 +174,65 @@ export default function AdminRevenue() {
     load()
   }
 
+  async function markAllReceived(pin) {
+    if (pin !== '4321') return { error: 'Incorrect PIN' }
+
+    const outstanding = payments.filter(p => p.remaining > 0.01)
+    if (outstanding.length === 0) {
+      setMarkAllPinOpen(false)
+      return { ok: true }
+    }
+
+    setMarkingAll(true)
+    const { error } = await supabase.from('admin_payment_received').insert(
+      outstanding.map(p => ({
+        payment_type: p.type,
+        payment_id: p.id,
+        amount_received: Number(p.remaining.toFixed(2)),
+      }))
+    )
+    setMarkingAll(false)
+
+    if (error) {
+      console.error('mark all received failed', error)
+      return { error: error.message || 'Could not mark all as received.' }
+    }
+
+    setMarkAllPinOpen(false)
+    await load()
+    return { ok: true }
+  }
+
+  async function markClientReceived(pin) {
+    if (pin !== '4321') return { error: 'Incorrect PIN' }
+    if (!markClientModal) return { error: 'No client selected.' }
+
+    const outstanding = payments.filter(p => p.clientKey === markClientModal.clientKey && p.remaining > 0.01)
+    if (outstanding.length === 0) {
+      setMarkClientModal(null)
+      return { ok: true }
+    }
+
+    setMarkingClient(true)
+    const { error } = await supabase.from('admin_payment_received').insert(
+      outstanding.map(p => ({
+        payment_type: p.type,
+        payment_id: p.id,
+        amount_received: Number(p.remaining.toFixed(2)),
+      }))
+    )
+    setMarkingClient(false)
+
+    if (error) {
+      console.error('mark client received failed', error)
+      return { error: error.message || 'Could not mark this client as received.' }
+    }
+
+    setMarkClientModal(null)
+    await load()
+    return { ok: true }
+  }
+
   async function addManualPayment() {
     const amount = Number(manualAmount)
     if (!Number.isFinite(amount) || amount <= 0) return
@@ -188,6 +257,22 @@ export default function AdminRevenue() {
 
   const pending      = payments.filter(p => p.remaining > 0.01)
   const totalPending = pending.reduce((s, p) => s + p.remaining, 0)
+  const pendingClientGroups = [...pending.reduce((groups, payment) => {
+    const group = groups.get(payment.clientKey) ?? {
+      clientKey: payment.clientKey,
+      clientName: payment.clientName,
+      payments: [],
+      total: 0,
+    }
+    group.payments.push(payment)
+    group.total += payment.remaining
+    groups.set(payment.clientKey, group)
+    return groups
+  }, new Map()).values()]
+    .filter(group => group.payments.length > 1)
+    .sort((a, b) => b.total - a.total || b.payments.length - a.payments.length || a.clientName.localeCompare(b.clientName))
+  const grossTotal    = payments.reduce((s, p) => s + p.amount, 0)
+  const grossSubtotal = payments.reduce((s, p) => s + p.subtotalAmount, 0)
   const manualAmountValue = Number(manualAmount)
   const manualCut = Number.isFinite(manualAmountValue) && manualAmountValue > 0 ? manualAmountValue * ADMIN_SHARE : 0
 
@@ -206,6 +291,23 @@ export default function AdminRevenue() {
 
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
 
+        {/* Gross */}
+        {!loading && payments.length > 0 && (
+          <div className="bg-card border rounded-xl px-4 py-3">
+            <p className="text-xs text-muted-foreground">Gross · {payments.length} entr{payments.length !== 1 ? 'ies' : 'y'}</p>
+            <div className="grid grid-cols-2 gap-3 mt-1">
+              <div>
+                <p className="text-2xl font-bold">${grossSubtotal.toFixed(2)}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">Before taxes</p>
+              </div>
+              <div>
+                <p className="text-2xl font-bold">${grossTotal.toFixed(2)}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">After taxes</p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Summary strip */}
         {!loading && payments.length > 0 && (
           <div className="grid grid-cols-2 gap-3">
@@ -218,6 +320,43 @@ export default function AdminRevenue() {
                 ${payments.reduce((s, p) => s + p.totalReceived, 0).toFixed(2)}
               </p>
               <p className="text-xs text-muted-foreground mt-0.5">{payments.filter(p => p.remaining <= 0.01).length} received</p>
+            </div>
+          </div>
+        )}
+
+        {!loading && pending.length > 0 && (
+          <Button variant="outline" className="w-full gap-2" onClick={() => setMarkAllPinOpen(true)}>
+            <CheckCheck size={16} />
+            Mark all {pending.length} received (${totalPending.toFixed(2)})
+          </Button>
+        )}
+
+        {!loading && pendingClientGroups.length > 0 && (
+          <div className="bg-card border rounded-xl px-4 py-3 space-y-3">
+            <div>
+              <p className="text-sm font-semibold">Pending by client</p>
+              <p className="text-xs text-muted-foreground">Mark every pending receipt for one client.</p>
+            </div>
+            <div className="space-y-2">
+              {pendingClientGroups.map(group => (
+                <div key={group.clientKey} className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">{group.clientName}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {group.payments.length} payment{group.payments.length !== 1 ? 's' : ''} · ${group.total.toFixed(2)} owed
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="flex-shrink-0 gap-1.5"
+                    onClick={() => setMarkClientModal(group)}
+                  >
+                    <UserCheck size={14} />
+                    Received
+                  </Button>
+                </div>
+              ))}
             </div>
           </div>
         )}
@@ -527,6 +666,32 @@ export default function AdminRevenue() {
           </div>
         </SheetContent>
       </Sheet>
+
+      <PinModal
+        open={markAllPinOpen}
+        onClose={() => !markingAll && setMarkAllPinOpen(false)}
+        onConfirm={markAllReceived}
+        loading={markingAll}
+        title="Mark all received"
+        subtitle={`Confirm you received all ${pending.length} pending payment${pending.length !== 1 ? 's' : ''} ($${totalPending.toFixed(2)})`}
+        icon={CheckCheck}
+        pinLabel="Enter admin PIN"
+        confirmLabel="Mark all received"
+      />
+
+      <PinModal
+        open={!!markClientModal}
+        onClose={() => !markingClient && setMarkClientModal(null)}
+        onConfirm={markClientReceived}
+        loading={markingClient}
+        title="Mark client received"
+        subtitle={markClientModal
+          ? `Confirm ${markClientModal.payments.length} pending payment${markClientModal.payments.length !== 1 ? 's' : ''} from ${markClientModal.clientName} ($${markClientModal.total.toFixed(2)})`
+          : ''}
+        icon={UserCheck}
+        pinLabel="Enter admin PIN"
+        confirmLabel="Mark client received"
+      />
     </div>
   )
 }

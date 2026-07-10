@@ -6,6 +6,7 @@ import { useCallback } from 'react'
 import { X } from 'lucide-react'
 import BottomNav from './BottomNav'
 import PushPrompt from './PushPrompt'
+import ConnectionStatus from './ConnectionStatus'
 
 function ReservationBanner() {
   const [alerts, setAlerts] = useState([])
@@ -73,8 +74,9 @@ export default function Layout() {
   return (
     <div className="flex flex-col h-full">
       {showLogo && (
-        <div className="flex items-center px-4 pt-3 pb-1 border-b bg-background flex-shrink-0">
+        <div className="flex items-center justify-between gap-3 px-4 pt-3 pb-1 border-b bg-background flex-shrink-0">
           <img src="/logo.webp" alt="Timberfell" className="h-8 w-auto logo-invert" />
+          <ConnectionStatus />
         </div>
       )}
       <ReservationBanner />

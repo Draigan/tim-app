@@ -326,6 +326,9 @@ const PIN_LENGTH = 4
 function PinModal({ open, onClose, onConfirm, charging, actionType, details }) {
   const [pin, setPin] = useState('')
   const [error, setError] = useState('')
+  const isCash = actionType === 'cash'
+  const isCard = actionType === 'card'
+  const isRemove = actionType === 'remove'
 
   useEffect(() => {
     if (!open) return
@@ -373,7 +376,7 @@ function PinModal({ open, onClose, onConfirm, charging, actionType, details }) {
 
   if (!open) return null
 
-  const { tenantName, unitNumber, periods, monthlyRate, extras, taxTotal = 0, grandTotal } = details
+  const { tenantName, unitNumber, periods = [], monthlyRate, extras = [], taxTotal = 0, grandTotal = 0 } = details
 
   function tap(key) {
     setError('')
@@ -401,26 +404,32 @@ function PinModal({ open, onClose, onConfirm, charging, actionType, details }) {
           <div className="flex items-center gap-3">
             <div className={cn(
               'w-11 h-11 rounded-2xl flex items-center justify-center flex-shrink-0',
-              actionType === 'card' ? 'bg-green-500/15' : 'bg-primary/10'
+              isCard ? 'bg-green-500/15' : isRemove ? 'bg-destructive/10' : 'bg-primary/10'
             )}>
-              {actionType === 'cash'
+              {isCash
                 ? <Banknote size={22} className="text-primary" />
-                : <CreditCard size={22} className="text-green-600" />
+                : isRemove
+                  ? <X size={22} className="text-destructive" />
+                  : <CreditCard size={22} className="text-green-600" />
               }
             </div>
             <div>
               <h2 className="text-base font-bold leading-tight">
-                {actionType === 'cash' ? 'Record cash payment' : 'Charge card'}
+                {isCash ? 'Record cash payment' : isRemove ? 'Remove latest payment' : 'Charge card'}
               </h2>
               <p className="text-xs text-muted-foreground">
-                {actionType === 'cash' ? 'Cash or cheque · enter PIN to confirm' : 'Card on file · enter PIN to confirm'}
+                {isCash
+                  ? 'Cash or cheque · enter PIN to confirm'
+                  : isRemove
+                    ? 'Steps paid-through back by one month'
+                    : 'Card on file · enter PIN to confirm'}
               </p>
             </div>
           </div>
 
           {/* Charge summary */}
           <div>
-            <div className={cn('rounded-xl border divide-y text-sm', actionType === 'card' ? 'bg-green-500/5' : 'bg-muted/40')}>
+            <div className={cn('rounded-xl border divide-y text-sm', isCard ? 'bg-green-500/5' : isRemove ? 'bg-destructive/5' : 'bg-muted/40')}>
               <div className="flex justify-between px-4 py-2.5">
                 <span className="text-muted-foreground">Tenant</span>
                 <span className="font-medium">{tenantName || 'Unknown'}</span>
@@ -467,7 +476,7 @@ function PinModal({ open, onClose, onConfirm, charging, actionType, details }) {
                   className={cn(
                     'w-3 h-3 rounded-full transition-all duration-100',
                     i < pin.length
-                      ? actionType === 'card' ? 'bg-green-500 scale-110' : 'bg-primary scale-110'
+                      ? isCard ? 'bg-green-500 scale-110' : isRemove ? 'bg-destructive scale-110' : 'bg-primary scale-110'
                       : 'bg-muted-foreground/25'
                   )}
                 />
@@ -506,14 +515,15 @@ function PinModal({ open, onClose, onConfirm, charging, actionType, details }) {
             <Button
               className={cn(
                 'flex-1 gap-2',
-                actionType === 'card' && 'bg-green-600 hover:bg-green-700 text-white'
+                isCard && 'bg-green-600 hover:bg-green-700 text-white',
+                isRemove && 'bg-destructive hover:bg-destructive/90 text-destructive-foreground'
               )}
               disabled={pin.length !== PIN_LENGTH || charging}
               onClick={handleConfirm}
             >
               {charging
-                ? <><Loader2 size={14} className="animate-spin" /> {actionType === 'cash' ? 'Saving…' : 'Charging…'}</>
-                : actionType === 'cash' ? <><Banknote size={14} /> Mark paid</> : <><CreditCard size={14} /> Charge card</>
+                ? <><Loader2 size={14} className="animate-spin" /> {isCash ? 'Saving…' : isRemove ? 'Removing…' : 'Charging…'}</>
+                : isCash ? <><Banknote size={14} /> Mark paid</> : isRemove ? <><X size={14} /> Remove</> : <><CreditCard size={14} /> Charge card</>
               }
             </Button>
           </div>
@@ -796,6 +806,7 @@ export default function StorageBilling() {
   const displayName   = isPortable
     ? `${unit.unit_number}${unit.size ? ` · ${unit.size}` : ''}`
     : isCustomerItem ? customerStorageLabel(tenancy) : `Unit ${unit.unit_number}`
+  const latestPayment = history.find(payment => isPeriodLabel(payment.period_label))
 
   function mergeHistoryPayments(payments, periodLabels) {
     const labels = periodLabels ?? payments.map(p => p.period_label)
@@ -1010,9 +1021,53 @@ export default function StorageBilling() {
   }
 
   function handlePinConfirm(pin) {
-    return pendingAction === 'cash'
-      ? handleMarkPaidCharge(pin)
-      : handleChargeCard(pin)
+    if (pendingAction === 'cash') return handleMarkPaidCharge(pin)
+    if (pendingAction === 'remove') return handleRemoveLatestPayment(pin)
+    return handleChargeCard(pin)
+  }
+
+  async function handleRemoveLatestPayment(pin) {
+    if (!latestPayment) return { error: 'No paid months to remove.' }
+
+    setCharging(true)
+    setChargeError('')
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) return { error: 'Sign in again before removing this payment.' }
+
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-billing-run`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'remove_latest_payment',
+          ...(isPortable ? { portable_asset_id: assetId } : isCustomerItem ? { tenancy_id: tenancy.id } : { unit_id: unitId }),
+          billing_pin: pin,
+          request_id: newBillingRequestId(),
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok || data.error) return { error: data.error || 'Could not remove payment.' }
+      if (data.status === 'skipped') {
+        return { error: data.reason === 'no_payments' ? 'No paid months to remove.' : `Payment skipped: ${data.reason || 'unknown reason'}.` }
+      }
+
+      const removed = data.removed_payment ?? latestPayment
+      setHistory(prev => sortPaymentsByPeriod(prev.filter(payment => (
+        payment.id !== removed.id && payment.period_label !== removed.period_label
+      ))))
+      setLateFees(current => current.map(fee => (
+        fee.period_label === removed.period_label && fee.status === 'paid'
+          ? { ...fee, status: 'open', resolved_at: null }
+          : fee
+      )))
+      setTenancy(current => current ? { ...current, paid_through_date: data.paid_through_date ?? null } : current)
+      setPinModalOpen(false)
+      setTab('history')
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : 'Could not remove payment.' }
+    } finally {
+      setCharging(false)
+    }
   }
 
   async function handleChargeCard(pin) {
@@ -1186,7 +1241,20 @@ export default function StorageBilling() {
 
               {history.length > 0 && (
                 <div className="space-y-1">
-                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Paid months</p>
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Paid months</p>
+                    {latestPayment && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 px-2 text-xs text-destructive hover:text-destructive"
+                        disabled={charging}
+                        onClick={() => openPinModal('remove')}
+                      >
+                        Remove latest
+                      </Button>
+                    )}
+                  </div>
                   <div className="rounded-xl border overflow-hidden">
                     {history.map((payment, i) => (
                       <div key={payment.id} className={cn('flex items-center justify-between gap-3 px-4 py-3 text-sm', i < history.length - 1 && 'border-b')}>
@@ -1380,12 +1448,19 @@ export default function StorageBilling() {
         details={{
           tenantName,
           unitNumber: displayName,
-          periods: chargePreview,
+          periods: pendingAction === 'remove' && latestPayment
+            ? [{
+                label: latestPayment.period_label,
+                subtotal: latestPayment.subtotal_amount ?? latestPayment.amount ?? 0,
+              }]
+            : chargePreview,
           monthlyRate: tenancy.monthly_rate,
-          extras,
+          extras: pendingAction === 'remove' ? [] : extras,
           extrasTotal,
-          taxTotal: pendingAction === 'cash' ? cashTaxTotal : taxTotal,
-          grandTotal: pendingAction === 'cash' ? cashGrandTotal : cardGrandTotal,
+          taxTotal: pendingAction === 'remove' ? 0 : pendingAction === 'cash' ? cashTaxTotal : taxTotal,
+          grandTotal: pendingAction === 'remove'
+            ? Number(latestPayment?.amount ?? 0)
+            : pendingAction === 'cash' ? cashGrandTotal : cardGrandTotal,
         }}
       />
     </div>

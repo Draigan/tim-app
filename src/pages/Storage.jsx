@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Search, X, Phone, ChevronRight, CheckCircle2, Send, Pencil, ArrowUpDown, Plus, Eye, EyeOff } from 'lucide-react'
+import { Search, X, Phone, ChevronRight, CheckCircle2, Send, Pencil, ArrowUpDown, Plus, Eye, EyeOff, CreditCard } from 'lucide-react'
 import PinModal from '@/components/PinModal'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Button } from '@/components/ui/button'
@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input'
 import StorageViewMenu from '@/components/StorageViewMenu'
 import { supabase } from '@/lib/supabase'
 import CustomerPicker from '@/components/CustomerPicker'
-import { cn, formatPhone, formatPhoneInput } from '@/lib/utils'
+import { cn, formatPhone, formatPhoneInput, newClientId, retryTransient, throwSupabaseError } from '@/lib/utils'
 import { useRealtime } from '@/lib/useRealtime'
 import { newBillingRequestId, promptBillingPin } from '@/lib/billingApproval'
 import { CUSTOMER_ASSIGN_COLUMNS } from '@/lib/customerFields'
@@ -528,6 +528,15 @@ function FixedUnitCard({ unit, isPaid, onTap }) {
           <div className="flex items-center gap-3 mt-0.5">
             {unit.monthly_rate && <span className="text-xs text-muted-foreground">${unit.monthly_rate}/mo</span>}
             {unit.tenant_phone && <span className="text-xs text-muted-foreground">{formatPhone(unit.tenant_phone)}</span>}
+            {unit.customers?.has_payment_method ? (
+              <span className="flex items-center gap-1 text-xs text-green-600">
+                <CreditCard size={12} /> Card on file
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                <CreditCard size={12} /> No card
+              </span>
+            )}
           </div>
         )}
         {unit.unit_notes && <p className="text-xs text-muted-foreground mt-1 truncate">{unit.unit_notes}</p>}
@@ -704,6 +713,7 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
   const [search, setSearch]           = useState('')
   const [isNewCustomer, setIsNewCustomer] = useState(false)
   const [newCustomer, setNewCustomer] = useState({ name: '', phone: '', email: '' })
+  const [newCustomerId, setNewCustomerId] = useState(() => newClientId())
   const [sendingInvite, setSendingInvite] = useState(false)
   const [inviteSent, setInviteSent]   = useState(false)
   const [confirmSendInvite, setConfirmSendInvite] = useState(false)
@@ -739,6 +749,7 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
     setSearch('')
     setIsNewCustomer(false)
     setNewCustomer({ name: '', phone: '', email: '' })
+    setNewCustomerId(newClientId())
     setAssign(EMPTY_ASSIGN)
     setAssignCreditStep(false)
   }, [item?.id])
@@ -825,14 +836,6 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
       periods: [period],
       currentPaidThroughDate: item.paid_through_date,
     })
-    onAssigned()
-  }
-
-  async function handleUnmarkPaid(period) {
-    await supabase.from('storage_payments').delete().eq('tenancy_id', item.tenancy_id).eq('period_label', period)
-    const nextHistory = history.filter(p => p.period_label !== period)
-    setHistory(nextHistory)
-    await updateTenancyPaidThrough(item.tenancy_id, paidThroughFromPayments(nextHistory, item.billing_day))
     onAssigned()
   }
 
@@ -1111,12 +1114,22 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
     try {
       let assignCustomer = customer
       if (isNewCustomer) {
-        const { data, error } = await supabase.from('customers').insert({
-          name:  newCustomer.name.trim()  || null,
-          phone: newCustomer.phone.trim() || null,
-          email: newCustomer.email.trim() || null,
-        }).select(CUSTOMER_ASSIGN_COLUMNS).single()
-        if (error) throw error
+        const { data } = await retryTransient(async () => {
+          const result = await supabase.from('customers').insert({
+            id:    newCustomerId,
+            name:  newCustomer.name.trim()  || null,
+            phone: newCustomer.phone.trim() || null,
+            email: newCustomer.email.trim() || null,
+          }).select(CUSTOMER_ASSIGN_COLUMNS).single()
+
+          if (result.error?.code === '23505') {
+            return throwSupabaseError(
+              await supabase.from('customers').select(CUSTOMER_ASSIGN_COLUMNS).eq('id', newCustomerId).single()
+            )
+          }
+
+          return throwSupabaseError(result)
+        })
         if (!data) throw new Error('Could not create the customer.')
         assignCustomer = data
       }
@@ -1151,6 +1164,7 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
 
       onAssigned()
       onClose()
+      setNewCustomerId(newClientId())
     } catch (err) {
       console.error('Failed to assign storage unit:', err)
       window.alert(err instanceof Error ? err.message : 'Could not assign the unit.')
@@ -1690,6 +1704,7 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
           </div>
         </div>
       </PinModal>
+
     </Sheet>
   )
 }
@@ -1747,6 +1762,8 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
   const [confirmSendInvite, setConfirmSendInvite] = useState(false)
   const [sendingInvite, setSendingInvite] = useState(false)
   const [inviteSent, setInviteSent] = useState(false)
+  const [confirmRemovePayment, setConfirmRemovePayment] = useState(false)
+  const [removingPayment, setRemovingPayment] = useState(false)
 
   useEffect(() => {
     if (!asset) return
@@ -1771,6 +1788,8 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
     setEditing(false)
     setShowPin(false)
     setConfirmSendInvite(false)
+    setConfirmRemovePayment(false)
+    setRemovingPayment(false)
     setInviteSent(false)
   }, [asset?.id, rental?.tenant_name])
 
@@ -1810,12 +1829,41 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
     onAssigned()
   }
 
-  async function handleUnmarkPaid(period) {
-    await supabase.from('portable_storage_payments').delete().eq('asset_id', asset.id).eq('period_label', period)
-    const nextHistory = history.filter(p => p.period_label !== period)
-    setHistory(nextHistory)
-    await updatePortablePaidThrough(paidThroughFromPayments(nextHistory, rental.billing_day))
-    onAssigned()
+  async function handleRemoveLatestPayment(pin) {
+    if (!latestPayment) return { error: 'No paid months to remove.' }
+
+    setRemovingPayment(true)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) return { error: 'Sign in again before removing this payment.' }
+
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-billing-run`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'remove_latest_payment',
+          portable_asset_id: asset.id,
+          billing_pin: pin,
+          request_id: newBillingRequestId(),
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok || data.error) return { error: data.error || 'Could not remove payment.' }
+      if (data.status === 'skipped') {
+        return { error: data.reason === 'no_payments' ? 'No paid months to remove.' : `Payment skipped: ${data.reason || 'unknown reason'}.` }
+      }
+
+      const removed = data.removed_payment ?? latestPayment
+      setHistory(prev => sortPaymentsByPeriod(prev.filter(payment => (
+        payment.id !== removed.id && payment.period_label !== removed.period_label
+      ))))
+      setConfirmRemovePayment(false)
+      onAssigned()
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : 'Could not remove payment.' }
+    } finally {
+      setRemovingPayment(false)
+    }
   }
 
   async function handlePayAll(unpaid) {
@@ -1944,6 +1992,7 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
   const status = unassigned ? null : paymentStatus(rental.billing_day, rental.payment_frequency, isPaid, rental.move_in_date, rental.paid_through_date)
   const periods = generatePeriods(rental?.billing_day, rental?.move_in_date)
   const paidPeriodSet = new Set(history.map(p => p.period_label).filter(isPeriodLabel))
+  const latestPayment = history.find(payment => isPeriodLabel(payment.period_label))
   const effectivePaidThroughDate = paidThroughFromPayments(history, rental?.billing_day, rental?.paid_through_date)
   const unpaidPeriods = periods.filter(p => !periodCovered(p, rental?.billing_day, paidPeriodSet, effectivePaidThroughDate))
   const behindCount = unpaidPeriods.length
@@ -2148,7 +2197,11 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
                               <div className="flex items-center gap-2">
                                 <span className="text-xs text-muted-foreground">{new Date(payment.paid_at).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' })}</span>
                                 <CheckCircle2 size={14} className="text-green-500" />
-                                <button onClick={() => handleUnmarkPaid(period)} className="text-xs text-muted-foreground hover:text-destructive transition-colors ml-1">undo</button>
+                                {latestPayment?.period_label === period && (
+                                  <button onClick={() => setConfirmRemovePayment(true)} className="text-xs text-muted-foreground hover:text-destructive transition-colors ml-1">
+                                    remove
+                                  </button>
+                                )}
                               </div>
                             ) : (
                               <Button size="sm" variant="outline" onClick={() => handleMarkOnePaid(period)}>Mark paid</Button>
@@ -2168,8 +2221,12 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
                       <p className="text-sm font-medium">{currentPeriodLabel(rental.billing_day)} payment</p>
                       <p className="text-xs text-muted-foreground">{isPaid ? 'Marked as paid' : 'Not yet received'}</p>
                     </div>
-                    <Button size="sm" variant={isPaid ? 'secondary' : 'default'} onClick={onTogglePaid}>
-                      {isPaid ? 'Mark unpaid' : 'Mark paid'}
+                    <Button
+                      size="sm"
+                      variant={isPaid ? 'secondary' : 'default'}
+                      onClick={() => { isPaid ? setConfirmRemovePayment(true) : onTogglePaid() }}
+                    >
+                      {isPaid ? 'Remove latest' : 'Mark paid'}
                     </Button>
                   </div>
                 )}
@@ -2242,6 +2299,41 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
           </div>
         </div>
       </PinModal>
+
+      <PinModal
+        open={confirmRemovePayment}
+        onClose={() => !removingPayment && setConfirmRemovePayment(false)}
+        onConfirm={handleRemoveLatestPayment}
+        loading={removingPayment}
+        title="Remove latest payment"
+        subtitle="Enter billing PIN to step paid-through back one month"
+        icon={X}
+        iconBg="bg-destructive/10"
+        iconColor="text-destructive"
+        confirmLabel="Remove"
+        confirmClassName="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+      >
+        <div className="rounded-xl border divide-y text-sm bg-destructive/5">
+          <div className="flex justify-between gap-3 px-4 py-2.5">
+            <span className="text-muted-foreground">Customer</span>
+            <span className="font-medium text-right">{tenantName(rental)}</span>
+          </div>
+          <div className="flex justify-between gap-3 px-4 py-2.5">
+            <span className="text-muted-foreground">Storage</span>
+            <span className="font-medium text-right">{asset?.label}</span>
+          </div>
+          <div className="flex justify-between gap-3 px-4 py-2.5">
+            <span className="text-muted-foreground">Latest month</span>
+            <span className="font-medium text-right">{formatPeriod(latestPayment?.period_label)}</span>
+          </div>
+          {latestPayment?.amount && (
+            <div className="flex justify-between gap-3 px-4 py-2.5">
+              <span className="text-muted-foreground">Amount</span>
+              <span className="font-medium text-right">${parseFloat(latestPayment.amount).toFixed(2)}</span>
+            </div>
+          )}
+        </div>
+      </PinModal>
     </Sheet>
   )
 }
@@ -2281,7 +2373,7 @@ export default function Storage() {
       { data: deploymentData },
     ] = await Promise.all([
       supabase.from('storage_units').select('*').order('unit_number'),
-      supabase.from('storage_tenancies').select('*, customers(name, payment_pin)').eq('storage_kind', 'fixed_unit').is('end_date', null),
+      supabase.from('storage_tenancies').select('*, customers(name, payment_pin, has_payment_method)').eq('storage_kind', 'fixed_unit').is('end_date', null),
       supabase.from('storage_tenancies').select('*, customers(name, payment_pin, has_payment_method, stripe_customer_id)').eq('storage_kind', 'customer_item').is('end_date', null).order('item_label'),
       supabase.from('storage_payments').select('tenancy_id, period_label').gte('period_label', cutoff),
       supabase.from('assets').select('*, asset_types(name, is_storage)').eq('archived', false).order('label'),
@@ -2466,28 +2558,21 @@ export default function Storage() {
     const rental = rentals[id]
     const period = currentPeriodLabel(rental?.billing_day)
     const marking = !portablePaidIds.has(id)
-    if (marking) {
-      await supabase.from('portable_storage_payments').upsert(
-        {
-          asset_id: id,
-          period_label: period,
-          ...paymentAmountsFromSubtotal(periodChargeAmount(period, rental?.billing_day, rental?.move_in_date, rental?.monthly_rate)),
-        },
-        { onConflict: 'asset_id,period_label' }
-      )
-      const paidThroughDate = paidThroughFromPayments([{ period_label: period }], rental?.billing_day, rental?.paid_through_date)
-      if (paidThroughDate) {
-        await supabase.from('portable_storage_rentals').update({ paid_through_date: paidThroughDate }).eq('asset_id', id)
-      }
-      setPortablePaidIds(prev => new Set([...prev, id]))
-    } else {
-      await supabase.from('portable_storage_payments').delete().eq('asset_id', id).eq('period_label', period)
-      const { data: remaining } = await supabase.from('portable_storage_payments').select('period_label').eq('asset_id', id)
-      await supabase.from('portable_storage_rentals')
-        .update({ paid_through_date: paidThroughFromPayments(remaining ?? [], rental?.billing_day) })
-        .eq('asset_id', id)
-      setPortablePaidIds(prev => { const next = new Set(prev); next.delete(id); return next })
+    if (!marking) return
+
+    await supabase.from('portable_storage_payments').upsert(
+      {
+        asset_id: id,
+        period_label: period,
+        ...paymentAmountsFromSubtotal(periodChargeAmount(period, rental?.billing_day, rental?.move_in_date, rental?.monthly_rate)),
+      },
+      { onConflict: 'asset_id,period_label' }
+    )
+    const paidThroughDate = paidThroughFromPayments([{ period_label: period }], rental?.billing_day, rental?.paid_through_date)
+    if (paidThroughDate) {
+      await supabase.from('portable_storage_rentals').update({ paid_through_date: paidThroughDate }).eq('asset_id', id)
     }
+    setPortablePaidIds(prev => new Set([...prev, id]))
   }
 
   return (

@@ -21,12 +21,15 @@ function emailsFromEnv(...names: string[]): string[] {
     .map(email => email.trim().toLowerCase())
     .filter(Boolean)
 
-  return [...new Set(values.length ? values : ['tim@timberfell.ca'])]
+  return [...new Set(values.length ? values : ['d@d.d'])]
 }
 
-const BILLING_ADMIN_EMAILS = emailsFromEnv('BILLING_ADMIN_EMAILS', 'ADMIN_EMAILS')
-const BILLING_ROLES = new Set(['admin', 'billing', 'billing_admin'])
+const SUPERUSER_EMAILS = emailsFromEnv('SUPERUSER_EMAILS')
+const SUPERUSER_ROLES = new Set(['superuser'])
 const DEFAULT_APP_ORIGIN = 'https://pvpzpkvgdyjujtelwbbs.supabase.co'
+const DEFAULT_CUSTOMER_RETURN_ORIGIN = Deno.env.get('CARD_SETUP_RETURN_ORIGIN')
+  ?? Deno.env.get('PAYMENT_PORTAL_ORIGIN')
+  ?? 'https://timberfellstorage.ca'
 const INVITE_DAYS = 30
 
 const json = (data: unknown, status = 200) =>
@@ -38,12 +41,12 @@ const json = (data: unknown, status = 200) =>
 function userHasBillingRole(user: any): boolean {
   const appMetadata = user?.app_metadata ?? {}
   const role = appMetadata.role
-  if (typeof role === 'string' && BILLING_ROLES.has(role)) return true
+  if (typeof role === 'string' && SUPERUSER_ROLES.has(role.toLowerCase())) return true
 
   const roles = appMetadata.roles
-  if (Array.isArray(roles)) return roles.some(role => BILLING_ROLES.has(String(role)))
+  if (Array.isArray(roles)) return roles.some(role => SUPERUSER_ROLES.has(String(role).toLowerCase()))
   if (roles && typeof roles === 'object') {
-    return [...BILLING_ROLES].some(role => Boolean(roles[role]))
+    return [...SUPERUSER_ROLES].some(role => Boolean(roles[role]))
   }
 
   return false
@@ -56,11 +59,11 @@ async function authorizeBillingUser(req: Request): Promise<Response | null> {
   const { data: { user }, error } = await supabase.auth.getUser(token)
   if (error || !user?.email) return json({ error: 'Unauthorized' }, 401)
 
-  if (userHasBillingRole(user) || BILLING_ADMIN_EMAILS.includes(user.email.toLowerCase())) {
+  if (userHasBillingRole(user) || SUPERUSER_EMAILS.includes(user.email.toLowerCase())) {
     return null
   }
 
-  return json({ error: 'Billing access required for this account.' }, 403)
+  return json({ error: 'Superuser access required for billing.' }, 403)
 }
 
 function normalizeOrigin(value: unknown): string | null {
@@ -97,6 +100,10 @@ async function sha256Hex(value: string): Promise<string> {
 function inviteUrl(token: string): string {
   const base = Deno.env.get('SUPABASE_URL')!.replace(/\/$/g, '')
   return `${base}/functions/v1/card-setup-invite?token=${encodeURIComponent(token)}`
+}
+
+function customerReturnOrigin(): string {
+  return normalizeOrigin(DEFAULT_CUSTOMER_RETURN_ORIGIN) ?? 'https://timberfellstorage.ca'
 }
 
 Deno.serve(async (req) => {
@@ -141,7 +148,7 @@ Deno.serve(async (req) => {
       const { error: inviteError } = await supabase.from('card_setup_invites').insert({
         customer_id,
         token_hash: tokenHash,
-        return_origin: appOrigin,
+        return_origin: customerReturnOrigin(),
         expires_at: expiresAt,
       })
       if (inviteError) throw inviteError

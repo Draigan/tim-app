@@ -4,13 +4,26 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY')!, { apiVersion: '2026-04-22.dahlia' as any })
 const webhookSecret = Deno.env.get('STRIPE_WEBHOOK_SECRET')!
-const ADMIN_EMAIL = 'tim@timberfell.ca'
+const ADMIN_EMAIL = (Deno.env.get('SUPERUSER_EMAIL') ?? Deno.env.get('ADMIN_EMAIL') ?? 'd@d.d').trim().toLowerCase()
+const NOTIFICATION_INBOX_URL = '/notifications'
 
 let webPushConfigured = false
 
+function supabaseUrl(): string {
+  const url = Deno.env.get('APP_SUPABASE_URL') ?? Deno.env.get('SUPABASE_URL')
+  if (!url) throw new Error('Supabase URL is not configured.')
+  return url
+}
+
+function serviceRoleKey(): string {
+  const key = Deno.env.get('APP_SUPABASE_SERVICE_ROLE_KEY') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+  if (!key) throw new Error('Supabase service key is not configured.')
+  return key
+}
+
 const supabase = createClient(
-  Deno.env.get('SUPABASE_URL')!,
-  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+  supabaseUrl(),
+  serviceRoleKey(),
   { auth: { autoRefreshToken: false, persistSession: false } }
 )
 
@@ -76,7 +89,7 @@ async function pushToAdmin(title: string, body: string, url: string) {
   if (!configureWebPush()) return
 
   const { data: { users } } = await supabase.auth.admin.listUsers({ perPage: 100 })
-  const adminUser = users.find(u => u.email === ADMIN_EMAIL)
+  const adminUser = users.find(u => u.email?.toLowerCase() === ADMIN_EMAIL)
   if (!adminUser) return
 
   const { data: subs, error } = await supabase
@@ -87,7 +100,7 @@ async function pushToAdmin(title: string, body: string, url: string) {
   if (error) throw error
   if (!subs?.length) return
 
-  const payload = JSON.stringify({ title, body, url })
+  const payload = JSON.stringify({ title, body, url: NOTIFICATION_INBOX_URL })
   const results = await Promise.allSettled(
     subs.map(sub =>
       webpush.sendNotification(
@@ -105,6 +118,61 @@ async function pushToAdmin(title: string, body: string, url: string) {
 
   if (stale.length > 0) {
     await supabase.from('push_subscriptions').delete().in('endpoint', stale.map(s => s.endpoint))
+  }
+}
+
+async function createAppNotification({
+  title,
+  body,
+  url,
+  type,
+  severity = 'info',
+  metadata = {},
+}: {
+  title: string
+  body: string
+  url: string
+  type: string
+  severity?: 'info' | 'success' | 'warning' | 'error'
+  metadata?: Record<string, unknown>
+}) {
+  const { error } = await supabase.from('app_notifications').insert({
+    audience: 'billing',
+    title,
+    body,
+    url,
+    type,
+    severity,
+    metadata,
+  })
+
+  if (error) throw error
+}
+
+async function notifyAdminEvent({
+  title,
+  body,
+  url,
+  type,
+  severity = 'info',
+  metadata = {},
+}: {
+  title: string
+  body: string
+  url: string
+  type: string
+  severity?: 'info' | 'success' | 'warning' | 'error'
+  metadata?: Record<string, unknown>
+}) {
+  const results = await Promise.allSettled([
+    createAppNotification({ title, body, url, type, severity, metadata }),
+    pushToAdmin(title, body, url),
+  ])
+
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      console.error('Admin notification failed.', result.reason)
+    }
   }
 }
 
@@ -267,11 +335,19 @@ async function notifyPortalPayment(portalPayment: any, items: any[], amount: num
     : `${items.length} ${plural(items.length, 'charge')}`
   const who = customer ?? 'A customer'
 
-  await pushToAdmin(
-    'Online Payment Received',
-    `${who} paid ${formatCad(amount)} online${labelText} (${periodText}).`,
-    '/admin-revenue',
-  )
+  await notifyAdminEvent({
+    title: 'Online Payment Received',
+    body: `${who} paid ${formatCad(amount)} online${labelText} (${periodText}).`,
+    url: '/admin-revenue',
+    type: 'online_payment',
+    severity: 'success',
+    metadata: {
+      portal_payment_id: portalPayment.id,
+      customer_id: portalPayment.customer_id ?? null,
+      amount,
+      item_count: items.length,
+    },
+  })
 }
 
 async function recordPortalPayment(session: Stripe.Checkout.Session) {
@@ -359,6 +435,295 @@ async function recordPortalPayment(session: Stripe.Checkout.Session) {
   })
 }
 
+function periodLabelFromDate(value: string | null | undefined): string {
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value.slice(0, 7)
+  const now = new Date()
+  return periodLabel(now.getUTCFullYear(), now.getUTCMonth() + 1)
+}
+
+function bookingAddress(booking: any): string | null {
+  const address = [
+    booking.service_address,
+    booking.city,
+    booking.province,
+    booking.postal_code,
+    booking.country,
+  ].map(value => typeof value === 'string' ? value.trim() : '').filter(Boolean).join(', ')
+
+  return address || null
+}
+
+function bookingPaymentAmounts(booking: any) {
+  const amount = Number(booking.amount ?? 0)
+  const subtotal = Number(booking.subtotal_amount ?? amount)
+  const tax = Number(booking.tax_amount ?? 0)
+  const taxRate = Number(booking.tax_rate ?? 0)
+  const taxLabel = typeof booking.tax_label === 'string' && booking.tax_label.trim() ? booking.tax_label.trim() : null
+
+  return {
+    amount,
+    subtotal_amount: subtotal,
+    tax_amount: tax,
+    tax_rate: Number.isFinite(taxRate) && tax > 0 ? taxRate : 0,
+    tax_label: tax > 0 ? taxLabel : null,
+  }
+}
+
+async function paymentMethodFromIntent(paymentIntentId: string | null): Promise<string | null> {
+  if (!paymentIntentId) return null
+  const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId)
+  const paymentMethod = paymentIntent.payment_method
+  return typeof paymentMethod === 'string' ? paymentMethod : paymentMethod?.id ?? null
+}
+
+async function ensureBookingCustomer(booking: any, stripeCustomerId: string | null, paymentMethodId: string | null): Promise<string> {
+  if (booking.customer_id) return booking.customer_id
+
+  const { data: customer, error } = await supabase
+    .from('customers')
+    .insert({
+      name: booking.customer_name,
+      phone: booking.phone ?? null,
+      email: booking.email ?? null,
+      address: bookingAddress(booking),
+      stripe_customer_id: stripeCustomerId,
+      stripe_payment_method_id: paymentMethodId,
+      has_payment_method: Boolean(paymentMethodId),
+    })
+    .select('id')
+    .single()
+
+  if (error) throw error
+
+  await supabase
+    .from('storage_booking_sessions')
+    .update({
+      customer_id: customer.id,
+      stripe_customer_id: stripeCustomerId,
+      stripe_payment_method_id: paymentMethodId,
+    })
+    .eq('id', booking.id)
+
+  if (stripeCustomerId) {
+    await stripe.customers.update(stripeCustomerId, {
+      invoice_settings: paymentMethodId ? { default_payment_method: paymentMethodId } : undefined,
+      metadata: {
+        customer_id: customer.id,
+        source: 'storage_booking',
+      },
+    })
+  }
+
+  return customer.id
+}
+
+async function ensurePortableRentalFromBooking(booking: any, customerId: string, paidThroughDate: string | null): Promise<string> {
+  if (booking.portable_rental_id) return booking.portable_rental_id
+
+  const { data: existingRental, error: existingError } = await supabase
+    .from('portable_storage_rentals')
+    .select('id, customer_id')
+    .eq('asset_id', booking.asset_id)
+    .maybeSingle()
+
+  if (existingError) throw existingError
+  if (existingRental) {
+    if (existingRental.customer_id !== customerId) throw new Error(`Portable storage asset ${booking.asset_id} is already rented.`)
+    await supabase
+      .from('storage_booking_sessions')
+      .update({ portable_rental_id: existingRental.id })
+      .eq('id', booking.id)
+    return existingRental.id
+  }
+
+  const { data: rental, error } = await supabase
+    .from('portable_storage_rentals')
+    .insert({
+      asset_id: booking.asset_id,
+      customer_id: customerId,
+      tenant_name: booking.customer_name,
+      tenant_phone: booking.phone ?? null,
+      monthly_rate: Number(booking.monthly_rate ?? 0),
+      billing_day: booking.billing_day,
+      payment_frequency: 'monthly',
+      move_in_date: booking.start_date,
+      paid_through_date: paidThroughDate,
+      notes: 'Booked online. Delivery and pickup were collected on the first payment.',
+    })
+    .select('id')
+    .single()
+
+  if (error) throw error
+
+  await supabase
+    .from('storage_booking_sessions')
+    .update({ portable_rental_id: rental.id })
+    .eq('id', booking.id)
+
+  return rental.id
+}
+
+async function ensureFixedTenancyFromBooking(booking: any, customerId: string, paidThroughDate: string | null): Promise<string> {
+  if (booking.tenancy_id) return booking.tenancy_id
+
+  const { data: existingTenancy, error: existingError } = await supabase
+    .from('storage_tenancies')
+    .select('id, customer_id')
+    .eq('unit_id', booking.unit_id)
+    .eq('storage_kind', 'fixed_unit')
+    .is('end_date', null)
+    .maybeSingle()
+
+  if (existingError) throw existingError
+  if (existingTenancy) {
+    if (existingTenancy.customer_id !== customerId) throw new Error(`Storage unit ${booking.unit_id} is already rented.`)
+    await supabase
+      .from('storage_booking_sessions')
+      .update({ tenancy_id: existingTenancy.id })
+      .eq('id', booking.id)
+    return existingTenancy.id
+  }
+
+  const { data: tenancy, error } = await supabase
+    .from('storage_tenancies')
+    .insert({
+      unit_id: booking.unit_id,
+      customer_id: customerId,
+      tenant_name: booking.customer_name,
+      tenant_phone: booking.phone ?? null,
+      monthly_rate: Number(booking.monthly_rate ?? 0),
+      billing_day: booking.billing_day,
+      payment_frequency: 'monthly',
+      move_in_date: booking.start_date,
+      paid_through_date: paidThroughDate,
+      notes: 'Booked online.',
+    })
+    .select('id')
+    .single()
+
+  if (error) throw error
+
+  await supabase
+    .from('storage_booking_sessions')
+    .update({ tenancy_id: tenancy.id })
+    .eq('id', booking.id)
+
+  return tenancy.id
+}
+
+async function notifyStorageBooking(booking: any, amount: number) {
+  const unitLabel = typeof booking.unit_label === 'string' && booking.unit_label.trim()
+    ? booking.unit_label.trim()
+    : 'storage'
+  const customer = typeof booking.customer_name === 'string' && booking.customer_name.trim()
+    ? booking.customer_name.trim()
+    : 'A customer'
+
+  await notifyAdminEvent({
+    title: 'Storage Booking Paid',
+    body: `${customer} booked ${unitLabel} online for ${formatCad(amount)}.`,
+    url: '/storage',
+    type: 'storage_booking',
+    severity: 'success',
+    metadata: {
+      booking_id: booking.id,
+      unit_type: booking.unit_type,
+      unit_number: booking.unit_number,
+      unit_id: booking.unit_id ?? null,
+      asset_id: booking.asset_id ?? null,
+      amount,
+    },
+  })
+}
+
+async function recordBookingPayment(session: Stripe.Checkout.Session) {
+  const bookingId = session.metadata?.booking_session_id
+  if (!bookingId) return
+
+  const { data: booking, error: bookingError } = await supabase
+    .from('storage_booking_sessions')
+    .select('*')
+    .eq('id', bookingId)
+    .maybeSingle()
+
+  if (bookingError) throw bookingError
+  if (!booking || booking.status === 'paid') return
+
+  const expectedCents = centsFromAmount(booking.amount)
+  if (typeof session.amount_total === 'number' && session.amount_total !== expectedCents) {
+    throw new Error(`Storage booking ${bookingId} amount mismatch.`)
+  }
+
+  const paymentIntentId = typeof session.payment_intent === 'string'
+    ? session.payment_intent
+    : session.payment_intent?.id ?? null
+  const stripeCustomerId = typeof session.customer === 'string'
+    ? session.customer
+    : session.customer?.id ?? null
+  const paymentMethodId = await paymentMethodFromIntent(paymentIntentId)
+  const customerId = await ensureBookingCustomer(booking, stripeCustomerId, paymentMethodId)
+  const period = periodLabelFromDate(booking.start_date)
+  const paidThroughDate = paidThroughForPeriod(period, booking.billing_day)
+  const paidAt = new Date().toISOString()
+  const paymentAmounts = bookingPaymentAmounts(booking)
+
+  if (booking.unit_type === 'portable') {
+    const rentalId = await ensurePortableRentalFromBooking(booking, customerId, paidThroughDate)
+    const { error: paymentError } = await supabase.from('portable_storage_payments').upsert({
+      asset_id: booking.asset_id,
+      period_label: period,
+      paid_at: paidAt,
+      ...paymentAmounts,
+    }, { onConflict: 'asset_id,period_label' })
+
+    if (paymentError) throw paymentError
+
+    await supabase
+      .from('storage_booking_sessions')
+      .update({ portable_rental_id: rentalId })
+      .eq('id', booking.id)
+  } else {
+    const tenancyId = await ensureFixedTenancyFromBooking(booking, customerId, paidThroughDate)
+    const { error: paymentError } = await supabase.from('storage_payments').upsert({
+      unit_id: booking.unit_id,
+      tenancy_id: tenancyId,
+      period_label: period,
+      paid_at: paidAt,
+      ...paymentAmounts,
+    }, { onConflict: 'tenancy_id,period_label' })
+
+    if (paymentError) throw paymentError
+
+    await supabase
+      .from('storage_booking_sessions')
+      .update({ tenancy_id: tenancyId })
+      .eq('id', booking.id)
+  }
+
+  const { error: updateError } = await supabase
+    .from('storage_booking_sessions')
+    .update({
+      status: 'paid',
+      customer_id: customerId,
+      paid_at: paidAt,
+      stripe_checkout_session_id: session.id,
+      stripe_payment_intent_id: paymentIntentId,
+      stripe_customer_id: stripeCustomerId,
+      stripe_payment_method_id: paymentMethodId,
+    })
+    .eq('id', booking.id)
+
+  if (updateError) throw updateError
+
+  const paidAmount = typeof session.amount_total === 'number'
+    ? dollarsFromCents(session.amount_total)
+    : Number(booking.amount ?? 0)
+
+  await notifyStorageBooking(booking, paidAmount).catch(err => {
+    console.error('Storage booking notification failed.', err)
+  })
+}
+
 Deno.serve(async (req) => {
   if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 })
 
@@ -376,6 +741,13 @@ Deno.serve(async (req) => {
   try {
     if (event.type === 'checkout.session.completed' || event.type === 'checkout.session.async_payment_succeeded') {
       const session = event.data.object as Stripe.Checkout.Session
+
+      if (session.mode === 'payment' && session.metadata?.source === 'storage_booking' && session.payment_status === 'paid') {
+        await recordBookingPayment(session)
+        return new Response(JSON.stringify({ received: true }), {
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
 
       if (session.mode === 'payment' && session.metadata?.source === 'storage_payment_portal' && session.payment_status === 'paid') {
         await recordPortalPayment(session)
@@ -405,6 +777,14 @@ Deno.serve(async (req) => {
     if (event.type === 'checkout.session.expired') {
       const session = event.data.object as Stripe.Checkout.Session
       const portalPaymentId = session.metadata?.portal_payment_id
+      const bookingSessionId = session.metadata?.booking_session_id
+      if (session.metadata?.source === 'storage_booking' && bookingSessionId) {
+        await supabase
+          .from('storage_booking_sessions')
+          .update({ status: 'expired' })
+          .eq('id', bookingSessionId)
+          .eq('status', 'pending')
+      }
       if (session.metadata?.source === 'storage_payment_portal' && portalPaymentId) {
         await supabase
           .from('storage_portal_payment_sessions')

@@ -1,31 +1,27 @@
 import { createElement, useState } from 'react'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
-import { Map, Package, Settings, Warehouse, MoreHorizontal, Users, CalendarDays, LayoutGrid, History, ChevronRight, Star, Lock, ReceiptText } from 'lucide-react'
+import { Map, Package, Settings, Warehouse, MoreHorizontal, Users, CalendarDays, LayoutGrid, History, ChevronRight, Star, ReceiptText, Bell } from 'lucide-react'
 import { Sheet, SheetContent } from '@/components/ui/sheet'
 import { cn } from '@/lib/utils'
-import { useIsAdmin } from '@/lib/useIsAdmin'
-import PinModal from '@/components/PinModal'
+import { useAccess } from '@/lib/useAccess'
+import { useNotificationUnreadCount } from '@/lib/useNotificationUnreadCount'
 
 const MORE_ITEMS = [
-  { to: '/calendar',       icon: CalendarDays, label: 'Calendar',        description: 'Schedule and reservations' },
-  { to: '/asset-manager',  icon: LayoutGrid,   label: 'Asset Manager',   description: 'Add and configure assets' },
-  { to: '/history',        icon: History,      label: 'History',         description: 'Deployment history' },
-  { to: '/online-payments', icon: ReceiptText,  label: 'Online Payments', description: 'Tax collected payments' },
-  { to: '/review-request', icon: Star,         label: 'Review Request',  description: 'Send a review request by SMS' },
-  { to: '/settings',       icon: Settings,     label: 'Settings',        description: 'Users, notifications, help' },
+  { to: '/notifications',   icon: Bell,         label: 'Notifications',   description: 'Bookings, payments, alerts', access: 'canViewNotifications' },
+  { to: '/calendar',        icon: CalendarDays, label: 'Calendar',        description: 'Schedule and reservations', access: 'canManageCalendar' },
+  { to: '/asset-manager',   icon: LayoutGrid,   label: 'Asset Manager',   description: 'Add and configure assets', access: 'canManageAssets' },
+  { to: '/history',         icon: History,      label: 'History',         description: 'Deployment history', access: 'canViewHistory' },
+  { to: '/online-payments', icon: ReceiptText,  label: 'Online Payments', description: 'Tax collected payments', access: 'canManageRevenue' },
+  { to: '/admin-revenue',   icon: ReceiptText,  label: 'Admin Revenue',   description: 'Revenue tracker', access: 'canManageRevenue' },
+  { to: '/review-request',  icon: Star,         label: 'Review Request',  description: 'Send a review request by SMS', access: 'canRequestReviews' },
+  { to: '/settings',        icon: Settings,     label: 'Settings',        description: 'Users, notifications, help', access: 'canUseApp' },
 ]
 
-function MoreSheet({ open, onClose }) {
+function MoreSheet({ open, onClose, items, unreadCount }) {
   const navigate = useNavigate()
   const { pathname } = useLocation()
-  const [showAdminPin, setShowAdminPin] = useState(false)
-  const [showOnlinePaymentsPin, setShowOnlinePaymentsPin] = useState(false)
 
   function go(to) {
-    if (to === '/online-payments') {
-      setShowOnlinePaymentsPin(true)
-      return
-    }
     onClose()
     navigate(to)
   }
@@ -36,7 +32,7 @@ function MoreSheet({ open, onClose }) {
         <SheetContent side="bottom" className="pb-8">
           <div className="pt-2 pb-1">
             <div className="space-y-1">
-              {MORE_ITEMS.map(item => (
+              {items.map(item => (
                 <button
                   key={item.to}
                   onClick={() => go(item.to)}
@@ -55,80 +51,41 @@ function MoreSheet({ open, onClose }) {
                     })}
                   </div>
                   <div className="flex-1 text-left">
-                    <p className={cn('text-sm font-medium', pathname === item.to && 'text-primary')}>{item.label}</p>
+                    <div className="flex items-center gap-2">
+                      <p className={cn('text-sm font-medium', pathname === item.to && 'text-primary')}>{item.label}</p>
+                      {item.to === '/notifications' && unreadCount > 0 && (
+                        <span className="min-w-5 h-5 px-1.5 rounded-full bg-primary text-primary-foreground text-[11px] font-semibold flex items-center justify-center">
+                          {unreadCount > 99 ? '99+' : unreadCount}
+                        </span>
+                      )}
+                    </div>
                     <p className="text-xs text-muted-foreground">{item.description}</p>
                   </div>
                   <ChevronRight size={16} className="text-muted-foreground flex-shrink-0" />
                 </button>
               ))}
-
-              <button
-                onClick={() => setShowAdminPin(true)}
-                className="w-full flex items-center gap-4 px-2 py-3 rounded-xl transition-colors hover:bg-accent"
-              >
-                <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 bg-muted">
-                  <Lock size={20} className="text-foreground" />
-                </div>
-                <div className="flex-1 text-left">
-                  <p className="text-sm font-medium">Admin</p>
-                  <p className="text-xs text-muted-foreground">Admin settings</p>
-                </div>
-                <ChevronRight size={16} className="text-muted-foreground flex-shrink-0" />
-              </button>
             </div>
           </div>
         </SheetContent>
       </Sheet>
-
-      <PinModal
-        open={showAdminPin}
-        onClose={() => setShowAdminPin(false)}
-        onConfirm={async (pin) => {
-          if (pin !== '4321') return { error: 'Incorrect PIN' }
-          setShowAdminPin(false)
-          onClose()
-          navigate('/admin-revenue')
-        }}
-        title="Admin"
-        subtitle="Enter PIN to access revenue tracker"
-        icon={Lock}
-        pinLabel="Enter admin PIN"
-        confirmLabel="Enter"
-      />
-
-      <PinModal
-        open={showOnlinePaymentsPin}
-        onClose={() => setShowOnlinePaymentsPin(false)}
-        onConfirm={async (pin) => {
-          if (pin !== '4321') return { error: 'Incorrect PIN' }
-          sessionStorage.setItem('onlinePaymentsUnlocked', '1')
-          setShowOnlinePaymentsPin(false)
-          onClose()
-          navigate('/online-payments')
-        }}
-        title="Online Payments"
-        subtitle="Enter PIN to access tax payments"
-        icon={ReceiptText}
-        pinLabel="Enter admin PIN"
-        confirmLabel="Enter"
-      />
     </>
   )
 }
 
 export default function BottomNav() {
-  const isAdmin = useIsAdmin()
+  const access = useAccess()
   const { pathname } = useLocation()
   const [moreOpen, setMoreOpen] = useState(false)
+  const unreadCount = useNotificationUnreadCount(access.canViewNotifications)
+  const moreItems = MORE_ITEMS.filter(item => access[item.access])
 
-  const moreActive = MORE_ITEMS.some(item => item.to === pathname)
+  const moreActive = moreItems.some(item => item.to === pathname)
 
   const navItems = [
     { to: '/', icon: Map, label: 'Map' },
     { to: '/inventory', icon: Package, label: 'Inventory' },
-    ...(isAdmin ? [{ to: '/storage', icon: Warehouse, label: 'Storage' }] : []),
+    ...(access.canViewStorage ? [{ to: '/storage', icon: Warehouse, label: 'Storage' }] : []),
     { to: '/customers', icon: Users, label: 'Customers' },
-    ...(!isAdmin ? [{ to: '/settings', icon: Settings, label: 'Settings' }] : []),
   ]
 
   return (
@@ -158,21 +115,26 @@ export default function BottomNav() {
           </NavLink>
         ))}
 
-        {isAdmin && (
+        {moreItems.length > 0 && (
           <button
             onClick={() => setMoreOpen(true)}
             className={cn(
-              'flex-1 flex flex-col items-center gap-0.5 pt-3 pb-0 text-xs transition-colors',
+              'relative flex-1 flex flex-col items-center gap-0.5 pt-3 pb-0 text-xs transition-colors',
               moreActive ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
             )}
           >
+            {unreadCount > 0 && (
+              <span className="absolute top-2 right-[calc(50%-18px)] min-w-4 h-4 px-1 rounded-full bg-primary text-primary-foreground text-[10px] leading-4 font-semibold">
+                {unreadCount > 9 ? '9+' : unreadCount}
+              </span>
+            )}
             <MoreHorizontal size={22} className={moreActive ? 'drop-shadow-[0_0_8px_rgba(74,222,128,0.9)]' : ''} />
             More
           </button>
         )}
       </nav>
 
-      {isAdmin && <MoreSheet open={moreOpen} onClose={() => setMoreOpen(false)} />}
+      {moreItems.length > 0 && <MoreSheet open={moreOpen} onClose={() => setMoreOpen(false)} items={moreItems} unreadCount={unreadCount} />}
     </>
   )
 }

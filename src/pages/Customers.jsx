@@ -6,11 +6,12 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sh
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { supabase } from '@/lib/supabase'
-import { formatPhone, formatPhoneInput } from '@/lib/utils'
+import { formatPhone, formatPhoneInput, getErrorMessage, newClientId, retryTransient, throwSupabaseError } from '@/lib/utils'
 import { useRealtime } from '@/lib/useRealtime'
 import { geocodeAddress } from '@/lib/mapbox'
 import { newBillingRequestId } from '@/lib/billingApproval'
-import { CUSTOMER_WITH_CREDIT_SUMMARY_COLUMNS } from '@/lib/customerFields'
+import { useAccess } from '@/lib/useAccess'
+import { CUSTOMER_BASE_COLUMNS, CUSTOMER_WITH_CREDIT_SUMMARY_COLUMNS } from '@/lib/customerFields'
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -46,11 +47,11 @@ function customerStorageBillingPath(tenancy) {
 
 // ─── customer card ────────────────────────────────────────────────────────────
 
-function CustomerCard({ customer, onTap }) {
+function CustomerCard({ customer, onTap, canManageStorage }) {
   const contact = [customer.phone && formatPhone(customer.phone), customer.email].filter(Boolean).join(' · ')
-  const openCreditTotal = (customer.customer_credits ?? [])
+  const openCreditTotal = canManageStorage ? (customer.customer_credits ?? [])
     .filter(c => c.status === 'open')
-    .reduce((sum, c) => sum + (Number(c.amount) || 0), 0)
+    .reduce((sum, c) => sum + (Number(c.amount) || 0), 0) : 0
 
   return (
     <button
@@ -132,10 +133,12 @@ function RefundSuccessView({ result, onDone }) {
 
 // ─── customer sheet ───────────────────────────────────────────────────────────
 
-function CustomerSheet({ customer, isNew, onClose, onSaved }) {
+function CustomerSheet({ customer, isNew, onClose, onSaved, canManageStorage }) {
   const navigate = useNavigate()
   const [editing, setEditing]       = useState(isNew)
   const [saving, setSaving]         = useState(false)
+  const [saveError, setSaveError]   = useState('')
+  const [clientCustomerId]          = useState(() => isNew ? newClientId() : customer?.id ?? null)
   const [addrSuggestions, setAddrSuggestions] = useState([])
   const addrTimer = useRef(null)
   const [form, setForm]         = useState(
@@ -155,9 +158,8 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
   const [archiving, setArchiving]   = useState(false)
   const [resolvingCreditId, setResolvingCreditId] = useState(null)
   const [savingCard, setSavingCard]     = useState(false)
-  const cardSaved = !!customer?.has_payment_method
+  const cardSaved = canManageStorage && !!customer?.has_payment_method
   const [copyingCardLink, setCopyingCardLink] = useState(false)
-  const [cardLinkCopied, setCardLinkCopied] = useState(false)
   const [cardLinkError, setCardLinkError] = useState('')
   const [showCardLinkInline, setShowCardLinkInline] = useState(false)
   const [cardLinkUrl, setCardLinkUrl] = useState('')
@@ -170,6 +172,9 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
     if (!customer) return
     setRefundSuccess(null)
     setHistoryLoading(true)
+    setStorageTenancies([])
+    setPortableCount(0)
+    setCredits([])
     Promise.all([
       supabase.from('active_deployments').select('*').eq('customer_id', customer.id),
       supabase.from('deployments')
@@ -178,39 +183,60 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
         .not('picked_up_at', 'is', null)
         .order('picked_up_at', { ascending: false })
         .limit(10),
-      supabase.from('storage_tenancies')
+      canManageStorage ? supabase.from('storage_tenancies')
         .select('id, storage_kind, item_type, custom_item_type, item_label, move_in_date, end_date, monthly_rate, paid_through_date, storage_units(id, unit_number), storage_payments(period_label, amount, paid_at)')
         .eq('customer_id', customer.id)
-        .order('end_date', { ascending: false, nullsFirst: true }),
-      supabase.from('portable_storage_rentals').select('asset_id', { count: 'exact', head: true }).eq('customer_id', customer.id),
-      supabase.from('customer_credits').select('*, storage_units(unit_number)').eq('customer_id', customer.id).order('created_at', { ascending: false }),
+        .order('end_date', { ascending: false, nullsFirst: true }) : Promise.resolve({ data: [] }),
+      canManageStorage ? supabase.from('portable_storage_rentals').select('asset_id', { count: 'exact', head: true }).eq('customer_id', customer.id) : Promise.resolve({ count: 0 }),
+      canManageStorage ? supabase.from('customer_credits').select('*, storage_units(unit_number)').eq('customer_id', customer.id).order('created_at', { ascending: false }) : Promise.resolve({ data: [] }),
     ]).then(([{ data: a }, { data: p }, { data: st }, { count: pc }, { data: c }]) => {
       if (a) setActive(a)
       if (p) setPast(p)
-      if (st) setStorageTenancies(st)
-      setPortableCount(pc ?? 0)
-      if (c) setCredits(c)
+      if (canManageStorage && st) setStorageTenancies(st)
+      setPortableCount(canManageStorage ? pc ?? 0 : 0)
+      if (canManageStorage && c) setCredits(c)
       setHistoryLoading(false)
     })
-  }, [customer?.id])
+  }, [customer?.id, canManageStorage])
 
   async function handleArchive() {
     setArchiving(true)
-    await supabase.from('customers').update({ archived_at: new Date().toISOString() }).eq('id', customer.id)
-    setArchiving(false)
-    onSaved()
-    onClose()
+    setSaveError('')
+    try {
+      await retryTransient(async () => {
+        const result = await supabase.from('customers').update({ archived_at: new Date().toISOString() }).eq('id', customer.id)
+        return throwSupabaseError(result)
+      })
+      onSaved()
+      onClose()
+    } catch (err) {
+      console.error('customer archive failed:', err)
+      setSaveError(getErrorMessage(err, 'Could not archive customer. Check your connection and try again.'))
+    } finally {
+      setArchiving(false)
+    }
   }
 
   async function handleRestore() {
     setArchiving(true)
-    await supabase.from('customers').update({ archived_at: null }).eq('id', customer.id)
-    setArchiving(false)
-    onSaved()
-    onClose()
+    setSaveError('')
+    try {
+      await retryTransient(async () => {
+        const result = await supabase.from('customers').update({ archived_at: null }).eq('id', customer.id)
+        return throwSupabaseError(result)
+      })
+      onSaved()
+      onClose()
+    } catch (err) {
+      console.error('customer restore failed:', err)
+      setSaveError(getErrorMessage(err, 'Could not restore customer. Check your connection and try again.'))
+    } finally {
+      setArchiving(false)
+    }
   }
 
   function set(field, value) {
+    if (saveError) setSaveError('')
     setForm(f => ({ ...f, [field]: value }))
   }
 
@@ -232,6 +258,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
   async function handleSave() {
     if (!form.name.trim()) return
     setSaving(true)
+    setSaveError('')
     const payload = {
       name:    form.name.trim()    || null,
       phone:   form.phone.trim()   || null,
@@ -239,18 +266,35 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
       address: form.address.trim() || null,
       notes:   form.notes.trim()   || null,
     }
-    if (isNew) {
-      await supabase.from('customers').insert(payload)
-    } else {
-      await supabase.from('customers').update(payload).eq('id', customer.id)
+    try {
+      await retryTransient(async () => {
+        if (isNew) {
+          const result = await supabase.from('customers').insert({ id: clientCustomerId, ...payload })
+          if (result.error?.code === '23505') {
+            return throwSupabaseError(
+              await supabase.from('customers').select('id').eq('id', clientCustomerId).single()
+            )
+          }
+          return throwSupabaseError(result)
+        }
+
+        const result = await supabase.from('customers').update(payload).eq('id', customer.id)
+        return throwSupabaseError(result)
+      })
+
+      onSaved()
+      if (isNew) onClose()
+      else setEditing(false)
+    } catch (err) {
+      console.error('customer save failed:', err)
+      setSaveError(getErrorMessage(err, 'Could not save customer. Check your connection and try again.'))
+    } finally {
+      setSaving(false)
     }
-    setSaving(false)
-    onSaved()
-    if (isNew) onClose()
-    else setEditing(false)
   }
 
   async function createStripeSetupUrl({ invite = false } = {}) {
+    if (!canManageStorage) throw new Error('Storage access required.')
     const { data: { session } } = await supabase.auth.getSession()
     if (!session?.access_token) throw new Error('Sign in again before creating a Stripe link.')
 
@@ -268,28 +312,6 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
       throw new Error(result.error || `Could not create Stripe ${invite ? 'invite' : 'link'}.`)
     }
     return result.url
-  }
-
-  async function copyText(text) {
-    if (navigator.clipboard?.writeText) {
-      try {
-        await navigator.clipboard.writeText(text)
-        return
-      } catch (err) {
-        console.warn('Clipboard API failed, falling back to manual copy:', err)
-      }
-    }
-
-    const textarea = document.createElement('textarea')
-    textarea.value = text
-    textarea.setAttribute('readonly', '')
-    textarea.style.position = 'fixed'
-    textarea.style.left = '-9999px'
-    document.body.appendChild(textarea)
-    textarea.select()
-    const copied = document.execCommand('copy')
-    document.body.removeChild(textarea)
-    if (!copied) throw new Error('Could not copy card invite.')
   }
 
   async function handleSaveCard() {
@@ -324,6 +346,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
   }
 
   async function handleSendInvite(pin) {
+    if (!canManageStorage) return { error: 'Storage access required.' }
     setSendingInvite(true)
     try {
       const { data: { session } } = await supabase.auth.getSession()
@@ -352,6 +375,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
   }
 
   async function handleMarkCreditRefunded(creditId, pin) {
+    if (!canManageStorage) return { error: 'Storage access required.' }
     setResolvingCreditId(creditId)
     try {
       const { data: { session } } = await supabase.auth.getSession()
@@ -384,10 +408,12 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
   }
 
   const title = isNew ? 'New Customer' : customer?.name
-  const openCredits = credits.filter(c => c.status === 'open')
-  const resolvedCredits = credits.filter(c => c.status !== 'open')
+  const openCredits = canManageStorage ? credits.filter(c => c.status === 'open') : []
+  const resolvedCredits = canManageStorage ? credits.filter(c => c.status !== 'open') : []
   const openCreditTotal = openCredits.reduce((sum, c) => sum + (Number(c.amount) || 0), 0)
-  const pinModalOpen = !!confirmRefundCredit || confirmSendInvite
+  const pinModalOpen = canManageStorage && (!!confirmRefundCredit || confirmSendInvite)
+  const hasBlockingCustomerLinks = active.length > 0
+    || (canManageStorage && (storageTenancies.some(t => !t.end_date) || portableCount > 0 || openCredits.length > 0))
 
   function handleSheetOpenChange(open) {
     if (open) return
@@ -469,6 +495,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
                 <p className="text-xs text-muted-foreground mb-1.5">Notes</p>
                 <Input value={form.notes} onChange={e => set('notes', e.target.value)} placeholder="Anything useful…" />
               </div>
+              {saveError && <p className="text-sm text-destructive">{saveError}</p>}
               <div className="flex gap-2 pt-1">
                 {!isNew && <Button variant="outline" className="flex-1" onClick={() => setEditing(false)}>Cancel</Button>}
                 <Button className="flex-1" disabled={!form.name.trim() || saving} onClick={handleSave}>
@@ -491,7 +518,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
                 </a>
               )}
               {form.notes && <p className="text-sm text-muted-foreground">{form.notes}</p>}
-              {customer?.payment_pin && (
+              {canManageStorage && customer?.payment_pin && (
                 <button onClick={() => setShowPin(v => !v)} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
                   Payment PIN <span className="font-mono font-semibold text-foreground tracking-widest">{showPin ? customer.payment_pin : '•••••'}</span>
                   {showPin ? <EyeOff size={11} /> : <Eye size={11} />}
@@ -501,7 +528,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
           )}
 
           {/* Card on file */}
-          {!isNew && !editing && (
+          {canManageStorage && !isNew && !editing && (
             <div className="space-y-2">
               {showCardLinkInline ? (
                 <div className="space-y-3 rounded-xl border border-blue-500/30 bg-blue-500/5 p-4">
@@ -563,7 +590,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
           )}
 
           {/* Credits */}
-          {!isNew && !editing && credits.length > 0 && (
+          {canManageStorage && !isNew && !editing && credits.length > 0 && (
             <div className="space-y-3">
               {openCreditTotal > 0 && (
                 <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 px-4 py-3 flex items-center gap-3">
@@ -612,7 +639,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
           )}
 
           {/* Storage history */}
-          {!isNew && !historyLoading && storageTenancies.length > 0 && (
+          {canManageStorage && !isNew && !historyLoading && storageTenancies.length > 0 && (
             <div className="space-y-2">
               <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Storage</h3>
               <div className="space-y-2">
@@ -717,6 +744,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
                     {archiving ? 'Restoring…' : 'Restore customer'}
                   </Button>
                 </div>
+                {saveError && <p className="text-sm text-destructive">{saveError}</p>}
               </div>
             ) : confirmArchive ? (
               <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 p-4 space-y-3">
@@ -728,10 +756,11 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
                     {archiving ? 'Archiving…' : 'Archive'}
                   </Button>
                 </div>
+                {saveError && <p className="text-sm text-destructive">{saveError}</p>}
               </div>
-            ) : active.length > 0 || storageTenancies.some(t => !t.end_date) || portableCount > 0 || openCredits.length > 0 ? (
+            ) : hasBlockingCustomerLinks ? (
               <p className="text-xs text-muted-foreground text-center">
-                Resolve active deployments, storage, and credits before archiving
+                {canManageStorage ? 'Resolve active deployments, storage, and credits before archiving' : 'Resolve active deployments before archiving'}
               </p>
             ) : (
               <button
@@ -749,6 +778,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
 
       </SheetContent>
 
+      {canManageStorage && (
       <PinModal
         open={!!confirmRefundCredit}
         onClose={() => setConfirmRefundCredit(null)}
@@ -773,7 +803,9 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
           </div>
         </div>
       </PinModal>
+      )}
 
+      {canManageStorage && (
       <PinModal
         open={confirmSendInvite}
         onClose={() => !sendingInvite && setConfirmSendInvite(false)}
@@ -795,6 +827,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
           </div>
         </div>
       </PinModal>
+      )}
     </Sheet>
   )
 }
@@ -802,6 +835,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved }) {
 // ─── page ─────────────────────────────────────────────────────────────────────
 
 export default function Customers() {
+  const { canManageStorage } = useAccess()
   const [customers, setCustomers]         = useState([])
   const [loading, setLoading]             = useState(true)
   const [query, setQuery]                 = useState('')
@@ -814,25 +848,27 @@ export default function Customers() {
 
   const fetchCustomers = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
+    const columns = canManageStorage ? CUSTOMER_WITH_CREDIT_SUMMARY_COLUMNS : CUSTOMER_BASE_COLUMNS
     const [{ data }, { count }] = await Promise.all([
-      supabase.from('customers').select(CUSTOMER_WITH_CREDIT_SUMMARY_COLUMNS).is('archived_at', null).order('name'),
+      supabase.from('customers').select(columns).is('archived_at', null).order('name'),
       supabase.from('customers').select('id', { count: 'exact', head: true }).not('archived_at', 'is', null),
     ])
     if (data) setCustomers(data)
     setArchivedCount(count ?? 0)
     if (!silent) setLoading(false)
-  }, [])
+  }, [canManageStorage])
 
   const fetchArchived = useCallback(async () => {
     setArchivedLoading(true)
+    const columns = canManageStorage ? CUSTOMER_WITH_CREDIT_SUMMARY_COLUMNS : CUSTOMER_BASE_COLUMNS
     const { data } = await supabase
       .from('customers')
-      .select(CUSTOMER_WITH_CREDIT_SUMMARY_COLUMNS)
+      .select(columns)
       .not('archived_at', 'is', null)
       .order('name')
     if (data) setArchived(data)
     setArchivedLoading(false)
-  }, [])
+  }, [canManageStorage])
 
   useEffect(() => {
     if (showArchived) fetchArchived()
@@ -841,7 +877,7 @@ export default function Customers() {
   const refreshSilent = useCallback(() => fetchCustomers(true), [fetchCustomers])
 
   useEffect(() => { fetchCustomers() }, [fetchCustomers])
-  useRealtime(['customers', 'customer_credits'], refreshSilent)
+  useRealtime(canManageStorage ? ['customers', 'customer_credits'] : ['customers'], refreshSilent)
 
   const q = query.trim().toLowerCase()
   const filtered = customers.filter(c =>
@@ -887,7 +923,7 @@ export default function Customers() {
         {!loading && (
           <div className="space-y-2">
             {filtered.map(c => (
-              <CustomerCard key={c.id} customer={c} onTap={setSelected} />
+              <CustomerCard key={c.id} customer={c} onTap={setSelected} canManageStorage={canManageStorage} />
             ))}
             {customers.length === 0 && (
               <p className="text-muted-foreground text-sm text-center mt-12">No customers yet</p>
@@ -912,7 +948,7 @@ export default function Customers() {
                     {archivedLoading && <p className="text-muted-foreground text-xs text-center py-4">Loading…</p>}
                     {!archivedLoading && archived.map(c => (
                       <div key={c.id} className="opacity-50">
-                        <CustomerCard customer={c} onTap={setSelected} />
+                        <CustomerCard customer={c} onTap={setSelected} canManageStorage={canManageStorage} />
                       </div>
                     ))}
                   </div>
@@ -929,6 +965,7 @@ export default function Customers() {
           isNew={false}
           onClose={() => setSelected(null)}
           onSaved={handleSaved}
+          canManageStorage={canManageStorage}
         />
       )}
 
@@ -938,6 +975,7 @@ export default function Customers() {
           isNew
           onClose={() => setAdding(false)}
           onSaved={handleSaved}
+          canManageStorage={canManageStorage}
         />
       )}
     </div>

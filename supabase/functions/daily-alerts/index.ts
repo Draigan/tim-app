@@ -2,6 +2,7 @@ import webpush from 'npm:web-push'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const ADMIN_EMAIL = 'tim@timberfell.ca'
+const NOTIFICATION_INBOX_URL = '/notifications'
 
 webpush.setVapidDetails(
   `mailto:${ADMIN_EMAIL}`,
@@ -64,7 +65,7 @@ async function pushToAdmin(title: string, body: string, url: string) {
     .eq('user_id', adminUser.id)
   if (!subs?.length) return
 
-  const payload = JSON.stringify({ title, body, url })
+  const payload = JSON.stringify({ title, body, url: NOTIFICATION_INBOX_URL })
   const results = await Promise.allSettled(
     subs.map(sub =>
       webpush.sendNotification(
@@ -80,6 +81,61 @@ async function pushToAdmin(title: string, body: string, url: string) {
   })
   if (expired.length > 0) {
     await supabase.from('push_subscriptions').delete().in('endpoint', expired.map(s => s.endpoint))
+  }
+}
+
+async function createAppNotification({
+  title,
+  body,
+  url,
+  type,
+  severity = 'warning',
+  metadata = {},
+}: {
+  title: string
+  body: string
+  url: string
+  type: string
+  severity?: 'info' | 'success' | 'warning' | 'error'
+  metadata?: Record<string, unknown>
+}) {
+  const { error } = await supabase.from('app_notifications').insert({
+    audience: 'staff',
+    title,
+    body,
+    url,
+    type,
+    severity,
+    metadata,
+  })
+
+  if (error) throw error
+}
+
+async function notifyAdmin({
+  title,
+  body,
+  url,
+  type,
+  severity = 'warning',
+  metadata = {},
+}: {
+  title: string
+  body: string
+  url: string
+  type: string
+  severity?: 'info' | 'success' | 'warning' | 'error'
+  metadata?: Record<string, unknown>
+}) {
+  const results = await Promise.allSettled([
+    createAppNotification({ title, body, url, type, severity, metadata }),
+    pushToAdmin(title, body, url),
+  ])
+
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      console.error('Daily alert notification failed.', result.reason)
+    }
   }
 }
 
@@ -118,7 +174,18 @@ Deno.serve(async (req) => {
     for (const dep of overdue ?? []) {
       const label    = dep.assets?.label ?? 'An asset'
       const customer = dep.customer_name ? ` — ${dep.customer_name}` : ''
-      await pushToAdmin('Overdue Pickup', `${label}${customer} was due yesterday`, '/inventory')
+      await notifyAdmin({
+        title: 'Overdue Pickup',
+        body: `${label}${customer} was due yesterday`,
+        url: '/inventory',
+        type: 'overdue_pickup',
+        severity: 'warning',
+        metadata: {
+          deployment_id: dep.id,
+          asset_id: dep.asset_id,
+          expires_at: dep.expires_at,
+        },
+      })
     }
 
     // Upcoming reservations — 3 days out and 1 day out
@@ -131,11 +198,19 @@ Deno.serve(async (req) => {
       const label    = res.assets?.label ?? 'An asset'
       const customer = res.customer_name ? ` for ${res.customer_name}` : ''
       const days     = res.from_date === in1Day ? 1 : 3
-      await pushToAdmin(
-        'Upcoming Reservation',
-        `${label}${customer} — reserved in ${days} day${days === 1 ? '' : 's'}`,
-        '/inventory'
-      )
+      await notifyAdmin({
+        title: 'Upcoming Reservation',
+        body: `${label}${customer} — reserved in ${days} day${days === 1 ? '' : 's'}`,
+        url: '/inventory',
+        type: 'upcoming_reservation',
+        severity: 'info',
+        metadata: {
+          reservation_id: res.id,
+          asset_id: res.asset_id,
+          from_date: res.from_date,
+          days,
+        },
+      })
     }
 
     return json({ ok: true, overdue: overdue?.length ?? 0, upcoming: upcoming?.length ?? 0 })

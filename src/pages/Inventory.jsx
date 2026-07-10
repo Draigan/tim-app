@@ -6,7 +6,7 @@ import { ChevronRight, Truck, ChevronDown, ChevronUp, Search, X, BookMarked } fr
 import { getMarkerColor } from '@/lib/utils'
 import AssetBottomSheet from '@/components/AssetBottomSheet'
 import { useRealtime } from '@/lib/useRealtime'
-import { useIsAdmin } from '@/lib/useIsAdmin'
+import { useAccess } from '@/lib/useAccess'
 
 function match(q, ...fields) {
   return fields.some(f => f?.toLowerCase().includes(q))
@@ -21,7 +21,7 @@ export default function Inventory() {
   const [selected, setSelected] = useState(null)
   const [query, setQuery] = useState('')
   const navigate = useNavigate()
-  const isAdmin = useIsAdmin()
+  const { canManageCalendar } = useAccess()
 
   const fetchAll = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
@@ -187,7 +187,7 @@ export default function Inventory() {
                               )}
                             </div>
                             <div className="flex items-center gap-2 ml-3 flex-shrink-0">
-                              {isAdmin && (
+                              {canManageCalendar && (
                                 <Button size="icon" className="h-8 w-8 flex-shrink-0 bg-muted hover:bg-muted/70 text-muted-foreground" onClick={() => navigate(`/assets/${asset.id}`, { state: { reserve: true } })}>
                                   <BookMarked size={14} />
                                 </Button>

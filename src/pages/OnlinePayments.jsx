@@ -135,6 +135,14 @@ function paymentTotal(payment) {
   return paymentSubtotal(payment) + numberValue(payment.tax_amount)
 }
 
+function isUnknownCustomer(row) {
+  return String(row.customerName ?? '').trim().toLowerCase() === 'unknown customer'
+}
+
+function isTestBookingRow(row) {
+  return String(row.customerName ?? '').trim().toLowerCase() === 'fixed booking'
+}
+
 function csvCell(value) {
   const text = value === null || value === undefined ? '' : String(value)
   return `"${text.replaceAll('"', '""')}"`
@@ -441,7 +449,9 @@ export default function OnlinePayments() {
         }
       })
 
-      setRows([...fixedRows, ...portableRows].sort((a, b) => new Date(b.paidAt) - new Date(a.paidAt)))
+      setRows([...fixedRows, ...portableRows]
+        .filter(row => !isTestBookingRow(row))
+        .sort((a, b) => new Date(b.paidAt) - new Date(a.paidAt)))
     } catch (err) {
       console.error('online payments load failed', err)
       setRows([])
@@ -495,7 +505,8 @@ export default function OnlinePayments() {
 
   function downloadCsv() {
     const rangeLabel = dateFrom || dateTo ? `${dateFrom || 'start'}-to-${dateTo || 'today'}` : 'all'
-    downloadCsvFile(`online-payments-${rangeLabel}.csv`, makeCsvRows(filteredRows))
+    const exportRows = filteredRows.filter(row => !isUnknownCustomer(row))
+    downloadCsvFile(`online-payments-${rangeLabel}.csv`, makeCsvRows(exportRows))
   }
 
   function applyManualTargetDefaults(target) {

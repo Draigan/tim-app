@@ -398,6 +398,174 @@ async function extendPortablePaidThrough(rental: any, periods: string[]) {
   }
 }
 
+function latestPeriodPayment(payments: any[]): any | null {
+  return [...payments]
+    .filter(payment => /^\d{4}-\d{2}$/.test(String(payment.period_label ?? '')))
+    .sort((a, b) => {
+      const periodOrder = String(b.period_label).localeCompare(String(a.period_label))
+      if (periodOrder !== 0) return periodOrder
+      return new Date(b.paid_at ?? 0).getTime() - new Date(a.paid_at ?? 0).getTime()
+    })[0] ?? null
+}
+
+function paidThroughFromPaymentRows(payments: any[], billingDay?: number | null): string | null {
+  const candidates = payments
+    .map(payment => paidThroughForPeriod(String(payment.period_label ?? ''), billingDay))
+    .filter(Boolean)
+    .sort() as string[]
+
+  return candidates[candidates.length - 1] ?? null
+}
+
+async function reopenLateFeeForRemovedPayment(
+  source: 'fixed' | 'portable',
+  sourceId: string,
+  period: string,
+) {
+  const column = source === 'portable' ? 'portable_rental_id' : 'tenancy_id'
+  const { error } = await supabase
+    .from('storage_late_fees')
+    .update({ status: 'open', resolved_at: null })
+    .eq(column, sourceId)
+    .eq('period_label', period)
+    .eq('status', 'paid')
+
+  if (error) throw error
+}
+
+async function removeLatestPortablePayment(body: Record<string, unknown>) {
+  const assetId = typeof body.portable_asset_id === 'string'
+    ? body.portable_asset_id.trim()
+    : typeof body.asset_id === 'string'
+      ? body.asset_id.trim()
+      : ''
+
+  if (!assetId) return json({ error: 'portable_asset_id required' }, 400)
+
+  const { data: rental, error: rentalError } = await supabase
+    .from('portable_storage_rentals')
+    .select('*')
+    .eq('asset_id', assetId)
+    .maybeSingle()
+
+  if (rentalError) return json({ error: rentalError.message }, 500)
+  if (!rental) return json({ error: 'no active rental for portable asset' }, 404)
+
+  const { data: payments, error: paymentsError } = await supabase
+    .from('portable_storage_payments')
+    .select('id, period_label, paid_at, amount, subtotal_amount, tax_amount')
+    .eq('asset_id', assetId)
+    .order('period_label', { ascending: false })
+    .order('paid_at', { ascending: false })
+
+  if (paymentsError) return json({ error: paymentsError.message }, 500)
+
+  const latest = latestPeriodPayment(payments ?? [])
+  if (!latest) return json({ ok: true, status: 'skipped', reason: 'no_payments' })
+
+  const { error: deleteError } = await supabase
+    .from('portable_storage_payments')
+    .delete()
+    .eq('id', latest.id)
+
+  if (deleteError) return json({ error: deleteError.message }, 500)
+
+  const remaining = (payments ?? []).filter((payment: any) => payment.id !== latest.id)
+  const paidThroughDate = paidThroughFromPaymentRows(remaining, rental.billing_day)
+
+  const { error: updateError } = await supabase
+    .from('portable_storage_rentals')
+    .update({ paid_through_date: paidThroughDate })
+    .eq('id', rental.id)
+
+  if (updateError) return json({ error: updateError.message }, 500)
+
+  await reopenLateFeeForRemovedPayment('portable', rental.id, latest.period_label)
+
+  return json({
+    ok: true,
+    status: 'removed',
+    removed_payment: latest,
+    periods: [latest.period_label],
+    paid_through_date: paidThroughDate,
+  })
+}
+
+async function removeLatestFixedPayment(body: Record<string, unknown>) {
+  const tenancyId = typeof body.tenancy_id === 'string' ? body.tenancy_id.trim() : ''
+  const unitId = typeof body.unit_id === 'string'
+    ? body.unit_id.trim()
+    : typeof body.cash_unit_id === 'string'
+      ? body.cash_unit_id.trim()
+      : ''
+
+  if (!tenancyId && !unitId) return json({ error: 'unit_id or tenancy_id required' }, 400)
+
+  let tenancyQuery = supabase
+    .from('storage_tenancies')
+    .select('*')
+    .is('end_date', null)
+
+  tenancyQuery = tenancyId
+    ? tenancyQuery.eq('id', tenancyId)
+    : tenancyQuery.eq('unit_id', unitId)
+
+  const { data: tenancy, error: tenancyError } = await tenancyQuery.maybeSingle()
+
+  if (tenancyError) return json({ error: tenancyError.message }, 500)
+  if (!tenancy) return json({ error: 'no active tenancy found' }, 404)
+
+  const { data: payments, error: paymentsError } = await supabase
+    .from('storage_payments')
+    .select('id, tenancy_id, unit_id, period_label, paid_at, amount, subtotal_amount, tax_amount')
+    .eq('tenancy_id', tenancy.id)
+    .order('period_label', { ascending: false })
+    .order('paid_at', { ascending: false })
+
+  if (paymentsError) return json({ error: paymentsError.message }, 500)
+
+  const latest = latestPeriodPayment(payments ?? [])
+  if (!latest) return json({ ok: true, status: 'skipped', reason: 'no_payments' })
+
+  const { error: deleteError } = await supabase
+    .from('storage_payments')
+    .delete()
+    .eq('id', latest.id)
+
+  if (deleteError) return json({ error: deleteError.message }, 500)
+
+  const remaining = (payments ?? []).filter((payment: any) => payment.id !== latest.id)
+  const paidThroughDate = paidThroughFromPaymentRows(remaining, tenancy.billing_day)
+
+  const { error: updateError } = await supabase
+    .from('storage_tenancies')
+    .update({ paid_through_date: paidThroughDate })
+    .eq('id', tenancy.id)
+
+  if (updateError) return json({ error: updateError.message }, 500)
+
+  await reopenLateFeeForRemovedPayment('fixed', tenancy.id, latest.period_label)
+
+  return json({
+    ok: true,
+    status: 'removed',
+    removed_payment: latest,
+    periods: [latest.period_label],
+    paid_through_date: paidThroughDate,
+  })
+}
+
+async function removeLatestPayment(body: Record<string, unknown>) {
+  if (
+    (typeof body.portable_asset_id === 'string' && body.portable_asset_id.trim()) ||
+    (typeof body.asset_id === 'string' && body.asset_id.trim())
+  ) {
+    return removeLatestPortablePayment(body)
+  }
+
+  return removeLatestFixedPayment(body)
+}
+
 async function chargeUnit(tenancy: any, period: string, idempotencyKey?: string) {
   const customer = tenancy.customers as { stripe_customer_id: string | null; stripe_payment_method_id: string | null } | null
   if (!customer?.stripe_payment_method_id || !customer?.stripe_customer_id) {
@@ -851,6 +1019,12 @@ Deno.serve(async (req) => {
       const authError = await authorizeManualBilling(req, body)
       if (authError) return authError
       return await recordCashPayment(body)
+    }
+
+    if (action === 'remove_latest_payment') {
+      const authError = await authorizeManualBilling(req, body)
+      if (authError) return authError
+      return await removeLatestPayment(body)
     }
 
     if (action) return json({ error: 'Unknown billing action.' }, 400)

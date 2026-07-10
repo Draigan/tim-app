@@ -18,13 +18,11 @@ function emailsFromEnv(...names: string[]): string[] {
     .map(email => email.trim().toLowerCase())
     .filter(Boolean)
 
-  return [...new Set(values.length ? values : ['tim@timberfell.ca'])]
+  return [...new Set(values.length ? values : ['d@d.d'])]
 }
 
-const STAFF_ADMIN_EMAILS = emailsFromEnv('STAFF_ADMIN_EMAILS', 'ADMIN_EMAILS')
-const BILLING_ADMIN_EMAILS = emailsFromEnv('BILLING_ADMIN_EMAILS', 'ADMIN_EMAILS')
-const STAFF_ROLES = new Set(['admin', 'staff'])
-const BILLING_ROLES = new Set(['admin', 'billing', 'billing_admin'])
+const SUPERUSER_EMAILS = emailsFromEnv('SUPERUSER_EMAILS')
+const SUPERUSER_ROLES = new Set(['superuser'])
 const MAX_SMS_BODY_LENGTH = 500
 
 const json = (data: unknown, status = 200) =>
@@ -33,10 +31,10 @@ const json = (data: unknown, status = 200) =>
 function userHasAnyRole(user: any, allowedRoles: Set<string>): boolean {
   const appMetadata = user?.app_metadata ?? {}
   const role = appMetadata.role
-  if (typeof role === 'string' && allowedRoles.has(role)) return true
+  if (typeof role === 'string' && allowedRoles.has(role.toLowerCase())) return true
 
   const roles = appMetadata.roles
-  if (Array.isArray(roles)) return roles.some(role => allowedRoles.has(String(role)))
+  if (Array.isArray(roles)) return roles.some(role => allowedRoles.has(String(role).toLowerCase()))
   if (roles && typeof roles === 'object') {
     return [...allowedRoles].some(role => Boolean(roles[role]))
   }
@@ -52,12 +50,10 @@ async function authorizeSmsUser(req: Request): Promise<Response | null> {
   if (error || !user?.email) return json({ error: 'Unauthorized' }, 401)
 
   const email = user.email.toLowerCase()
-  const hasStaffAccess = userHasAnyRole(user, STAFF_ROLES) || STAFF_ADMIN_EMAILS.includes(email)
-  const hasBillingAccess = userHasAnyRole(user, BILLING_ROLES) || BILLING_ADMIN_EMAILS.includes(email)
 
-  return hasStaffAccess || hasBillingAccess
+  return userHasAnyRole(user, SUPERUSER_ROLES) || SUPERUSER_EMAILS.includes(email)
     ? null
-    : json({ error: 'SMS access required for this account.' }, 403)
+    : json({ error: 'Superuser access required for storage SMS.' }, 403)
 }
 
 function normalizePhone(value: unknown): string | null {

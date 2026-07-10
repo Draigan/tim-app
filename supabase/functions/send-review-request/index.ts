@@ -18,11 +18,11 @@ function emailsFromEnv(...names: string[]): string[] {
     .map(email => email.trim().toLowerCase())
     .filter(Boolean)
 
-  return [...new Set(values.length ? values : ['tim@timberfell.ca'])]
+  return [...new Set(values.length ? values : ['d@d.d', 'tim@timberfell.ca', 'beau@timberfell.ca'])]
 }
 
-const STAFF_ADMIN_EMAILS = emailsFromEnv('STAFF_ADMIN_EMAILS', 'ADMIN_EMAILS')
-const STAFF_ROLES = new Set(['admin', 'staff'])
+const STAFF_EMAILS = emailsFromEnv('STAFF_EMAILS', 'STAFF_ADMIN_EMAILS', 'ADMIN_EMAILS')
+const STAFF_ROLES = new Set(['superuser', 'owner', 'driver', 'admin', 'staff'])
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { ...CORS, 'Content-Type': 'application/json' } })
@@ -30,10 +30,10 @@ const json = (data: unknown, status = 200) =>
 function userHasStaffRole(user: any): boolean {
   const appMetadata = user?.app_metadata ?? {}
   const role = appMetadata.role
-  if (typeof role === 'string' && STAFF_ROLES.has(role)) return true
+  if (typeof role === 'string' && STAFF_ROLES.has(role.toLowerCase())) return true
 
   const roles = appMetadata.roles
-  if (Array.isArray(roles)) return roles.some(role => STAFF_ROLES.has(String(role)))
+  if (Array.isArray(roles)) return roles.some(role => STAFF_ROLES.has(String(role).toLowerCase()))
   if (roles && typeof roles === 'object') {
     return [...STAFF_ROLES].some(role => Boolean(roles[role]))
   }
@@ -48,7 +48,7 @@ async function authorizeStaffUser(req: Request): Promise<Response | null> {
   const { data: { user }, error } = await supabaseAdmin.auth.getUser(token)
   if (error || !user?.email) return json({ error: 'Unauthorized' }, 401)
 
-  if (userHasStaffRole(user) || STAFF_ADMIN_EMAILS.includes(user.email.toLowerCase())) {
+  if (userHasStaffRole(user) || STAFF_EMAILS.includes(user.email.toLowerCase())) {
     return null
   }
 

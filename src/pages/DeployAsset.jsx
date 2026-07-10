@@ -8,7 +8,8 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { ArrowLeft, MapPin, TriangleAlert, X } from 'lucide-react'
 import CustomerPicker from '@/components/CustomerPicker'
-import { formatPhone } from '@/lib/utils'
+import { formatPhone, getErrorMessage, newClientId, retryTransient, throwSupabaseError } from '@/lib/utils'
+import { useOnlineStatus } from '@/lib/useOnlineStatus'
 
 export default function DeployAsset() {
   const { assetId } = useParams()
@@ -21,6 +22,8 @@ export default function DeployAsset() {
   const [selectedCoords, setSelectedCoords] = useState(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [deploymentId] = useState(() => newClientId())
+  const isOnline = useOnlineStatus()
   const geocodeTimer = useRef(null)
 
   useEffect(() => {
@@ -44,6 +47,7 @@ export default function DeployAsset() {
   }, [selectedCustomer?.id])
 
   function set(field, value) {
+    if (error) setError('')
     setForm(f => ({ ...f, [field]: value }))
   }
 
@@ -69,28 +73,52 @@ export default function DeployAsset() {
     if (!selectedCoords) { setError('Please select an address from the suggestions.'); return }
     if (!form.address.trim()) { setError('Address is required.'); return }
     if (!selectedCustomer) { setError('Please select or create a customer.'); return }
+    if (!isOnline) { setError('Deployment requires an internet connection. Reconnect and try again.'); return }
     setSaving(true)
-    const { data: { user } } = await supabase.auth.getUser()
-    const { error } = await supabase.from('deployments').insert({
-      asset_id: assetId,
-      address: form.address,
-      lat: selectedCoords.lat,
-      lng: selectedCoords.lng,
-      customer_id: selectedCustomer.id,
-      customer_name: selectedCustomer.name || null,
-      customer_phone: selectedCustomer.phone || null,
-      notes: form.notes || null,
-      expires_at: form.expires_at || null,
-      dropped_at: new Date().toISOString(),
-      deployed_by: user?.user_metadata?.full_name ?? user?.email ?? null,
-    })
-    setSaving(false)
-    if (error) { setError(error.message); return }
+    setError('')
+    let session = null
+    try {
+      const { data } = await supabase.auth.getSession()
+      session = data?.session ?? null
+      const user = session?.user
+      const payload = {
+        id: deploymentId,
+        asset_id: assetId,
+        address: form.address,
+        lat: selectedCoords.lat,
+        lng: selectedCoords.lng,
+        customer_id: selectedCustomer.id,
+        customer_name: selectedCustomer.name || null,
+        customer_phone: selectedCustomer.phone || null,
+        notes: form.notes || null,
+        expires_at: form.expires_at || null,
+        dropped_at: new Date().toISOString(),
+        deployed_by: user?.user_metadata?.full_name ?? user?.email ?? null,
+      }
+
+      await retryTransient(async () => {
+        const result = await supabase.from('deployments').insert(payload)
+        if (result.error?.code === '23505') {
+          return throwSupabaseError(
+            await supabase.from('deployments').select('id').eq('id', deploymentId).single()
+          )
+        }
+        return throwSupabaseError(result)
+      })
+    } catch (err) {
+      console.error('deployment save failed:', err)
+      setError(getErrorMessage(err, 'Could not deploy asset. Check your connection and try again.'))
+      setSaving(false)
+      return
+    }
+
     const today = new Date().toISOString().slice(0, 10)
-    await supabase.from('reservations').delete().eq('asset_id', assetId).lte('from_date', today).gte('to_date', today)
+    supabase.from('reservations').delete().eq('asset_id', assetId).lte('from_date', today).gte('to_date', today)
+      .then(({ error: reservationError }) => {
+        if (reservationError) console.warn('Could not clear active reservation after deployment:', reservationError)
+      })
 
     // Notify other users about the deployment (fire-and-forget)
-    const { data: { session } } = await supabase.auth.getSession()
     if (session) {
       const label = asset ? `${asset.label}${asset.size ? ` ${asset.size}` : ''}` : 'Asset'
       fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-push`, {
@@ -105,6 +133,7 @@ export default function DeployAsset() {
       }).catch(() => {})
     }
 
+    setSaving(false)
     navigate('/', { state: { flyTo: [selectedCoords.lng, selectedCoords.lat] } })
   }
 
@@ -224,8 +253,11 @@ export default function DeployAsset() {
         </div>
 
         {error && <p className="text-sm text-destructive">{error}</p>}
+        {!isOnline && !error && (
+          <p className="text-sm text-destructive">Deployment requires an internet connection.</p>
+        )}
 
-        <Button type="submit" className="w-full" disabled={saving}>
+        <Button type="submit" className="w-full" disabled={saving || !isOnline}>
           {saving ? 'Deploying…' : 'Deploy Asset'}
         </Button>
       </form>

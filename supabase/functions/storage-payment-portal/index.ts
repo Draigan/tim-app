@@ -14,6 +14,7 @@ const SALES_TAX_RATE = 0.13
 const SALES_TAX_LABEL = 'HST'
 const MAX_PORTAL_PERIODS = 24
 const MAX_PREPAY_MONTHS = 12
+const DEFAULT_PAYMENT_PORTAL_ORIGIN = 'https://timberfellstorage.ca'
 const CUSTOMER_STORAGE_TYPE_LABELS: Record<string, string> = {
   boat: 'Boat',
   trailer: 'Trailer',
@@ -453,8 +454,8 @@ function allowedReturnOrigin(req: Request, body: Record<string, unknown>): strin
     .map(origin => normalizeOrigin(origin))
     .filter(Boolean) as string[]
 
-  if (requested && (!allowed.length || allowed.includes(requested))) return requested
-  return normalizeOrigin(Deno.env.get('APP_PUBLIC_ORIGIN')) ?? 'https://timberfellstorage.ca'
+  if (requested && allowed.includes(requested)) return requested
+  return DEFAULT_PAYMENT_PORTAL_ORIGIN
 }
 
 function checkoutPath(name: string, fallback: string): string {
@@ -555,8 +556,8 @@ Deno.serve(async (req) => {
 
     const stripeCustomerId = await ensureStripeCustomer(customer)
     const returnOrigin = allowedReturnOrigin(req, body)
-    const successPath = checkoutPath('PAYMENT_PORTAL_SUCCESS_PATH', '/payment/success')
-    const cancelPath = checkoutPath('PAYMENT_PORTAL_CANCEL_PATH', '/payment/cancelled')
+    const successPath = checkoutPath('PAYMENT_PORTAL_SUCCESS_PATH', '/payment-success')
+    const cancelPath = checkoutPath('PAYMENT_PORTAL_CANCEL_PATH', '/payment-cancelled')
 
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',

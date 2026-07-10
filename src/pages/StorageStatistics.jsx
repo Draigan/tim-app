@@ -231,9 +231,27 @@ function buildStats({
     return counts
   }, {})
 
+  function resolveFixedMeta(payment) {
+    const tenancy = tenancyById.get(payment.tenancy_id)
+    const unit = tenancy ? unitById.get(tenancy.unit_id) : null
+    return {
+      customer: tenancy?.customers?.name ?? tenancy?.tenant_name ?? 'Unknown customer',
+      label: unit ? `Unit ${unit.unit_number}` : 'Fixed unit',
+    }
+  }
+
+  function resolvePortableMeta(payment) {
+    const rental = portableRentalByAssetId.get(payment.asset_id)
+    const asset = portableByAssetId.get(payment.asset_id)
+    return {
+      customer: rental?.customers?.name ?? rental?.tenant_name ?? 'Unknown customer',
+      label: asset?.label ?? 'Portable unit',
+    }
+  }
+
   const allPayments = [
-    ...storagePayments.map(payment => ({ ...payment, source: 'fixed' })),
-    ...portablePayments.map(payment => ({ ...payment, source: 'portable' })),
+    ...storagePayments.map(payment => ({ ...payment, source: 'fixed', ...resolveFixedMeta(payment) })),
+    ...portablePayments.map(payment => ({ ...payment, source: 'portable', ...resolvePortableMeta(payment) })),
   ]
   const customerSpendingByKey = new Map()
 
@@ -441,7 +459,21 @@ function buildStats({
       collectedThisMonth: sumAmounts(paidThisMonth, amountOf),
       collectedLast30: sumAmounts(paidLast30, amountOf),
       taxThisMonth: sumAmounts(paidThisMonth, payment => payment.tax_amount),
+      subtotalThisMonth: sumAmounts(paidThisMonth, amountOf) - sumAmounts(paidThisMonth, payment => payment.tax_amount),
       paymentCountThisMonth: paidThisMonth.length,
+      monthName: now.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }),
+      monthPayments: [...paidThisMonth]
+        .map(payment => ({
+          key: `${payment.source}-${payment.tenancy_id ?? payment.asset_id}-${payment.period_label}-${payment.paid_at}`,
+          customer: payment.customer,
+          label: payment.label,
+          source: payment.source,
+          periodLabel: payment.period_label,
+          paidAt: parseDateTime(payment.paid_at),
+          amount: amountOf(payment),
+          tax: Number(payment.tax_amount) || 0,
+        }))
+        .sort((a, b) => (b.paidAt?.getTime() ?? 0) - (a.paidAt?.getTime() ?? 0)),
       revenueByPeriod,
       maxPeriodRevenue,
       currentLabel,
@@ -631,6 +663,28 @@ function CompactRow({ label, value, detail }) {
   )
 }
 
+function PaymentRow({ row }) {
+  const detail = [
+    row.label,
+    row.paidAt && row.paidAt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+    row.source === 'portable' ? 'Portable' : 'Fixed',
+    row.periodLabel && `for ${periodDisplay(row.periodLabel)}`,
+  ].filter(Boolean).join(' · ')
+
+  return (
+    <div className="px-4 py-3 flex items-center justify-between gap-3">
+      <div className="min-w-0">
+        <p className="text-sm font-medium truncate">{row.customer}</p>
+        {detail && <p className="text-xs text-muted-foreground truncate mt-0.5">{detail}</p>}
+      </div>
+      <div className="text-right flex-shrink-0">
+        <p className="text-sm font-semibold">{money(row.amount, 2)}</p>
+        {row.tax > 0 && <p className="text-xs text-muted-foreground">{money(row.tax, 2)} HST</p>}
+      </div>
+    </div>
+  )
+}
+
 function CustomerSpendingRow({ row }) {
   const detail = [
     row.phone && formatPhone(row.phone),
@@ -807,6 +861,21 @@ export default function StorageStatistics() {
           </Section>
 
           <Section title="Revenue">
+            <div className="rounded-lg border bg-card px-4 py-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <p className="text-xs text-muted-foreground">Gross collected · {stats.payments.monthName}</p>
+                  <p className="text-3xl font-semibold mt-1">{money(stats.payments.collectedThisMonth, 2)}</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {money(stats.payments.subtotalThisMonth, 2)} subtotal · {money(stats.payments.taxThisMonth, 2)} HST · {stats.payments.paymentCountThisMonth} payment{stats.payments.paymentCountThisMonth !== 1 ? 's' : ''}
+                  </p>
+                </div>
+                <span className="w-10 h-10 rounded-md bg-green-500/10 text-green-600 flex items-center justify-center flex-shrink-0">
+                  <DollarSign size={20} />
+                </span>
+              </div>
+            </div>
+
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
               <MetricCard
                 title="Collected this month"
@@ -854,6 +923,26 @@ export default function StorageStatistics() {
                   </div>
                 ))}
               </div>
+            </div>
+          </Section>
+
+          <Section title="This Month's Payments">
+            <div className="rounded-lg border bg-card overflow-hidden">
+              <div className="px-4 py-3 border-b flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-medium">
+                  {stats.payments.paymentCountThisMonth} payment{stats.payments.paymentCountThisMonth !== 1 ? 's' : ''} · {stats.payments.monthName}
+                </p>
+                <p className="text-sm font-semibold">{money(stats.payments.collectedThisMonth, 2)}</p>
+              </div>
+              {stats.payments.monthPayments.length > 0 ? (
+                <div className="divide-y">
+                  {stats.payments.monthPayments.map(row => (
+                    <PaymentRow key={row.key} row={row} />
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground px-4 py-3">No payments collected this month yet.</p>
+              )}
             </div>
           </Section>
 

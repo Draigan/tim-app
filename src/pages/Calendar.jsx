@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
-import { useIsAdmin } from '@/lib/useIsAdmin'
+import { useAccess } from '@/lib/useAccess'
 import { useRealtime } from '@/lib/useRealtime'
 import { ChevronLeft, ChevronRight, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -136,7 +136,7 @@ function EventDialog({ date, event, onClose, onSaved, onDeleted }) {
 
 export default function Calendar() {
   const navigate = useNavigate()
-  const isAdmin = useIsAdmin()
+  const { canManageCalendar } = useAccess()
   const today = new Date()
   const todayIso = isoDate(today.getFullYear(), today.getMonth(), today.getDate())
 
@@ -175,7 +175,7 @@ export default function Calendar() {
   useEffect(() => { fetch() }, [fetch])
   useRealtime(['calendar_events', 'reservations'], fetch)
 
-  if (!isAdmin) return <div className="flex items-center justify-center h-full text-muted-foreground text-sm">Not available</div>
+  if (!canManageCalendar) return <div className="flex items-center justify-center h-full text-muted-foreground text-sm">Not available</div>
 
   // Build per-day index
   function eventsOnDay(dateStr) {
