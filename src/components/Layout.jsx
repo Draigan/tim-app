@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useRealtime } from '@/lib/useRealtime'
 import { useCallback } from 'react'
-import { X } from 'lucide-react'
+import { ArrowLeft, X } from 'lucide-react'
 import BottomNav from './BottomNav'
 import PushPrompt from './PushPrompt'
 import ConnectionStatus from './ConnectionStatus'
@@ -68,8 +68,10 @@ function ReservationBanner() {
 
 export default function Layout() {
   const { pathname } = useLocation()
-  const showLogo = pathname !== '/' && pathname !== '/storage/floorplan'
-  const showNav  = pathname !== '/storage/floorplan'
+  const navigate = useNavigate()
+  const isVoiceDeploy = pathname === '/voice-deploy'
+  const showLogo = !isVoiceDeploy && pathname !== '/' && pathname !== '/storage/floorplan'
+  const showNav  = !isVoiceDeploy && pathname !== '/storage/floorplan'
 
   return (
     <div className="flex flex-col h-full">
@@ -79,7 +81,20 @@ export default function Layout() {
           <ConnectionStatus />
         </div>
       )}
-      <ReservationBanner />
+      {isVoiceDeploy && (
+        <div className="flex items-center justify-between px-2 py-1 flex-shrink-0">
+          <button
+            type="button"
+            onClick={() => navigate(-1)}
+            className="flex h-8 w-8 items-center justify-center text-muted-foreground hover:text-foreground"
+            aria-label="Back"
+          >
+            <ArrowLeft size={20} />
+          </button>
+          <ConnectionStatus compact />
+        </div>
+      )}
+      {!isVoiceDeploy && <ReservationBanner />}
       <main className="flex-1 overflow-hidden">
         <Outlet />
       </main>

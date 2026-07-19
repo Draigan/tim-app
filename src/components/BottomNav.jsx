@@ -1,6 +1,6 @@
 import { createElement, useState } from 'react'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
-import { Map, Package, Settings, Warehouse, MoreHorizontal, Users, CalendarDays, LayoutGrid, History, ChevronRight, Star, ReceiptText, Bell } from 'lucide-react'
+import { Map, Package, Settings, Warehouse, MoreHorizontal, Users, CalendarDays, LayoutGrid, History, ChevronRight, Star, ReceiptText, Bell, Mic } from 'lucide-react'
 import { Sheet, SheetContent } from '@/components/ui/sheet'
 import { cn } from '@/lib/utils'
 import { useAccess } from '@/lib/useAccess'
@@ -8,6 +8,7 @@ import { useNotificationUnreadCount } from '@/lib/useNotificationUnreadCount'
 
 const MORE_ITEMS = [
   { to: '/notifications',   icon: Bell,         label: 'Notifications',   description: 'Bookings, payments, alerts', access: 'canViewNotifications' },
+  { to: '/voice-deploy',     icon: Mic,          label: 'Voice Deploy',     description: 'Deploy an asset by voice', access: 'canUseVoiceDeploy' },
   { to: '/calendar',        icon: CalendarDays, label: 'Calendar',        description: 'Schedule and reservations', access: 'canManageCalendar' },
   { to: '/asset-manager',   icon: LayoutGrid,   label: 'Asset Manager',   description: 'Add and configure assets', access: 'canManageAssets' },
   { to: '/history',         icon: History,      label: 'History',         description: 'Deployment history', access: 'canViewHistory' },

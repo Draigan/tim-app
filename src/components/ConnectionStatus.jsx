@@ -100,10 +100,24 @@ function useConnectionStatus() {
   return status
 }
 
-export default function ConnectionStatus() {
+export default function ConnectionStatus({ compact = false }) {
   const status = useConnectionStatus()
   const config = STATUS[status] ?? STATUS.checking
   const Icon = config.icon
+
+  if (compact) {
+    return (
+      <button
+        type="button"
+        onClick={() => window.location.reload()}
+        className="flex h-8 w-8 items-center justify-center"
+        title={`Connection: ${config.label} — tap to reload`}
+        aria-label={`Connection status: ${config.label}`}
+      >
+        <Icon size={18} className={cn(config.text, config.spin && 'animate-spin')} />
+      </button>
+    )
+  }
 
   return (
     <button

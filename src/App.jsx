@@ -29,6 +29,7 @@ import ReviewRequest from '@/pages/ReviewRequest'
 import AdminRevenue from '@/pages/AdminRevenue'
 import OnlinePayments from '@/pages/OnlinePayments'
 import Notifications from '@/pages/Notifications'
+import VoiceDeploy from '@/pages/VoiceDeploy'
 
 const STORAGE_PUBLIC_ORIGIN = (import.meta.env.VITE_STORAGE_PUBLIC_ORIGIN || 'https://timberfellstorage.ca').replace(/\/+$/, '')
 const CUSTOMER_RETURN_PATHS = new Map([
@@ -136,6 +137,7 @@ export default function App() {
           <Route path="/admin-revenue" element={requireAccess(access.canManageRevenue, <AdminRevenue />)} />
           <Route path="/online-payments" element={requireAccess(access.canManageRevenue, <OnlinePayments />)} />
           <Route path="/notifications" element={requireAccess(access.canViewNotifications, <Notifications />)} />
+          <Route path="/voice-deploy" element={requireAccess(access.canUseVoiceDeploy, <VoiceDeploy />)} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

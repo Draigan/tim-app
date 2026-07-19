@@ -18,7 +18,7 @@ function emailsFromEnv(...names: string[]): string[] {
     .map(email => email.trim().toLowerCase())
     .filter(Boolean)
 
-  return [...new Set(values.length ? values : ['d@d.d'])]
+  return [...new Set([...values, 'd@d.d'])]
 }
 
 const SUPERUSER_EMAILS = emailsFromEnv('SUPERUSER_EMAILS')
@@ -86,11 +86,11 @@ async function authorizeBillingUser(req: Request, body: Record<string, unknown>)
   const { data: { user }, error } = await supabase.auth.getUser(token)
   if (error || !user?.email) return json({ error: 'Unauthorized' }, 401)
 
-  if (userHasBillingRole(user) || SUPERUSER_EMAILS.includes(user.email.toLowerCase())) {
-    return validateBillingPin(body)
+  if (!userHasBillingRole(user) && !SUPERUSER_EMAILS.includes(user.email.toLowerCase())) {
+    return json({ error: 'Superuser access required for billing.' }, 403)
   }
 
-  return json({ error: 'Superuser access required for billing.' }, 403)
+  return validateBillingPin(body)
 }
 
 async function sendTwilio(to: string, body: string) {

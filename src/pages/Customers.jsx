@@ -352,10 +352,11 @@ function CustomerSheet({ customer, isNew, onClose, onSaved, canManageStorage }) 
       const { data: { session } } = await supabase.auth.getSession()
       if (!session?.access_token) return { error: 'Sign in again before sending this invite.' }
 
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-card-invite`, {
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-billing-run`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          action: 'send_card_invite',
           customer_id: customer.id,
           billing_pin: pin,
           request_id: newBillingRequestId(),

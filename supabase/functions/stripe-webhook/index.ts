@@ -6,6 +6,7 @@ const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY')!, { apiVersion: '202
 const webhookSecret = Deno.env.get('STRIPE_WEBHOOK_SECRET')!
 const ADMIN_EMAIL = (Deno.env.get('SUPERUSER_EMAIL') ?? Deno.env.get('ADMIN_EMAIL') ?? 'd@d.d').trim().toLowerCase()
 const NOTIFICATION_INBOX_URL = '/notifications'
+const MAX_STORAGE_BOOKING_SMS_LENGTH = 500
 
 let webPushConfigured = false
 
@@ -66,8 +67,96 @@ function formatCad(value: number): string {
   return `$${amount.toFixed(2)}`
 }
 
+function truncateText(value: string, maxLength: number): string {
+  return value.length <= maxLength ? value : `${value.slice(0, maxLength - 3)}...`
+}
+
 function plural(count: number, single: string, many = `${single}s`): string {
   return count === 1 ? single : many
+}
+
+function envList(...names: string[]): string[] {
+  return [...new Set(names
+    .flatMap(name => (Deno.env.get(name) ?? '').split(','))
+    .map(value => value.trim())
+    .filter(Boolean))]
+}
+
+function normalizePhone(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const digits = value.replace(/\D/g, '')
+  if (digits.length === 10) return `+1${digits}`
+  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`
+  if (digits.length >= 8 && digits.length <= 15) return `+${digits}`
+  return null
+}
+
+function storageBookingSmsRecipients(): string[] {
+  return envList('STORAGE_BOOKING_SMS_TO', 'STORAGE_BOOKING_NOTIFY_SMS_TO')
+    .map(normalizePhone)
+    .filter((phone): phone is string => Boolean(phone))
+}
+
+function optionalLine(label: string, value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return trimmed ? `${label}: ${trimmed}` : null
+}
+
+function bookingAddressLine(booking: any): string | null {
+  const parts = [
+    booking.service_address,
+    booking.city,
+    booking.province,
+    booking.postal_code,
+  ]
+    .map(value => typeof value === 'string' ? value.trim() : '')
+    .filter(Boolean)
+
+  return parts.length ? `Address: ${parts.join(', ')}` : null
+}
+
+async function sendTwilioSms(to: string, body: string): Promise<void> {
+  const accountSid = Deno.env.get('TWILIO_ACCOUNT_SID')
+  const authToken = Deno.env.get('TWILIO_AUTH_TOKEN')
+  const from = Deno.env.get('TWILIO_FROM_NUMBER')
+  if (!accountSid || !authToken || !from) {
+    console.warn('Storage booking SMS skipped: Twilio is not configured.')
+    return
+  }
+
+  const res = await fetch(
+    `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Authorization': 'Basic ' + btoa(`${accountSid}:${authToken}`),
+      },
+      body: new URLSearchParams({ To: to, From: from, Body: body }),
+    },
+  )
+
+  if (!res.ok) throw new Error(`Twilio ${res.status}: ${await res.text()}`)
+}
+
+async function sendStorageBookingSms(booking: any, amount: number, unitLabel: string, customer: string) {
+  const recipients = storageBookingSmsRecipients()
+  if (recipients.length === 0) return
+
+  const body = truncateText([
+    `Timberfell booking paid: ${customer} booked ${unitLabel} for ${formatCad(amount)}.`,
+    optionalLine('Customer phone', booking.phone),
+    optionalLine('Email', booking.email),
+    bookingAddressLine(booking),
+  ].filter(Boolean).join('\n'), MAX_STORAGE_BOOKING_SMS_LENGTH)
+
+  const results = await Promise.allSettled(recipients.map(to => sendTwilioSms(to, body)))
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      console.error('Storage booking SMS failed.', result.reason)
+    }
+  }
 }
 
 function configureWebPush(): boolean {
@@ -619,21 +708,30 @@ async function notifyStorageBooking(booking: any, amount: number) {
     ? booking.customer_name.trim()
     : 'A customer'
 
-  await notifyAdminEvent({
-    title: 'Storage Booking Paid',
-    body: `${customer} booked ${unitLabel} online for ${formatCad(amount)}.`,
-    url: '/storage',
-    type: 'storage_booking',
-    severity: 'success',
-    metadata: {
-      booking_id: booking.id,
-      unit_type: booking.unit_type,
-      unit_number: booking.unit_number,
-      unit_id: booking.unit_id ?? null,
-      asset_id: booking.asset_id ?? null,
-      amount,
-    },
-  })
+  const results = await Promise.allSettled([
+    notifyAdminEvent({
+      title: 'Storage Booking Paid',
+      body: `${customer} booked ${unitLabel} online for ${formatCad(amount)}.`,
+      url: '/storage',
+      type: 'storage_booking',
+      severity: 'success',
+      metadata: {
+        booking_id: booking.id,
+        unit_type: booking.unit_type,
+        unit_number: booking.unit_number,
+        unit_id: booking.unit_id ?? null,
+        asset_id: booking.asset_id ?? null,
+        amount,
+      },
+    }),
+    sendStorageBookingSms(booking, amount, unitLabel, customer),
+  ])
+
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      console.error('Storage booking notification failed.', result.reason)
+    }
+  }
 }
 
 async function recordBookingPayment(session: Stripe.Checkout.Session) {

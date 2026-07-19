@@ -21,7 +21,7 @@ function emailsFromEnv(...names: string[]): string[] {
     .map(email => email.trim().toLowerCase())
     .filter(Boolean)
 
-  return [...new Set(values.length ? values : ['d@d.d'])]
+  return [...new Set([...values, 'd@d.d'])]
 }
 
 const SUPERUSER_EMAILS = emailsFromEnv('SUPERUSER_EMAILS')

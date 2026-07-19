@@ -30,6 +30,11 @@ type PortableRental = {
   asset_id: string | null
 }
 
+type PendingBooking = {
+  unit_id: string | null
+  asset_id: string | null
+}
+
 type PublicUnit = {
   unitNumber: string
   size: string | null
@@ -138,12 +143,14 @@ Deno.serve(async (req) => {
       storageTypesResult,
       activeDeploymentsResult,
       portableRentalsResult,
+      pendingBookingsResult,
     ] = await Promise.all([
       supabase.from('storage_units').select('id, unit_number, size'),
       supabase.from('storage_tenancies').select('unit_id').eq('storage_kind', 'fixed_unit').is('end_date', null),
       supabase.from('asset_types').select('id, name').eq('is_storage', true),
       supabase.from('deployments').select('asset_id').is('picked_up_at', null),
       supabase.from('portable_storage_rentals').select('asset_id'),
+      supabase.from('storage_booking_sessions').select('unit_id, asset_id').eq('status', 'pending').gt('expires_at', new Date().toISOString()),
     ])
 
     failIfError('storage units', fixedUnitsResult.error)
@@ -151,16 +158,19 @@ Deno.serve(async (req) => {
     failIfError('storage asset types', storageTypesResult.error)
     failIfError('active deployments', activeDeploymentsResult.error)
     failIfError('portable rentals', portableRentalsResult.error)
+    failIfError('pending booking sessions', pendingBookingsResult.error)
 
     const fixedUnits = (fixedUnitsResult.data ?? []) as FixedUnit[]
     const activeTenancies = (activeTenanciesResult.data ?? []) as StorageTenancy[]
     const storageTypes = (storageTypesResult.data ?? []) as AssetType[]
     const activeDeployments = (activeDeploymentsResult.data ?? []) as Deployment[]
     const portableRentals = (portableRentalsResult.data ?? []) as PortableRental[]
+    const pendingBookings = (pendingBookingsResult.data ?? []) as PendingBooking[]
 
     const occupiedFixedUnitIds = new Set(activeTenancies.map(row => row.unit_id).filter(Boolean))
+    const heldFixedUnitIds = new Set(pendingBookings.map(row => row.unit_id).filter(Boolean))
     const fixedAvailable = fixedUnits
-      .filter(unit => !occupiedFixedUnitIds.has(unit.id))
+      .filter(unit => !occupiedFixedUnitIds.has(unit.id) && !heldFixedUnitIds.has(unit.id))
       .map(unit => ({
         unitNumber: cleanText(unit.unit_number) ?? 'Unnumbered',
         size: cleanText(unit.size),
@@ -182,10 +192,11 @@ Deno.serve(async (req) => {
       const portableAssets = (portableAssetsResult.data ?? []) as PortableAsset[]
       const deployedAssetIds = new Set(activeDeployments.map(row => row.asset_id).filter(Boolean))
       const rentedAssetIds = new Set(portableRentals.map(row => row.asset_id).filter(Boolean))
+      const heldAssetIds = new Set(pendingBookings.map(row => row.asset_id).filter(Boolean))
       const typeNameById = new Map(storageTypes.map(type => [type.id, cleanText(type.name)]))
 
       portableAvailable = portableAssets
-        .filter(asset => !deployedAssetIds.has(asset.id) && !rentedAssetIds.has(asset.id))
+        .filter(asset => !deployedAssetIds.has(asset.id) && !rentedAssetIds.has(asset.id) && !heldAssetIds.has(asset.id))
         .map(asset => ({
           unitNumber: cleanText(asset.label) ?? 'Unnumbered',
           size: cleanText(asset.size),

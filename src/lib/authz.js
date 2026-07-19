@@ -104,5 +104,6 @@ export function getUserAccess(user) {
     canViewHistory: manager,
     canRequestReviews: manager,
     canViewNotifications: manager,
+    canUseVoiceDeploy: superuser,
   }
 }

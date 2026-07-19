@@ -6,10 +6,9 @@ import { useRealtime } from '@/lib/useRealtime'
 import { supabase } from '@/lib/supabase'
 import { getMarkerColor } from '@/lib/utils'
 import AssetBottomSheet from '@/components/AssetBottomSheet'
-import DeploySheet from '@/components/DeploySheet'
 import { Button } from '@/components/ui/button'
-import { Plus, LocateFixed, Layers, Search, X, SlidersHorizontal } from 'lucide-react'
-import { useLocation } from 'react-router-dom'
+import { Mic, LocateFixed, Layers, Search, X, SlidersHorizontal } from 'lucide-react'
+import { useLocation, useNavigate } from 'react-router-dom'
 
 mapboxgl.accessToken = MAPBOX_TOKEN
 
@@ -280,7 +279,6 @@ export default function MapView() {
   const deploymentsRef = useRef([])
   const [deployments, setDeployments] = useState([])
   const [selected, setSelected] = useState(null)
-  const [showDeploy, setShowDeploy] = useState(false)
   const [showStyles, setShowStyles] = useState(false)
   const [showSearch, setShowSearch] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
@@ -295,6 +293,7 @@ export default function MapView() {
   )
   const stylesRef = useRef(null)
   const location = useLocation()
+  const navigate = useNavigate()
   const pendingFlyTo = useRef(location.state?.flyTo ?? null)
 
   const applyDeployments = useCallback(data => {
@@ -583,12 +582,12 @@ export default function MapView() {
       <Button
         className="absolute bottom-6 right-4 z-10 shadow-lg rounded-full h-14 w-14"
         size="icon"
-        onClick={() => setShowDeploy(true)}
+        aria-label="Voice deploy"
+        onClick={() => navigate('/voice-deploy', { state: { autoRecord: true } })}
       >
-        <Plus size={22} />
+        <Mic size={22} />
       </Button>
 
-      <DeploySheet open={showDeploy} onClose={() => setShowDeploy(false)} />
 
       <AssetBottomSheet
         deployments={selected}

@@ -379,19 +379,14 @@ Deno.serve(async (req) => {
       return json(req, { error: 'A valid email is required.' }, 400)
     }
     if (!phone) return json(req, { error: 'Phone number is required.' }, 400)
-    if (!serviceAddress || !city || !province || !postalCode) {
-      return json(
-        req,
-        {
-          error: 'Address, city, province, and postal code are required.',
-        },
-        400,
-      )
+    if (unitType === 'portable' && !serviceAddress) {
+      return json(req, { error: 'Delivery address is required.' }, 400)
     }
 
     await expireStaleBookings()
 
     const resolved = unitType === 'fixed' ? await resolveFixedUnit(unitNumber) : await resolvePortableUnit(unitNumber)
+    const isPortableBooking = resolved.unitType === 'portable'
     const startDate = todayLabel()
     const billingDay = Number(startDate.slice(-2))
     const rentCents = resolved.unitType === 'fixed' ? FIXED_MONTHLY_RATE_CENTS : PORTABLE_MONTHLY_RATE_CENTS
@@ -414,11 +409,11 @@ Deno.serve(async (req) => {
         customer_name: customerName,
         phone,
         email,
-        service_address: serviceAddress,
-        city,
-        province,
-        country,
-        postal_code: postalCode,
+        service_address: isPortableBooking ? serviceAddress : null,
+        city: isPortableBooking ? city : null,
+        province: isPortableBooking ? province : null,
+        country: isPortableBooking ? country : null,
+        postal_code: isPortableBooking ? postalCode : null,
         start_date: startDate,
         billing_day: billingDay,
         monthly_rate: dollarsFromCents(rentCents),
@@ -497,6 +492,7 @@ Deno.serve(async (req) => {
       return json(req, {
         ok: true,
         checkout_url: session.url,
+        booking_session_id: booking.id,
         session_id: session.id,
         expires_at: session.expires_at ? new Date(session.expires_at * 1000).toISOString() : expiresAt.toISOString(),
       })
