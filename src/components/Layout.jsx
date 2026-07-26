@@ -71,7 +71,7 @@ export default function Layout() {
   const { pathname } = useLocation()
   const navigate = useNavigate()
   const isVoiceDeploy = pathname === '/voice-deploy'
-  const showLogo = !isVoiceDeploy && pathname !== '/' && pathname !== '/storage/floorplan'
+  const showLogo = !isVoiceDeploy && pathname !== '/' && pathname !== '/storage/floorplan' && pathname !== '/accountant'
   const showNav  = !isVoiceDeploy && pathname !== '/storage/floorplan'
 
   return (

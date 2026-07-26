@@ -29,6 +29,7 @@ import Customers from '@/pages/Customers'
 import ReviewRequest from '@/pages/ReviewRequest'
 import AdminRevenue from '@/pages/AdminRevenue'
 import OnlinePayments from '@/pages/OnlinePayments'
+import AccountantPortal from '@/pages/AccountantPortal'
 import Notifications from '@/pages/Notifications'
 import VoiceDeploy from '@/pages/VoiceDeploy'
 import Verifier from '@/pages/Verifier'
@@ -121,6 +122,21 @@ export default function App() {
   const access = getUserAccess(session.user)
   const requireAccess = (allowed, element) => allowed ? element : <AccessDenied roleLabel={access.roleLabel} />
 
+  // The accountant is locked to the Online Payments portal only. Render a
+  // standalone router with no Layout/BottomNav so no other page is reachable.
+  if (access.isAccountant && !access.isSuperuser) {
+    return (
+      <ThemeProvider>
+        <BrowserRouter>
+          <Routes>
+            <Route path="/accountant" element={<AccountantPortal />} />
+            <Route path="*" element={<Navigate to="/accountant" replace />} />
+          </Routes>
+        </BrowserRouter>
+      </ThemeProvider>
+    )
+  }
+
   return (
     <ThemeProvider>
     <BrowserRouter>
@@ -148,6 +164,7 @@ export default function App() {
           <Route path="/review-request" element={requireAccess(access.canRequestReviews, <ReviewRequest />)} />
           <Route path="/admin-revenue" element={requireAccess(access.canManageRevenue, <AdminRevenue />)} />
           <Route path="/online-payments" element={requireAccess(access.canManageRevenue, <OnlinePayments />)} />
+          <Route path="/accountant" element={requireAccess(access.canAccessAccountantPortal, <AccountantPortal />)} />
           <Route path="/notifications" element={requireAccess(access.canViewNotifications, <Notifications />)} />
           <Route path="/voice-deploy" element={requireAccess(access.canUseVoiceDeploy, <VoiceDeploy />)} />
           <Route path="/verifier" element={requireAccess(access.canManageAssets, <Verifier />)} />

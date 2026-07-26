@@ -14,6 +14,7 @@ const MORE_ITEMS = [
   { to: '/verifier',        icon: BadgeCheck,   label: 'Verifier',        description: 'Check off bins you actually see', access: 'canManageAssets' },
   { to: '/history',         icon: History,      label: 'History',         description: 'Deployment history', access: 'canViewHistory' },
   { to: '/online-payments', icon: ReceiptText,  label: 'Online Payments', description: 'Tax collected payments', access: 'canManageRevenue' },
+  { to: '/accountant',      icon: ReceiptText,  label: 'Accountant Portal', description: 'Online payments export for the accountant', access: 'canAccessAccountantPortal' },
   { to: '/admin-revenue',   icon: ReceiptText,  label: 'Admin Revenue',   description: 'Revenue tracker', access: 'canManageRevenue' },
   { to: '/review-request',  icon: Star,         label: 'Review Request',  description: 'Send a review request by SMS', access: 'canRequestReviews' },
   { to: '/settings',        icon: Settings,     label: 'Settings',        description: 'Users, notifications, help', access: 'canUseApp' },

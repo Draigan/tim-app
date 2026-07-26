@@ -562,6 +562,8 @@ Deno.serve(async (req) => {
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
       customer: stripeCustomerId,
+      billing_address_collection: 'required',
+      customer_update: { address: 'auto', name: 'auto' },
       client_reference_id: customer.id,
       line_items: selected.map(charge => ({
         quantity: 1,

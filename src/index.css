@@ -136,3 +136,21 @@ body {
   flex-direction: column;
   padding-top: env(safe-area-inset-top);
 }
+
+/* Always-visible horizontal scrollbar (overrides OS overlay auto-hide). */
+.always-scrollbar {
+  overflow-x: scroll;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklch, var(--color-muted-foreground) 55%, transparent) transparent;
+}
+.always-scrollbar::-webkit-scrollbar {
+  height: 10px;
+  -webkit-appearance: none;
+}
+.always-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.always-scrollbar::-webkit-scrollbar-thumb {
+  background-color: color-mix(in oklch, var(--color-muted-foreground) 55%, transparent);
+  border-radius: 5px;
+}

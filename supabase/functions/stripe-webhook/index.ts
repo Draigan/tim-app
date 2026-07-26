@@ -524,6 +524,17 @@ async function recordPortalPayment(session: Stripe.Checkout.Session) {
   await notifyPortalPayment(portalPayment, items, paidAmount).catch(err => {
     console.error('Portal payment notification failed.', err)
   })
+
+  // Capture the billing contact info collected at checkout, filling only fields
+  // our record is missing. Never let this break payment recording.
+  const portalCustomerId = session.metadata?.customer_id
+  if (portalCustomerId) {
+    try {
+      await fillMissingCustomerContact(portalCustomerId, stripeContactFields(session.customer_details))
+    } catch (contactError) {
+      console.error('customer contact backfill from portal payment failed', contactError)
+    }
+  }
 }
 
 function periodLabelFromDate(value: string | null | undefined): string {
@@ -542,6 +553,60 @@ function bookingAddress(booking: any): string | null {
   ].map(value => typeof value === 'string' ? value.trim() : '').filter(Boolean).join(', ')
 
   return address || null
+}
+
+// Flatten a Stripe structured address into the single free-text line our
+// customers table stores.
+function formatStripeAddress(address: any): string | null {
+  if (!address || typeof address !== 'object') return null
+  const line = [
+    address.line1,
+    address.line2,
+    address.city,
+    address.state,
+    address.postal_code,
+    address.country,
+  ].map(value => typeof value === 'string' ? value.trim() : '').filter(Boolean).join(', ')
+  return line || null
+}
+
+// Pull name/email/phone/address from a Stripe contact source (a Checkout
+// session's customer_details or a Stripe Customer object) into our shape.
+function stripeContactFields(source: any): { name?: string; email?: string; phone?: string; address?: string } {
+  if (!source || typeof source !== 'object') return {}
+  const fields: { name?: string; email?: string; phone?: string; address?: string } = {}
+  const name = typeof source.name === 'string' ? source.name.trim() : ''
+  const email = typeof source.email === 'string' ? source.email.trim() : ''
+  const phone = typeof source.phone === 'string' ? source.phone.trim() : ''
+  const address = formatStripeAddress(source.address)
+  if (name) fields.name = name
+  if (email) fields.email = email
+  if (phone) fields.phone = phone
+  if (address) fields.address = address
+  return fields
+}
+
+// Update a customer with Stripe contact fields, but only where our record is
+// currently empty — never overwrite data an owner may have curated by hand.
+async function fillMissingCustomerContact(customerId: string, contact: { name?: string; email?: string; phone?: string; address?: string }) {
+  if (!customerId) return
+  if (!contact.name && !contact.email && !contact.phone && !contact.address) return
+
+  const { data: existing, error } = await supabase
+    .from('customers')
+    .select('name, email, phone, address')
+    .eq('id', customerId)
+    .maybeSingle()
+  if (error || !existing) return
+
+  const updates: Record<string, string> = {}
+  if (contact.name && !existing.name) updates.name = contact.name
+  if (contact.email && !existing.email) updates.email = contact.email
+  if (contact.phone && !existing.phone) updates.phone = contact.phone
+  if (contact.address && !existing.address) updates.address = contact.address
+
+  if (Object.keys(updates).length === 0) return
+  await supabase.from('customers').update(updates).eq('id', customerId)
 }
 
 function bookingPaymentAmounts(booking: any) {
@@ -873,6 +938,15 @@ Deno.serve(async (req) => {
         .from('customers')
         .update({ stripe_payment_method_id: paymentMethodId, has_payment_method: true })
         .eq('id', customerId)
+
+      // Capture the contact info Stripe collected when the card was saved,
+      // filling only fields our record is missing. Never let this break the
+      // card-on-file flow.
+      try {
+        await fillMissingCustomerContact(customerId, stripeContactFields(session.customer_details))
+      } catch (contactError) {
+        console.error('customer contact backfill from setup failed', contactError)
+      }
     }
 
     if (event.type === 'checkout.session.expired') {

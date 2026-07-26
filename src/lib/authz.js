@@ -4,22 +4,28 @@ export const ROLES = {
   SUPERUSER: 'superuser',
   OWNER: 'owner',
   DRIVER: 'driver',
+  ACCOUNTANT: 'accountant',
 }
 
 export const ROLE_LABELS = {
   [ROLES.SUPERUSER]: 'Superuser',
   [ROLES.OWNER]: 'Owner',
   [ROLES.DRIVER]: 'Driver',
+  [ROLES.ACCOUNTANT]: 'Accountant',
 }
 
 export const ASSIGNABLE_ROLES = [
   { value: ROLES.OWNER, label: ROLE_LABELS[ROLES.OWNER] },
   { value: ROLES.DRIVER, label: ROLE_LABELS[ROLES.DRIVER] },
+  { value: ROLES.ACCOUNTANT, label: ROLE_LABELS[ROLES.ACCOUNTANT] },
 ]
 
 export const SUPERUSER_EMAILS = ['d@d.d']
 export const OWNER_EMAILS = ['tim@timberfell.ca']
 export const DRIVER_EMAILS = ['beau@timberfell.ca']
+// The accountant is locked to the Online Payments portal only — no other part
+// of the app is reachable for this role.
+export const ACCOUNTANT_EMAILS = ['neil@timberfell.ca']
 
 function normalizedEmail(userOrEmail) {
   const email = typeof userOrEmail === 'string' ? userOrEmail : userOrEmail?.email
@@ -54,8 +60,10 @@ export function getUserRole(user) {
   if (userHasAppRole(user, ROLES.SUPERUSER)) return ROLES.SUPERUSER
   if (userHasAppRole(user, ROLES.OWNER) || userHasAppRole(user, 'admin')) return ROLES.OWNER
   if (userHasAppRole(user, ROLES.DRIVER) || userHasAppRole(user, 'staff')) return ROLES.DRIVER
+  if (userHasAppRole(user, ROLES.ACCOUNTANT)) return ROLES.ACCOUNTANT
   if (OWNER_EMAILS.includes(email)) return ROLES.OWNER
   if (DRIVER_EMAILS.includes(email)) return ROLES.DRIVER
+  if (ACCOUNTANT_EMAILS.includes(email)) return ROLES.ACCOUNTANT
 
   return null
 }
@@ -77,6 +85,10 @@ export function isDriver(user) {
   return getUserRole(user) === ROLES.DRIVER
 }
 
+export function isAccountant(user) {
+  return getUserRole(user) === ROLES.ACCOUNTANT
+}
+
 export function isAdminUser(user) {
   return isOwner(user)
 }
@@ -86,6 +98,7 @@ export function getUserAccess(user) {
   const superuser = role === ROLES.SUPERUSER
   const owner = role === ROLES.OWNER
   const driver = role === ROLES.DRIVER
+  const accountant = role === ROLES.ACCOUNTANT
   const manager = superuser || owner
   const staff = superuser || owner || driver
 
@@ -95,7 +108,11 @@ export function getUserAccess(user) {
     isSuperuser: superuser,
     isOwner: owner,
     isDriver: driver,
+    isAccountant: accountant,
     canUseApp: staff,
+    // The accountant portal is a read-only Online Payments export area. The
+    // accountant sees only this; superusers can reach it too.
+    canAccessAccountantPortal: superuser || accountant,
     canManageUsers: superuser,
     canViewStorage: manager,
     canManageStorage: superuser,

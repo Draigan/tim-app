@@ -120,6 +120,8 @@ Deno.serve(async (req) => {
       mode: 'setup',
       customer: stripeCustomerId,
       currency: 'cad',
+      billing_address_collection: 'required',
+      customer_update: { address: 'auto', name: 'auto' },
       client_reference_id: customer.id,
       setup_intent_data: {
         metadata: { customer_id: customer.id, invite_id: invite.id },
