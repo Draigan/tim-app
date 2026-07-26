@@ -7,7 +7,6 @@ import { createRoot } from 'react-dom/client'
 import { useRegisterSW } from 'virtual:pwa-register/react'
 import './index.css'
 import App from './App.jsx'
-
 function ServiceWorkerUpdater() {
   useRegisterSW({
     onRegisteredSW(_swUrl, registration) {

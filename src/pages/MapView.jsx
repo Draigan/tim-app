@@ -9,6 +9,7 @@ import AssetBottomSheet from '@/components/AssetBottomSheet'
 import { Button } from '@/components/ui/button'
 import { Mic, LocateFixed, Layers, Search, X, SlidersHorizontal } from 'lucide-react'
 import { useLocation, useNavigate } from 'react-router-dom'
+import { useAccess } from '@/lib/useAccess'
 
 mapboxgl.accessToken = MAPBOX_TOKEN
 
@@ -294,6 +295,7 @@ export default function MapView() {
   const stylesRef = useRef(null)
   const location = useLocation()
   const navigate = useNavigate()
+  const { canUseVoiceDeploy } = useAccess()
   const pendingFlyTo = useRef(location.state?.flyTo ?? null)
 
   const applyDeployments = useCallback(data => {
@@ -579,14 +581,16 @@ export default function MapView() {
         </div>
       )}
 
-      <Button
-        className="absolute bottom-6 right-4 z-10 shadow-lg rounded-full h-14 w-14"
-        size="icon"
-        aria-label="Voice deploy"
-        onClick={() => navigate('/voice-deploy', { state: { autoRecord: true } })}
-      >
-        <Mic size={22} />
-      </Button>
+      {canUseVoiceDeploy && (
+        <Button
+          className="absolute bottom-6 right-4 z-10 shadow-lg rounded-full h-14 w-14"
+          size="icon"
+          aria-label="Voice deploy"
+          onClick={() => navigate('/voice-deploy', { state: { autoRecord: true } })}
+        >
+          <Mic size={22} />
+        </Button>
+      )}
 
 
       <AssetBottomSheet

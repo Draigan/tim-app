@@ -1,3 +1,5 @@
+import { isVoiceTrialActive } from './voiceTrial'
+
 export const ROLES = {
   SUPERUSER: 'superuser',
   OWNER: 'owner',
@@ -104,6 +106,8 @@ export function getUserAccess(user) {
     canViewHistory: manager,
     canRequestReviews: manager,
     canViewNotifications: manager,
-    canUseVoiceDeploy: superuser,
+    // Drivers get voice deploy outright. Only the owner has to sit through the
+    // free trial pitch.
+    canUseVoiceDeploy: superuser || driver || (owner && isVoiceTrialActive()),
   }
 }

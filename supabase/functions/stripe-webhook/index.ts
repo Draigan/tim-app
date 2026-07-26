@@ -302,6 +302,7 @@ function paymentRecordAmountsFromMetadata({
     tax_amount: dollarsFromCents(taxCents),
     tax_rate: Number.isFinite(parsedTaxRate) && taxCents > 0 ? parsedTaxRate : 0,
     tax_label: taxCents > 0 ? label : null,
+    payment_method: 'stripe',
   }
 }
 
@@ -354,6 +355,7 @@ function paymentRecordAmountsFromCents(subtotalCents: number, taxCents: number) 
     tax_amount: dollarsFromCents(taxCents),
     tax_rate: taxCents > 0 ? 0.13 : 0,
     tax_label: taxCents > 0 ? 'HST' : null,
+    payment_method: 'stripe',
   }
 }
 
@@ -555,6 +557,7 @@ function bookingPaymentAmounts(booking: any) {
     tax_amount: tax,
     tax_rate: Number.isFinite(taxRate) && tax > 0 ? taxRate : 0,
     tax_label: tax > 0 ? taxLabel : null,
+    payment_method: 'stripe',
   }
 }
 

@@ -1,6 +1,6 @@
 import { createElement, useState } from 'react'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
-import { Map, Package, Settings, Warehouse, MoreHorizontal, Users, CalendarDays, LayoutGrid, History, ChevronRight, Star, ReceiptText, Bell, Mic } from 'lucide-react'
+import { Map, Package, Settings, Warehouse, MoreHorizontal, Users, CalendarDays, LayoutGrid, History, ChevronRight, Star, ReceiptText, Bell, Mic, BadgeCheck } from 'lucide-react'
 import { Sheet, SheetContent } from '@/components/ui/sheet'
 import { cn } from '@/lib/utils'
 import { useAccess } from '@/lib/useAccess'
@@ -11,6 +11,7 @@ const MORE_ITEMS = [
   { to: '/voice-deploy',     icon: Mic,          label: 'Voice Deploy',     description: 'Deploy an asset by voice', access: 'canUseVoiceDeploy' },
   { to: '/calendar',        icon: CalendarDays, label: 'Calendar',        description: 'Schedule and reservations', access: 'canManageCalendar' },
   { to: '/asset-manager',   icon: LayoutGrid,   label: 'Asset Manager',   description: 'Add and configure assets', access: 'canManageAssets' },
+  { to: '/verifier',        icon: BadgeCheck,   label: 'Verifier',        description: 'Check off bins you actually see', access: 'canManageAssets' },
   { to: '/history',         icon: History,      label: 'History',         description: 'Deployment history', access: 'canViewHistory' },
   { to: '/online-payments', icon: ReceiptText,  label: 'Online Payments', description: 'Tax collected payments', access: 'canManageRevenue' },
   { to: '/admin-revenue',   icon: ReceiptText,  label: 'Admin Revenue',   description: 'Revenue tracker', access: 'canManageRevenue' },

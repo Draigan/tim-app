@@ -10,6 +10,14 @@ const VOICE_BUCKET = 'voice-deploy-audio'
 const DEFAULT_TRANSCRIPTION_MODEL = 'gpt-4o-transcribe'
 const DEFAULT_PARSE_MODEL = 'gpt-5.5'
 const MIN_AUDIO_BYTES = 40_000
+// The client stops recording at 60s. This is the backstop so a long upload can
+// never reach the transcription API and run up a bill.
+const MAX_AUDIO_BYTES = 5_000_000
+const TRANSCRIPTION_PROMPT = [
+  'Dispatch for a dumpster and storage yard near Fenelon Falls, Ontario.',
+  'Assets are called bins: bin 1, bin 6, bin 12. Also dumpsters, portables, trailers, bleachers.',
+  'Example: Deploy bin 6 to 203 County Rd 8, Fenelon Falls for John Smith, 705-555-0142.',
+].join(' ')
 
 function supabaseUrl(): string {
   const url = Deno.env.get('APP_SUPABASE_URL') ?? Deno.env.get('SUPABASE_URL')
@@ -117,9 +125,16 @@ async function transcribeAudio(params: {
   if (params.audio.size < MIN_AUDIO_BYTES) {
     throw new Error('That recording is too short or quiet to transcribe reliably.')
   }
+  if (params.audio.size > MAX_AUDIO_BYTES) {
+    throw new Error('That recording is too long. Keep it under a minute.')
+  }
 
   const form = new FormData()
   form.append('model', Deno.env.get('OPENAI_TRANSCRIPTION_MODEL') || DEFAULT_TRANSCRIPTION_MODEL)
+  form.append('language', 'en')
+  // Bias the transcriber toward yard vocabulary. Without this "bin six" comes
+  // back as "pin six" and the asset never matches.
+  form.append('prompt', TRANSCRIPTION_PROMPT)
   form.append('file', new File([params.audio], params.fileName, { type: params.mimeType || params.audio.type || 'audio/webm' }))
 
   const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
@@ -194,6 +209,7 @@ async function parseVoiceDeployTranscript(
         'If a value is missing or unclear, return null and add a short warning.',
         'Normalize Canadian/US phone numbers to digits only, dropping a leading 1 when there are 11 digits.',
         'The asset may be spoken as bin 6, b 6, trailer 2, p 4, portable 4, bleacher 1, etc.',
+        'We call the dumpsters "bins". Speech-to-text often mishears this: "pin 6", "been 6", "bing 6", "pen 6" and similar all mean "bin 6". Treat them as bin.',
         'Set asset_text to the raw spoken asset exactly as heard.',
         'Set address_text to the address as spoken. Also set address_query to a clean, single-line version suitable for a map geocoder: use digits for street and civic numbers, standard abbreviations (Rd, St, County Rd, Hwy), and append the town and province (ON) when known. If no address is present, set both to null.',
         'Today in America/Toronto is ' + today + '. If the transcript includes an expected pickup date or duration, such as "pickup tomorrow", "pick up Friday", "for 7 days", or "in two weeks", set expected_pickup_date to YYYY-MM-DD. If no pickup timing is mentioned or it is unclear, set expected_pickup_date to null.',

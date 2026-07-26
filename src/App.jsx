@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { getUserAccess } from '@/lib/authz'
+import { VOICE_TRIAL_EVENT } from '@/lib/voiceTrial'
 import { Button } from '@/components/ui/button'
 import Layout from '@/components/Layout'
 import { ThemeProvider } from '@/lib/theme'
@@ -30,6 +31,7 @@ import AdminRevenue from '@/pages/AdminRevenue'
 import OnlinePayments from '@/pages/OnlinePayments'
 import Notifications from '@/pages/Notifications'
 import VoiceDeploy from '@/pages/VoiceDeploy'
+import Verifier from '@/pages/Verifier'
 
 const STORAGE_PUBLIC_ORIGIN = (import.meta.env.VITE_STORAGE_PUBLIC_ORIGIN || 'https://timberfellstorage.ca').replace(/\/+$/, '')
 const CUSTOMER_RETURN_PATHS = new Map([
@@ -86,8 +88,17 @@ export default function App() {
     () => sessionStorage.getItem('pendingInvite') === '1'
   )
 
+  const [trialTick, setTrialTick] = useState(0)
+
   useEffect(() => {
     redirectCustomerReturnPath()
+  }, [])
+
+  // Accepting the voice trial changes route access, so re-render on it.
+  useEffect(() => {
+    function bump() { setTrialTick(t => t + 1) }
+    window.addEventListener(VOICE_TRIAL_EVENT, bump)
+    return () => window.removeEventListener(VOICE_TRIAL_EVENT, bump)
   }, [])
 
   useEffect(() => {
@@ -106,6 +117,7 @@ export default function App() {
 
   if (!session) return <ThemeProvider><Login /></ThemeProvider>
 
+  void trialTick
   const access = getUserAccess(session.user)
   const requireAccess = (allowed, element) => allowed ? element : <AccessDenied roleLabel={access.roleLabel} />
 
@@ -138,6 +150,7 @@ export default function App() {
           <Route path="/online-payments" element={requireAccess(access.canManageRevenue, <OnlinePayments />)} />
           <Route path="/notifications" element={requireAccess(access.canViewNotifications, <Notifications />)} />
           <Route path="/voice-deploy" element={requireAccess(access.canUseVoiceDeploy, <VoiceDeploy />)} />
+          <Route path="/verifier" element={requireAccess(access.canManageAssets, <Verifier />)} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

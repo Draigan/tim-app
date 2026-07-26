@@ -1,7 +1,7 @@
 import { createElement, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { createPortal } from 'react-dom'
-import { AlertCircle, CalendarDays, CheckCircle2, Loader2, MapPin, Mic, Package, RotateCcw, Search, Square, Truck, User, X } from 'lucide-react'
+import { AlertCircle, CalendarDays, CheckCircle2, Loader2, LocateFixed, MapPin, Mic, Package, Phone, RotateCcw, Search, Square, Truck, User, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -10,10 +10,16 @@ import { useOnlineStatus } from '@/lib/useOnlineStatus'
 import { saveVoiceRecording } from '@/lib/voiceRecordings'
 import { deleteVoiceDeployDraft, uploadAndTranscribeVoiceRecording } from '@/lib/voiceDeployDrafts'
 import { supabase } from '@/lib/supabase'
-import { geocodeAddress } from '@/lib/mapbox'
+import { geocodeAddress, reverseGeocode } from '@/lib/mapbox'
 import { CUSTOMER_SAFE_COLUMNS } from '@/lib/customerFields'
 
 const MIN_TRANSCRIPTION_SECONDS = 2
+// A deploy command takes about ten seconds. Anything near this is a mic left
+// running in a truck, so stop it rather than pay to transcribe the drive home.
+const MAX_RECORDING_SECONDS = 60
+const RECORDING_WARN_SECONDS = 15
+const ADDRESS_SEARCH_MIN_CHARS = 3
+const ADDRESS_SEARCH_DEBOUNCE_MS = 350
 const REQUIRED_PHONE_DIGITS = 10
 const PARSE_RETRY_MESSAGE = 'Try again.'
 const FIELD_ORDER = ['asset', 'phone', 'customer', 'address', 'notes']
@@ -57,8 +63,17 @@ function digitsOnly(value) {
   return trimmed.length > REQUIRED_PHONE_DIGITS ? trimmed.slice(0, REQUIRED_PHONE_DIGITS) : trimmed
 }
 
+// Speech-to-text keeps hearing "pin 6" / "been 6" for "bin 6". The transcriber
+// and the parser both get told about this, but the numbers still have to match
+// here if either one slips through.
+const BIN_MISHEARINGS = /\b(pin|pins|been|bean|bing|pen|ben)\b/g
+
+function normalizeAssetQuery(query) {
+  return normalizeText(query).replace(BIN_MISHEARINGS, 'bin')
+}
+
 function scoreAsset(asset, query) {
-  const q = normalizeText(query)
+  const q = normalizeAssetQuery(query)
   if (!q) return 0
 
   const label = normalizeText(asset.label)
@@ -120,6 +135,36 @@ function fieldsFromParseResult(parseResult) {
   }
 }
 
+// "Deploy bin 6 to Dave, use my current location" - let the driver pin the drop
+// without touching the screen.
+const LOCATION_WORD = '(location|position|spot|address|place|gps|coordinates)'
+const CURRENT_LOCATION_PATTERNS = [
+  new RegExp(`\\b(use|using|take|grab|pin|drop) (my |the )?(current |present )?${LOCATION_WORD}\\b`, 'i'),
+  new RegExp(`\\b(my|current) (current )?${LOCATION_WORD}\\b`, 'i'),
+  new RegExp(`\\bthis ${LOCATION_WORD}\\b`, 'i'),
+  /\bwhere i('m| am)\b/i,
+  /\b(right|drop it|drop this|deploy it) here\b/i,
+  /\bi('m| am) (standing )?(here|on site|on-site)\b/i,
+]
+
+function wantsCurrentLocation(transcript) {
+  const text = String(transcript || '')
+  return CURRENT_LOCATION_PATTERNS.some(pattern => pattern.test(text))
+}
+
+// A GPS fix is dressed up as a Mapbox feature so the rest of the save path -
+// coords, address text, validation - needs no special cases. The spoken address
+// stays the label; only the pin comes from the device.
+function gpsAddressFeature(position, label) {
+  const { latitude, longitude, accuracy } = position.coords
+  return {
+    id: 'gps:' + Date.now(),
+    place_name: label,
+    center: [longitude, latitude],
+    properties: { source: 'gps', accuracy_m: Math.round(accuracy ?? 0) },
+  }
+}
+
 function coordsFromAddressFeature(feature) {
   if (!feature) return null
   if (Array.isArray(feature.center) && feature.center.length >= 2) {
@@ -157,6 +202,7 @@ export default function VoiceDeploy() {
   const recordingStartedAtRef = useRef(0)
   const handleCaptureCompleteRef = useRef(null)
   const autoStartRef = useRef(location.state?.autoRecord === true)
+  const addressReqRef = useRef(0)
 
   const [capture, setCapture] = useState(null) // null | 'recording' | 'processing'
   const [duration, setDuration] = useState(0)
@@ -179,6 +225,7 @@ export default function VoiceDeploy() {
   const [addressChecking, setAddressChecking] = useState(false)
   const [addressSuggestions, setAddressSuggestions] = useState([])
   const [addressError, setAddressError] = useState('')
+  const [gpsBusy, setGpsBusy] = useState(false)
   const [savingDeploy, setSavingDeploy] = useState(false)
   const [deploymentId, setDeploymentId] = useState(() => newClientId())
   const [activeDraft, setActiveDraft] = useState(null)
@@ -297,7 +344,9 @@ export default function VoiceDeploy() {
       setDuration(0)
       setCapture('recording')
       timerRef.current = setInterval(() => {
-        setDuration(Math.floor((nowMs() - recordingStartedAtRef.current) / 1000))
+        const elapsed = Math.floor((nowMs() - recordingStartedAtRef.current) / 1000)
+        setDuration(elapsed)
+        if (elapsed >= MAX_RECORDING_SECONDS) stopCapture()
       }, 250)
     } catch (err) {
       console.error('audio recording failed:', err)
@@ -355,8 +404,11 @@ export default function VoiceDeploy() {
       setFocusField(null)
       setHasDraft(true)
       setCapture(null)
-      // eslint-disable-next-line react-hooks/immutability
-      if (nextFields.address) runGeocode(nextFields.address, { autoSelect: true })
+      if (wantsCurrentLocation(draft.transcript)) {
+        pinCurrentLocation({ closePicker: false })
+      } else if (nextFields.address) {
+        runGeocode(nextFields.address, { autoSelect: true })
+      }
     } catch (err) {
       console.error('voice command processing failed:', err)
       setError(getErrorMessage(err, 'Could not process that recording.'))
@@ -399,8 +451,8 @@ export default function VoiceDeploy() {
       const parseResult = draft.parse_result || null
       const idx = parseResult?.selected_address_index
       const picked = Number.isInteger(idx) && idx >= 0 && idx < candidates.length ? candidates[idx] : null
-      // eslint-disable-next-line react-hooks/immutability
       applyMergedFields(fieldsFromParseResult(parseResult), { picked })
+      if (wantsCurrentLocation(draft.transcript)) pinCurrentLocation({ closePicker: false })
       setCapture(null)
     } catch (err) {
       console.error('voice amendment failed:', err)
@@ -472,13 +524,14 @@ export default function VoiceDeploy() {
   async function runGeocode(address, { autoSelect }) {
     const query = String(address || '').trim()
     if (!query) return
+    const reqId = ++addressReqRef.current
     setAddressChecking(true)
     setAddressError('')
-    setAddressSuggestions([])
-    setSelectedAddress(null)
     try {
       const results = await geocodeAddress(query)
+      if (reqId !== addressReqRef.current) return
       if (results.length === 0) {
+        setAddressSuggestions([])
         setAddressError('No Mapbox matches found.')
         return
       }
@@ -488,10 +541,11 @@ export default function VoiceDeploy() {
         setAddressSuggestions(results)
       }
     } catch (err) {
+      if (reqId !== addressReqRef.current) return
       console.error('voice deploy address check failed:', err)
       setAddressError(getErrorMessage(err, 'Could not check address.'))
     } finally {
-      setAddressChecking(false)
+      if (reqId === addressReqRef.current) setAddressChecking(false)
     }
   }
 
@@ -499,14 +553,67 @@ export default function VoiceDeploy() {
     const current = fields.address || ''
     setAddressDraft(current)
     setAddressPickerOpen(true)
-    if (current.trim() && addressSuggestions.length === 0) {
-      runGeocode(current, { autoSelect: false })
-    }
   }
 
-  function searchAddressDraft() {
-    if (!addressDraft.trim() || addressChecking) return
-    runGeocode(addressDraft, { autoSelect: false })
+  useEffect(() => {
+    if (!addressPickerOpen || !isOnline) return
+    const query = addressDraft.trim()
+    if (query.length < ADDRESS_SEARCH_MIN_CHARS) return
+    if (selectedAddress && query === selectedAddress.place_name) return
+    const timer = setTimeout(() => {
+      runGeocode(query, { autoSelect: false })
+    }, ADDRESS_SEARCH_DEBOUNCE_MS)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addressDraft, addressPickerOpen, isOnline])
+
+  function getPosition() {
+    return new Promise((resolve, reject) => {
+      if (!navigator.geolocation) {
+        reject(new Error('This device cannot provide a location.'))
+        return
+      }
+      navigator.geolocation.getCurrentPosition(resolve, reject, {
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 0,
+      })
+    })
+  }
+
+  function geolocationErrorMessage(err) {
+    if (err?.code === 1) return 'Location is blocked. Turn it on for this app in your device settings.'
+    if (err?.code === 3) return 'Could not get a fix. Try again with a clear view of the sky.'
+    return getErrorMessage(err, 'Could not get your location.')
+  }
+
+  async function pinCurrentLocation({ closePicker = true } = {}) {
+    setGpsBusy(true)
+    setAddressError('')
+    try {
+      const position = await getPosition()
+      const [lng, lat] = [position.coords.longitude, position.coords.latitude]
+
+      // The address text on screen is usually the wrong one - that is why the
+      // driver is pinning. Name the pin after where they actually are.
+      let label = ''
+      try {
+        const match = await reverseGeocode(lng, lat)
+        label = match?.place_name ?? ''
+      } catch (err) {
+        console.warn('reverse geocode failed, keeping typed address:', err)
+      }
+      if (!label) label = String(addressDraft || fields.address || '').trim() || 'Dropped pin'
+
+      const feature = gpsAddressFeature(position, label)
+      setAddressDraft(label)
+      if (closePicker) chooseAddress(feature)
+      else selectAddress(feature)
+    } catch (err) {
+      setAddressError(geolocationErrorMessage(err))
+    } finally {
+      setGpsBusy(false)
+    }
   }
 
   function selectAddress(feature) {
@@ -709,8 +816,11 @@ export default function VoiceDeploy() {
 
   const micDisabled = !supported || processing || savingDeploy || (hasDraft && !isOnline)
 
+  const secondsLeft = MAX_RECORDING_SECONDS - duration
   const statusText = recording
-    ? formatDuration(duration)
+    ? (secondsLeft <= RECORDING_WARN_SECONDS
+        ? `${formatDuration(duration)} · stops in ${secondsLeft}s`
+        : formatDuration(duration))
     : processing
       ? (hasDraft ? 'Updating…' : 'Transcribing…')
       : ''
@@ -719,28 +829,70 @@ export default function VoiceDeploy() {
     <div className="h-full flex flex-col">
       <div className="flex-1 overflow-y-auto px-4 py-5 space-y-4">
         {!hasDraft ? (
-          <div className="mx-auto w-full max-w-sm space-y-4 pt-2">
-            <div className="text-center space-y-1">
-              <h1 className="text-2xl font-semibold">New voice deploy</h1>
-              <p className="text-sm text-muted-foreground">Say it all in one go.</p>
-            </div>
-            <div className="rounded-lg border bg-card p-4 text-left space-y-2">
-              <p className="text-sm font-medium">Include:</p>
-              <ul className="text-sm text-muted-foreground space-y-1">
-                <li>• The asset — e.g. "bin 6"</li>
-                <li>• The customer's first and last name</li>
-                <li>• Their phone number</li>
-                <li>• The drop-off address</li>
+          <div className="mx-auto w-full max-w-sm space-y-5 pt-6">
+            <div className="rounded-lg border-2 border-amber-500/60 bg-amber-500/10 p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <AlertCircle size={18} className="flex-shrink-0 text-amber-600 dark:text-amber-400" />
+                <p className="text-sm font-bold uppercase tracking-wide text-amber-700 dark:text-amber-400">
+                  Every deploy needs all three
+                </p>
+              </div>
+              <ul className="text-sm font-medium space-y-2">
+                <li className="flex items-center gap-2.5">
+                  <User size={15} className="flex-shrink-0 text-amber-600 dark:text-amber-400" />
+                  Real first and last name
+                </li>
+                <li className="flex items-center gap-2.5">
+                  <Phone size={15} className="flex-shrink-0 text-amber-600 dark:text-amber-400" />
+                  Real phone number
+                </li>
+                <li className="flex items-center gap-2.5">
+                  <MapPin size={15} className="flex-shrink-0 text-amber-600 dark:text-amber-400" />
+                  Real drop-off address
+                </li>
               </ul>
-              <p className="text-xs text-muted-foreground pt-1">
-                e.g. "Deploy bin 6 to 203 County Rd 8 for John Smith, 705-555-0142."
+              <p className="mt-2.5 text-xs text-amber-700/90 dark:text-amber-400/90">
+                No nicknames, no "the usual", no guessing. Check every field before you save.
               </p>
             </div>
+
+            <p className="text-center text-base text-muted-foreground">
+              Tap the mic and say it all in one go.
+            </p>
+
+            <div className="rounded-lg border border-primary/20 bg-primary/5 p-4">
+              <p className="text-xs font-medium text-primary/70 mb-1.5">New customer — say everything</p>
+              <p className="text-sm italic leading-relaxed">
+                "Deploy bin 6 to 203 County Rd 8 for John Smith, 705-555-0142."
+              </p>
+            </div>
+
+            <div className="rounded-lg border border-primary/20 bg-primary/5 p-4">
+              <p className="text-xs font-medium text-primary/70 mb-1.5">Been here before? Just the number</p>
+              <p className="text-sm italic leading-relaxed">
+                "Deploy bin 6 to 705-555-0142."
+              </p>
+              <p className="mt-1.5 text-xs text-muted-foreground">
+                A known phone number pulls up their name and last address. Tap to use it, then
+                confirm the address.
+              </p>
+            </div>
+
+            <div className="rounded-lg border border-primary/20 bg-primary/5 p-4">
+              <p className="text-xs font-medium text-primary/70 mb-1.5">Standing at the drop?</p>
+              <p className="text-sm italic leading-relaxed">
+                "Deploy bin 6 for John Smith, 705-555-0142, use my current location."
+              </p>
+              <p className="mt-1.5 text-xs text-muted-foreground">
+                Pins the exact spot you're at — best for rural addresses Mapbox gets wrong.
+              </p>
+            </div>
+
             {pendingNote && <p className="text-center text-sm text-amber-700 dark:text-amber-400">{pendingNote}</p>}
             {error && <p className="text-center text-sm text-destructive">{error}</p>}
           </div>
         ) : (
-          <>
+          <div className="space-y-4 vd-materialize">
             <div className="flex justify-end -mt-1">
               <button
                 type="button"
@@ -786,6 +938,7 @@ export default function VoiceDeploy() {
               : undefined}
             focused={false}
             onClick={openAssetPicker}
+            delayIndex={0}
           />
 
           <FieldRow
@@ -796,6 +949,7 @@ export default function VoiceDeploy() {
             detail={resolvedCustomer ? 'Phone matched saved customer' : fields.customer ? 'Will create new customer' : undefined}
             focused={focusField === 'customer'}
             onClick={() => setFocusField('customer')}
+            delayIndex={1}
           />
           {focusField === 'customer' && (
             <div className="p-3 bg-muted/30">
@@ -811,6 +965,7 @@ export default function VoiceDeploy() {
             detail={customerNameMismatch ? 'Phone number decides the customer' : undefined}
             focused={focusField === 'phone'}
             onClick={() => setFocusField('phone')}
+            delayIndex={2}
           />
           {focusField === 'phone' && (
             <div className="p-3 space-y-2 bg-muted/30">
@@ -846,9 +1001,14 @@ export default function VoiceDeploy() {
             label="Address"
             value={fields.address || 'Not caught'}
             state={status.address}
-            detail={selectedAddress ? 'Verified' : addressChecking ? 'Checking…' : fields.address ? 'Not verified' : undefined}
+            detail={
+              selectedAddress?.properties?.source === 'gps'
+                ? `GPS pin · ±${selectedAddress.properties.accuracy_m}m`
+                : selectedAddress ? 'Verified' : addressChecking ? 'Checking…' : fields.address ? 'Not verified' : undefined
+            }
             focused={false}
             onClick={openAddressPicker}
+            delayIndex={3}
           />
 
           <FieldRow
@@ -858,6 +1018,7 @@ export default function VoiceDeploy() {
             state="optional"
             focused={focusField === 'expires_at'}
             onClick={() => setFocusField('expires_at')}
+            delayIndex={4}
           />
           {focusField === 'expires_at' && (
             <div className="p-3 bg-muted/30">
@@ -885,6 +1046,7 @@ export default function VoiceDeploy() {
             state="optional"
             focused={focusField === 'notes'}
             onClick={() => setFocusField('notes')}
+            delayIndex={5}
           />
           {focusField === 'notes' && (
             <div className="p-3 bg-muted/30">
@@ -893,7 +1055,7 @@ export default function VoiceDeploy() {
           )}
             </div>
 
-          </>
+          </div>
         )}
       </div>
 
@@ -909,18 +1071,33 @@ export default function VoiceDeploy() {
             {savingDeploy ? 'Deploying...' : 'Deploy Asset'}
           </Button>
         )}
-        {statusText && <p className="text-center text-sm text-muted-foreground mb-3">{statusText}</p>}
-        <button
-          type="button"
-          onClick={recording ? stopCapture : startCapture}
-          disabled={micDisabled}
-          className={cn(
-            'mx-auto flex h-20 w-20 items-center justify-center rounded-full text-white shadow-lg transition-transform active:scale-95 disabled:opacity-50',
-            recording ? 'bg-destructive animate-pulse' : 'bg-primary'
+        {statusText && (
+          <p className={cn(
+            'text-center text-sm mb-3',
+            recording && secondsLeft <= RECORDING_WARN_SECONDS ? 'text-amber-600 dark:text-amber-400 font-medium' : 'text-muted-foreground',
+          )}>
+            {statusText}
+          </p>
+        )}
+        <div className="relative mx-auto h-20 w-20">
+          {processing && (
+            <>
+              <span className="vd-ring pointer-events-none absolute inset-0 rounded-full border-2 border-primary" />
+              <span className="vd-ring pointer-events-none absolute inset-0 rounded-full border-2 border-primary" style={{ animationDelay: '0.55s' }} />
+            </>
           )}
-        >
-          {processing ? <Loader2 size={30} className="animate-spin" /> : recording ? <Square size={30} fill="currentColor" /> : <Mic size={32} />}
-        </button>
+          <button
+            type="button"
+            onClick={recording ? stopCapture : startCapture}
+            disabled={micDisabled}
+            className={cn(
+              'relative flex h-20 w-20 items-center justify-center rounded-full text-white shadow-lg transition-transform active:scale-95 disabled:opacity-50',
+              recording ? 'bg-destructive animate-pulse' : 'bg-primary'
+            )}
+          >
+            {processing ? <Loader2 size={30} className="animate-spin" /> : recording ? <Square size={30} fill="currentColor" /> : <Mic size={32} />}
+          </button>
+        </div>
         {!supported && <p className="text-center text-xs text-destructive mt-2">Recording is not supported in this browser.</p>}
       </div>
 
@@ -972,43 +1149,65 @@ export default function VoiceDeploy() {
             <h2 className="text-lg font-semibold flex-1">Delivery address</h2>
           </div>
           <div className="p-3 border-b flex-shrink-0 space-y-2">
-            <div className="flex gap-2">
+            <div className="relative">
+              <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
               <Input
                 autoFocus
                 value={addressDraft}
-                onChange={e => setAddressDraft(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') searchAddressDraft() }}
+                onChange={e => {
+                  const value = e.target.value
+                  setAddressDraft(value)
+                  if (selectedAddress && value.trim() !== selectedAddress.place_name) setSelectedAddress(null)
+                }}
                 placeholder="Enter an address"
+                className="pl-9 pr-9"
               />
-              <Button type="button" onClick={searchAddressDraft} disabled={!isOnline || addressChecking || !addressDraft.trim()}>
-                <Search size={16} />
-                {addressChecking ? '…' : 'Search'}
-              </Button>
+              {addressChecking && (
+                <Loader2 size={16} className="animate-spin pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              )}
             </div>
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full"
+              onClick={() => pinCurrentLocation()}
+              disabled={gpsBusy}
+            >
+              {gpsBusy ? <Loader2 size={16} className="animate-spin" /> : <LocateFixed size={16} />}
+              {gpsBusy ? 'Getting your location…' : 'Use my location'}
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              Standing at the drop? This pins the exact spot and keeps the address you said.
+            </p>
             {!isOnline && <p className="text-xs text-muted-foreground">You're offline — address search needs a connection.</p>}
             {addressError && <p className="text-sm text-destructive">{addressError}</p>}
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-2">
-            {addressChecking && <p className="text-sm text-muted-foreground text-center py-4">Searching…</p>}
-            {!addressChecking && addressSuggestions.length === 0 && (
-              <p className="text-sm text-muted-foreground text-center py-8">Enter an address and search to see matches.</p>
+            {addressDraft.trim().length < ADDRESS_SEARCH_MIN_CHARS ? (
+              <p className="text-sm text-muted-foreground text-center py-8">Keep typing to search.</p>
+            ) : (
+              <>
+                {!addressChecking && addressSuggestions.length === 0 && (
+                  <p className="text-sm text-muted-foreground text-center py-8">No matches yet.</p>
+                )}
+                {addressSuggestions.map(feature => {
+                  const selected = selectedAddress?.id === feature.id
+                  return (
+                    <button
+                      key={feature.id}
+                      type="button"
+                      onClick={() => chooseAddress(feature)}
+                      className={cn('w-full rounded-lg border bg-card px-3 py-3 text-left hover:bg-accent', selected && 'border-primary bg-primary/5')}
+                    >
+                      <div className="flex items-start gap-2">
+                        {selected ? <CheckCircle2 size={16} className="mt-0.5 text-primary flex-shrink-0" /> : <MapPin size={16} className="mt-0.5 text-muted-foreground flex-shrink-0" />}
+                        <span className="text-sm">{feature.place_name}</span>
+                      </div>
+                    </button>
+                  )
+                })}
+              </>
             )}
-            {addressSuggestions.map(feature => {
-              const selected = selectedAddress?.id === feature.id
-              return (
-                <button
-                  key={feature.id}
-                  type="button"
-                  onClick={() => chooseAddress(feature)}
-                  className={cn('w-full rounded-lg border bg-card px-3 py-3 text-left hover:bg-accent', selected && 'border-primary bg-primary/5')}
-                >
-                  <div className="flex items-start gap-2">
-                    {selected ? <CheckCircle2 size={16} className="mt-0.5 text-primary flex-shrink-0" /> : <MapPin size={16} className="mt-0.5 text-muted-foreground flex-shrink-0" />}
-                    <span className="text-sm">{feature.place_name}</span>
-                  </div>
-                </button>
-              )
-            })}
           </div>
         </div>,
         document.body
@@ -1039,7 +1238,7 @@ function computeStatus({ fields, resolvedCustomer, effectiveAssetId, deployedMat
   return { asset, phone, customer, address, gaps }
 }
 
-function FieldRow({ icon, label, value, state, detail, focused, onClick }) {
+function FieldRow({ icon, label, value, state, detail, focused, onClick, delayIndex = 0 }) {
   const stateStyles = {
     resolved: 'text-green-700 dark:text-green-400',
     needs: 'text-amber-700 dark:text-amber-400',
@@ -1058,12 +1257,15 @@ function FieldRow({ icon, label, value, state, detail, focused, onClick }) {
     <button
       type="button"
       onClick={onClick}
-      className={cn('flex w-full items-center gap-3 px-3 py-3 text-left', focused && 'bg-primary/5')}
+      className={cn('flex w-full items-center gap-3 px-3 py-3 text-left vd-row', focused && 'bg-primary/5')}
+      style={{ animationDelay: `${delayIndex * 45}ms` }}
     >
       {createElement(icon, { size: 18, className: 'text-muted-foreground flex-shrink-0' })}
       <div className="min-w-0 flex-1">
         <p className="text-xs text-muted-foreground">{label}</p>
-        <p className={cn('text-sm font-medium truncate', state === 'missing' && 'text-muted-foreground')}>{value}</p>
+        <p className={cn('text-sm font-medium truncate', state === 'missing' && 'text-muted-foreground')}>
+          <span key={value} className="vd-value">{value}</span>
+        </p>
         {detail && <p className="text-xs text-muted-foreground truncate">{detail}</p>}
       </div>
       <span className={cn('flex-shrink-0', stateStyles[state])}>{stateIcon[state]}</span>

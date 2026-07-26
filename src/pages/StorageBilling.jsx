@@ -924,6 +924,7 @@ export default function StorageBilling() {
         ...(isPortable ? { asset_id: assetId } : { tenancy_id: tenancy.id }),
         period_label: period,
         paid_at: new Date().toISOString(),
+        payment_method: 'cash',
         ...paymentAmountsForPeriod(period, cashCollectTax),
       }))
       mergeHistoryPayments(payments, paidPeriods)

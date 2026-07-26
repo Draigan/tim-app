@@ -72,6 +72,39 @@
   animation: splash-fade 0.5s ease-out 1.4s forwards;
 }
 
+@keyframes ghost-in {
+  0%   { opacity: 0; filter: blur(7px); transform: translateY(12px) scale(0.98); }
+  55%  { filter: blur(0); }
+  100% { opacity: 1; filter: blur(0); transform: translateY(0) scale(1); }
+}
+@keyframes ghost-row-in {
+  0%   { opacity: 0; filter: blur(4px); transform: translateY(8px); }
+  100% { opacity: 1; filter: blur(0); transform: translateY(0); }
+}
+@keyframes ghost-flash {
+  0%   { opacity: 0.35; text-shadow: 0 0 10px var(--color-primary); }
+  100% { opacity: 1; text-shadow: 0 0 0 transparent; }
+}
+@keyframes ghost-ring {
+  0%   { opacity: 0.45; transform: scale(0.85); }
+  100% { opacity: 0; transform: scale(1.6); }
+}
+
+.vd-materialize {
+  animation: ghost-in 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.vd-row {
+  opacity: 0;
+  animation: ghost-row-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+.vd-value {
+  display: inline-block;
+  animation: ghost-flash 0.5s ease-out;
+}
+.vd-ring {
+  animation: ghost-ring 1.6s ease-out infinite;
+}
+
 
 .dark .logo-invert {
   filter: invert(1);

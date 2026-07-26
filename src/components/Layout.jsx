@@ -7,6 +7,7 @@ import { ArrowLeft, X } from 'lucide-react'
 import BottomNav from './BottomNav'
 import PushPrompt from './PushPrompt'
 import ConnectionStatus from './ConnectionStatus'
+import VoiceTrialOverlay from './VoiceTrialOverlay'
 
 function ReservationBanner() {
   const [alerts, setAlerts] = useState([])
@@ -100,6 +101,7 @@ export default function Layout() {
       </main>
       {showNav && <BottomNav />}
       <PushPrompt />
+      <VoiceTrialOverlay />
     </div>
   )
 }

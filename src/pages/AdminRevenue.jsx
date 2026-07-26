@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils'
 const ADMIN_SHARE = 0.25
 const START_DATE = '2026-06-05'
 const CUSTOMER_STORAGE_TYPE_LABELS = { boat: 'Boat', trailer: 'Trailer', rv: 'RV', custom: 'Custom' }
+const PAYMENT_METHOD_LABELS = { stripe: 'Stripe', cash: 'Cash', untracked: 'Untracked' }
 
 function fmtDate(iso) {
   if (!iso) return ''
@@ -25,6 +26,39 @@ function tenancyLabel(tenancy, unit) {
     return tenancy.item_label ? `${type} ${tenancy.item_label}` : type
   }
   return unit ? `Unit ${unit.unit_number}` : 'Unknown unit'
+}
+
+function inferPaymentMethod(type, taxAmount) {
+  if (type === 'manual') return 'cash'
+  return Number(taxAmount || 0) > 0 ? 'stripe' : 'cash'
+}
+
+function paymentMethodForRow(type, taxAmount, paymentMethod) {
+  if (paymentMethod === 'stripe' || paymentMethod === 'cash') return paymentMethod
+  return inferPaymentMethod(type, taxAmount)
+}
+
+function methodLabel(method) {
+  return PAYMENT_METHOD_LABELS[method] ?? PAYMENT_METHOD_LABELS.untracked
+}
+
+function emptyMethodTotals() {
+  return { stripe: 0, cash: 0, untracked: 0 }
+}
+
+function methodBreakdown(payments) {
+  return payments.reduce((totals, payment) => {
+    totals[payment.paymentMethod] = (totals[payment.paymentMethod] ?? 0) + payment.remaining
+    return totals
+  }, emptyMethodTotals())
+}
+
+function methodBreakdownText(totals) {
+  return [
+    `Stripe $${totals.stripe.toFixed(2)}`,
+    `Cash $${totals.cash.toFixed(2)}`,
+    totals.untracked > 0.01 ? `Untracked $${totals.untracked.toFixed(2)}` : null,
+  ].filter(Boolean).join(' · ')
 }
 
 export default function AdminRevenue() {
@@ -58,10 +92,10 @@ export default function AdminRevenue() {
       { data: received },
       { data: hidden },
     ] = await Promise.all([
-      supabase.from('storage_payments').select('id, tenancy_id, amount, subtotal_amount, tax_amount, paid_at').gte('paid_at', START_DATE).order('paid_at', { ascending: false }),
+      supabase.from('storage_payments').select('*').gte('paid_at', START_DATE).order('paid_at', { ascending: false }),
       supabase.from('storage_tenancies').select('id, unit_id, customer_id, storage_kind, item_type, custom_item_type, item_label, tenant_name, customers(name)'),
       supabase.from('storage_units').select('id, unit_number'),
-      supabase.from('portable_storage_payments').select('id, asset_id, amount, subtotal_amount, tax_amount, paid_at').gte('paid_at', START_DATE).order('paid_at', { ascending: false }),
+      supabase.from('portable_storage_payments').select('*').gte('paid_at', START_DATE).order('paid_at', { ascending: false }),
       supabase.from('assets').select('id, label, size'),
       supabase.from('portable_storage_rentals').select('asset_id, customer_id, tenant_name, customers(name)'),
       supabase.from('admin_manual_payments').select('id, amount, note, paid_at').gte('paid_at', START_DATE).order('paid_at', { ascending: false }),
@@ -81,7 +115,7 @@ export default function AdminRevenue() {
       receivedMap.set(key, (receivedMap.get(key) ?? 0) + Number(r.amount_received || 0))
     }
 
-    function buildRow(type, id, label, tenantName, amount, subtotalAmount, taxAmount, paidAt, clientKey = null) {
+    function buildRow(type, id, label, tenantName, amount, subtotalAmount, taxAmount, paidAt, clientKey = null, paymentMethod = null) {
       const revenueAmount = subtotalAmount ?? amount
       const adminShare    = revenueAmount * ADMIN_SHARE
       const totalReceived = receivedMap.get(`${type}:${id}`) ?? 0
@@ -90,6 +124,7 @@ export default function AdminRevenue() {
         key: `${type}:${id}`, id, type, label, tenantName,
         clientKey: clientKey || (tenantName?.trim() ? `tenant:${tenantName.trim().toLowerCase()}` : `payment:${type}:${id}`),
         clientName,
+        paymentMethod: paymentMethodForRow(type, taxAmount, paymentMethod),
         amount, subtotalAmount: revenueAmount, taxAmount, adminShare, totalReceived,
         remaining: adminShare - totalReceived,
         paidAt,
@@ -107,7 +142,8 @@ export default function AdminRevenue() {
         p.subtotal_amount === null || p.subtotal_amount === undefined ? null : Number(p.subtotal_amount || 0),
         Number(p.tax_amount || 0),
         p.paid_at,
-        tenancy?.customer_id ? `customer:${tenancy.customer_id}` : null
+        tenancy?.customer_id ? `customer:${tenancy.customer_id}` : null,
+        p.payment_method
       )
     })
 
@@ -122,7 +158,8 @@ export default function AdminRevenue() {
         p.subtotal_amount === null || p.subtotal_amount === undefined ? null : Number(p.subtotal_amount || 0),
         Number(p.tax_amount || 0),
         p.paid_at,
-        rental?.customer_id ? `customer:${rental.customer_id}` : null
+        rental?.customer_id ? `customer:${rental.customer_id}` : null,
+        p.payment_method
       )
     })
 
@@ -133,7 +170,9 @@ export default function AdminRevenue() {
       Number(p.amount || 0),
       Number(p.amount || 0),
       0,
-      p.paid_at
+      p.paid_at,
+      null,
+      'cash'
     ))
 
     const all = [...fixedRows, ...portableRows, ...manualRows].sort((a, b) => new Date(b.paidAt) - new Date(a.paidAt))
@@ -257,15 +296,18 @@ export default function AdminRevenue() {
 
   const pending      = payments.filter(p => p.remaining > 0.01)
   const totalPending = pending.reduce((s, p) => s + p.remaining, 0)
+  const pendingTotalsByMethod = methodBreakdown(pending)
   const pendingClientGroups = [...pending.reduce((groups, payment) => {
     const group = groups.get(payment.clientKey) ?? {
       clientKey: payment.clientKey,
       clientName: payment.clientName,
       payments: [],
       total: 0,
+      methodTotals: emptyMethodTotals(),
     }
     group.payments.push(payment)
     group.total += payment.remaining
+    group.methodTotals[payment.paymentMethod] = (group.methodTotals[payment.paymentMethod] ?? 0) + payment.remaining
     groups.set(payment.clientKey, group)
     return groups
   }, new Map()).values()]
@@ -314,6 +356,9 @@ export default function AdminRevenue() {
             <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl px-4 py-3">
               <p className="text-lg font-bold text-amber-600">${totalPending.toFixed(2)}</p>
               <p className="text-xs text-muted-foreground mt-0.5">{pending.length} pending</p>
+              <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
+                {methodBreakdownText(pendingTotalsByMethod)}
+              </p>
             </div>
             <div className="bg-green-500/10 border border-green-500/20 rounded-xl px-4 py-3">
               <p className="text-lg font-bold text-green-600">
@@ -344,6 +389,9 @@ export default function AdminRevenue() {
                     <p className="text-sm font-medium truncate">{group.clientName}</p>
                     <p className="text-xs text-muted-foreground">
                       {group.payments.length} payment{group.payments.length !== 1 ? 's' : ''} · ${group.total.toFixed(2)} owed
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {methodBreakdownText(group.methodTotals)}
                     </p>
                   </div>
                   <Button
@@ -408,7 +456,7 @@ export default function AdminRevenue() {
                     <div className="flex items-center justify-between gap-3">
                       <div className="space-y-0.5">
                         <p className="text-xs text-muted-foreground">
-                          ${payment.amount.toFixed(2)} {isManual ? 'cash' : 'paid'}
+                          ${payment.amount.toFixed(2)} {methodLabel(payment.paymentMethod)}
                         </p>
                         <p className="text-xs text-muted-foreground">
                           ${payment.subtotalAmount.toFixed(2)} {isManual ? 'total' : 'rent'}
@@ -487,7 +535,7 @@ export default function AdminRevenue() {
                         </div>
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        ${payment.amount.toFixed(2)} {payment.type === 'manual' ? 'cash' : 'paid'}
+                        ${payment.amount.toFixed(2)} {methodLabel(payment.paymentMethod)}
                       </p>
                       <p className="text-xs text-muted-foreground">
                         ${payment.subtotalAmount.toFixed(2)} {payment.type === 'manual' ? 'total' : 'rent'}
@@ -537,6 +585,10 @@ export default function AdminRevenue() {
                 <div className="flex justify-between px-4 py-2.5">
                   <span className="text-muted-foreground">{isManual ? 'Cash received' : 'Tenant paid'}</span>
                   <span className="font-medium">${acceptModal.amount.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between px-4 py-2.5">
+                  <span className="text-muted-foreground">Payment source</span>
+                  <span className="font-medium">{methodLabel(acceptModal.paymentMethod)}</span>
                 </div>
                 {!isManual && (
                   <div className="flex justify-between px-4 py-2.5">

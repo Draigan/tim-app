@@ -304,7 +304,7 @@ function shouldCollectTax(body: Record<string, unknown>): boolean {
   return body.collect_tax === true
 }
 
-function paymentRecordAmounts(subtotalCents: number, collectTax = true) {
+function paymentRecordAmounts(subtotalCents: number, collectTax = true, paymentMethod?: 'stripe' | 'cash') {
   const taxCents = collectTax ? taxCentsForSubtotal(subtotalCents) : 0
   return {
     amount: dollarsFromCents(subtotalCents + taxCents),
@@ -312,6 +312,7 @@ function paymentRecordAmounts(subtotalCents: number, collectTax = true) {
     tax_amount: dollarsFromCents(taxCents),
     tax_rate: collectTax && taxCents > 0 ? SALES_TAX_RATE : 0,
     tax_label: collectTax && taxCents > 0 ? SALES_TAX_LABEL : null,
+    ...(paymentMethod ? { payment_method: paymentMethod } : {}),
   }
 }
 
@@ -691,7 +692,7 @@ async function chargeUnit(tenancy: any, period: string, idempotencyKey?: string)
       tenancy_id: tenancy.id,
       period_label: period,
       paid_at: new Date().toISOString(),
-      ...paymentRecordAmounts(periodSubtotalCents),
+      ...paymentRecordAmounts(periodSubtotalCents, true, 'stripe'),
     },
     { onConflict: 'tenancy_id,period_label' }
   )
@@ -799,7 +800,7 @@ async function chargePeriods(tenancy: any, periods: string[], extraAmount: numbe
       tenancy_id: tenancy.id,
       period_label: period,
       paid_at: new Date().toISOString(),
-      ...paymentRecordAmounts(amountCents),
+      ...paymentRecordAmounts(amountCents, true, 'stripe'),
     }))
     const { error: paymentError } = await supabase.from('storage_payments').upsert(inserts, { onConflict: 'tenancy_id,period_label' })
     if (paymentError) throw paymentError
@@ -888,7 +889,7 @@ async function chargePortablePeriods(rental: any, periods: string[], extraAmount
       asset_id: rental.asset_id,
       period_label: period,
       paid_at: new Date().toISOString(),
-      ...paymentRecordAmounts(amountCents),
+      ...paymentRecordAmounts(amountCents, true, 'stripe'),
     }))
     const { error: paymentError } = await supabase.from('portable_storage_payments').upsert(inserts, { onConflict: 'asset_id,period_label' })
     if (paymentError) throw paymentError
@@ -990,7 +991,7 @@ async function recordPortableCashPayment(body: Record<string, unknown>) {
         asset_id: assetId,
         period_label: period,
         paid_at: new Date().toISOString(),
-        ...paymentRecordAmounts(amountCents, collectTax),
+        ...paymentRecordAmounts(amountCents, collectTax, 'cash'),
       })),
       { onConflict: 'asset_id,period_label' },
     )
@@ -1071,7 +1072,7 @@ async function recordCashPayment(body: Record<string, unknown>) {
         tenancy_id: tenancy.id,
         period_label: period,
         paid_at: new Date().toISOString(),
-        ...paymentRecordAmounts(amountCents, collectTax),
+        ...paymentRecordAmounts(amountCents, collectTax, 'cash'),
       })),
       { onConflict: 'tenancy_id,period_label' },
     )

@@ -12,8 +12,8 @@ import { cn } from '@/lib/utils'
 const PAGE_SIZE = 1000
 const SALES_TAX_RATE = 0.13
 const SALES_TAX_LABEL = 'HST'
-const FIXED_PAYMENT_COLUMNS = 'id, tenancy_id, unit_id, period_label, paid_at, amount, subtotal_amount, tax_amount, tax_rate, tax_label'
-const PORTABLE_PAYMENT_COLUMNS = 'id, asset_id, period_label, paid_at, amount, subtotal_amount, tax_amount, tax_rate, tax_label'
+const FIXED_PAYMENT_COLUMNS = '*'
+const PORTABLE_PAYMENT_COLUMNS = '*'
 const CUSTOMER_STORAGE_TYPE_LABELS = {
   boat: 'Boat',
   trailer: 'Trailer',
@@ -417,6 +417,7 @@ export default function OnlinePayments() {
           taxLabel: payment.tax_label || (tax > 0 ? 'HST' : ''),
           taxRate: numberValue(payment.tax_rate),
           total: paymentTotal(payment),
+          paymentMethod: payment.payment_method || null,
         }
       })
 
@@ -446,6 +447,7 @@ export default function OnlinePayments() {
           taxLabel: payment.tax_label || (tax > 0 ? 'HST' : ''),
           taxRate: numberValue(payment.tax_rate),
           total: paymentTotal(payment),
+          paymentMethod: payment.payment_method || null,
         }
       })
 
@@ -618,6 +620,7 @@ export default function OnlinePayments() {
       tax_amount: manualBreakdown.tax,
       tax_rate: manualBreakdown.tax_rate,
       tax_label: manualBreakdown.tax_label,
+      payment_method: editingPayment ? editingPayment.paymentMethod || 'stripe' : 'stripe',
     }
   }
 

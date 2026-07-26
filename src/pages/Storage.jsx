@@ -826,7 +826,7 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
     const amount = periodChargeAmount(period, item.billing_day, item.move_in_date, item.monthly_rate)
     const { data } = await supabase
       .from('storage_payments')
-      .upsert({ tenancy_id: item.tenancy_id, period_label: period, ...paymentAmountsFromSubtotal(amount) }, { onConflict: 'tenancy_id,period_label' })
+      .upsert({ tenancy_id: item.tenancy_id, period_label: period, payment_method: 'cash', ...paymentAmountsFromSubtotal(amount) }, { onConflict: 'tenancy_id,period_label' })
       .select()
       .single()
     if (data) setHistory(prev => sortPaymentsByPeriod([data, ...prev]))
@@ -844,6 +844,7 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
     const inserts = unpaid.map(period => ({
       tenancy_id: item.tenancy_id,
       period_label: period,
+      payment_method: 'cash',
       ...paymentAmountsFromSubtotal(periodChargeAmount(period, item.billing_day, item.move_in_date, item.monthly_rate)),
     }))
     const { data } = await supabase.from('storage_payments').upsert(inserts, { onConflict: 'tenancy_id,period_label' }).select()
@@ -917,6 +918,7 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
     const inserts = unpaid.map(period => ({
       tenancy_id: item.tenancy_id,
       period_label: period,
+      payment_method: 'cash',
       ...paymentAmountsFromSubtotal(periodChargeAmount(period, item.billing_day, item.move_in_date, item.monthly_rate)),
     }))
     const { data } = await supabase.from('storage_payments').upsert(inserts, { onConflict: 'tenancy_id,period_label' }).select()
@@ -1822,7 +1824,7 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
     const amount = periodChargeAmount(period, rental.billing_day, rental.move_in_date, rental.monthly_rate)
     const { data } = await supabase
       .from('portable_storage_payments')
-      .upsert({ asset_id: asset.id, period_label: period, ...paymentAmountsFromSubtotal(amount) }, { onConflict: 'asset_id,period_label' })
+      .upsert({ asset_id: asset.id, period_label: period, payment_method: 'cash', ...paymentAmountsFromSubtotal(amount) }, { onConflict: 'asset_id,period_label' })
       .select().single()
     if (data) setHistory(prev => sortPaymentsByPeriod([data, ...prev]))
     await extendPortablePaidThrough([period])
@@ -1871,6 +1873,7 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
     const inserts = unpaid.map(period => ({
       asset_id: asset.id,
       period_label: period,
+      payment_method: 'cash',
       ...paymentAmountsFromSubtotal(periodChargeAmount(period, rental.billing_day, rental.move_in_date, rental.monthly_rate)),
     }))
     const { data } = await supabase.from('portable_storage_payments').upsert(inserts, { onConflict: 'asset_id,period_label' }).select()
@@ -2564,6 +2567,7 @@ export default function Storage() {
       {
         asset_id: id,
         period_label: period,
+        payment_method: 'cash',
         ...paymentAmountsFromSubtotal(periodChargeAmount(period, rental?.billing_day, rental?.move_in_date, rental?.monthly_rate)),
       },
       { onConflict: 'asset_id,period_label' }

@@ -4,12 +4,13 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Plus, Trash2, LogOut, Sun, Moon, MessageSquare, Bell, BellOff, KeyRound, Copy, Check } from 'lucide-react'
+import { Plus, Trash2, LogOut, Sun, Moon, MessageSquare, Bell, BellOff, KeyRound, Copy, Check, Flame } from 'lucide-react'
 import { ICON_OPTIONS, iconImgUrl } from '@/lib/icons'
 import { useTheme } from '@/lib/theme'
 import { usePushNotifications } from '@/lib/usePushNotifications'
 import { ASSIGNABLE_ROLES, ROLE_LABELS, ROLES, isProtectedSuperuserEmail, roleLabel } from '@/lib/authz'
 import { useAccess } from '@/lib/useAccess'
+import { resetVoiceTrial } from '@/lib/voiceTrial'
 
 const PASSWORD_MIN_LENGTH = 12
 
@@ -783,6 +784,12 @@ export default function Settings() {
             <MessageSquare size={16} />
             Send Feedback
           </Button>
+          {access.isSuperuser && (
+            <Button variant="outline" className="w-full" onClick={resetVoiceTrial}>
+              <Flame size={16} />
+              Show Voice Trial Again
+            </Button>
+          )}
           <Button variant="outline" className="w-full text-destructive hover:text-destructive" onClick={handleSignOut}>
             <LogOut size={16} />
             Sign Out
