@@ -29,6 +29,16 @@ function fmtPeriod(label) {
 const EMPTY_FORM = { name: '', phone: '', email: '', address: '', notes: '' }
 const CUSTOMER_STORAGE_TYPE_LABELS = { boat: 'Boat', trailer: 'Trailer', rv: 'RV', custom: 'Custom' }
 
+function customerFormFields(customer) {
+  return {
+    name: customer?.name ?? '',
+    phone: formatPhone(customer?.phone ?? ''),
+    email: customer?.email ?? '',
+    address: customer?.address ?? '',
+    notes: customer?.notes ?? '',
+  }
+}
+
 function customerStorageLabel(tenancy) {
   if (tenancy?.storage_kind !== 'customer_item') {
     return tenancy?.storage_units?.unit_number ? `Unit ${tenancy.storage_units.unit_number}` : 'Storage'
@@ -143,7 +153,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved, canManageStorage }) 
   const addrTimer = useRef(null)
   const [form, setForm]         = useState(
     customer
-      ? { name: customer.name ?? '', phone: formatPhone(customer.phone ?? ''), email: customer.email ?? '', address: customer.address ?? '', notes: customer.notes ?? '' }
+      ? customerFormFields(customer)
       : EMPTY_FORM
   )
   const [active, setActive]         = useState([])
@@ -167,6 +177,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved, canManageStorage }) 
   const [inviteSent, setInviteSent]     = useState(false)
   const [confirmSendInvite, setConfirmSendInvite] = useState(false)
   const [showPin, setShowPin]           = useState(false)
+  const displayForm = editing ? form : customer ? customerFormFields(customer) : form
 
   useEffect(() => {
     if (!customer) return
@@ -187,7 +198,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved, canManageStorage }) 
         .select('id, storage_kind, item_type, custom_item_type, item_label, move_in_date, end_date, monthly_rate, paid_through_date, storage_units(id, unit_number), storage_payments(period_label, amount, paid_at)')
         .eq('customer_id', customer.id)
         .order('end_date', { ascending: false, nullsFirst: true }) : Promise.resolve({ data: [] }),
-      canManageStorage ? supabase.from('portable_storage_rentals').select('asset_id', { count: 'exact', head: true }).eq('customer_id', customer.id) : Promise.resolve({ count: 0 }),
+      canManageStorage ? supabase.from('portable_storage_rentals').select('asset_id', { count: 'exact', head: true }).eq('customer_id', customer.id).is('end_date', null) : Promise.resolve({ count: 0 }),
       canManageStorage ? supabase.from('customer_credits').select('*, storage_units(unit_number)').eq('customer_id', customer.id).order('created_at', { ascending: false }) : Promise.resolve({ data: [] }),
     ]).then(([{ data: a }, { data: p }, { data: st }, { count: pc }, { data: c }]) => {
       if (a) setActive(a)
@@ -238,6 +249,11 @@ function CustomerSheet({ customer, isNew, onClose, onSaved, canManageStorage }) 
   function set(field, value) {
     if (saveError) setSaveError('')
     setForm(f => ({ ...f, [field]: value }))
+  }
+
+  function startEditing() {
+    if (customer) setForm(customerFormFields(customer))
+    setEditing(true)
   }
 
   function handleAddressChange(value) {
@@ -439,7 +455,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved, canManageStorage }) 
           <SheetTitle className="flex items-center justify-between pr-6">
             <span>{title}</span>
             {!refundSuccess && !isNew && !editing && (
-              <button onClick={() => setEditing(true)} className="text-muted-foreground hover:text-foreground">
+              <button onClick={startEditing} className="text-muted-foreground hover:text-foreground">
                 <Pencil size={16} />
               </button>
             )}
@@ -506,19 +522,19 @@ function CustomerSheet({ customer, isNew, onClose, onSaved, canManageStorage }) 
             </div>
           ) : (
             <div className="space-y-2">
-              {form.phone && (
-                <a href={`tel:${form.phone}`} className="flex items-center gap-2.5 text-sm text-primary">
+              {displayForm.phone && (
+                <a href={`tel:${displayForm.phone}`} className="flex items-center gap-2.5 text-sm text-primary">
                   <Phone size={14} />
-                  {formatPhone(form.phone)}
+                  {formatPhone(displayForm.phone)}
                 </a>
               )}
-              {form.email && (
-                <a href={`mailto:${form.email}`} className="flex items-center gap-2.5 text-sm text-primary">
+              {displayForm.email && (
+                <a href={`mailto:${displayForm.email}`} className="flex items-center gap-2.5 text-sm text-primary">
                   <Mail size={14} />
-                  {form.email}
+                  {displayForm.email}
                 </a>
               )}
-              {form.notes && <p className="text-sm text-muted-foreground">{form.notes}</p>}
+              {displayForm.notes && <p className="text-sm text-muted-foreground">{displayForm.notes}</p>}
               {canManageStorage && customer?.payment_pin && (
                 <button onClick={() => setShowPin(v => !v)} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
                   Payment PIN <span className="font-mono font-semibold text-foreground tracking-widest">{showPin ? customer.payment_pin : '•••••'}</span>
@@ -565,7 +581,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved, canManageStorage }) 
                       <Copy size={14} />
                       {copyingCardLink ? 'Getting link…' : 'Copy invite'}
                     </Button>
-                    {form.phone && (
+                    {displayForm.phone && (
                       <Button variant="outline" size="sm" className="gap-2" disabled={sendingInvite} onClick={() => setConfirmSendInvite(true)}>
                         <Send size={14} />
                         {inviteSent ? 'Sent!' : 'Send card invite'}
@@ -824,7 +840,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved, canManageStorage }) 
           </div>
           <div className="flex justify-between gap-3 px-4 py-2.5">
             <span className="text-muted-foreground">SMS to</span>
-            <span className="font-medium text-right">{formatPhone(form.phone)}</span>
+            <span className="font-medium text-right">{formatPhone(displayForm.phone)}</span>
           </div>
         </div>
       </PinModal>
@@ -875,15 +891,39 @@ export default function Customers() {
     if (showArchived) fetchArchived()
   }, [showArchived, fetchArchived])
 
-  const refreshSilent = useCallback(() => fetchCustomers(true), [fetchCustomers])
+  const refreshCustomerData = useCallback(() => {
+    fetchCustomers(true)
+    if (showArchived) fetchArchived()
+  }, [fetchArchived, fetchCustomers, showArchived])
+
+  const refreshSilent = useCallback(() => refreshCustomerData(), [refreshCustomerData])
 
   useEffect(() => { fetchCustomers() }, [fetchCustomers])
   useRealtime(canManageStorage ? ['customers', 'customer_credits'] : ['customers'], refreshSilent)
+
+  useEffect(() => {
+    function refreshWhenVisible() {
+      if (document.visibilityState === 'hidden') return
+      refreshCustomerData()
+    }
+
+    window.addEventListener('focus', refreshWhenVisible)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
+    return () => {
+      window.removeEventListener('focus', refreshWhenVisible)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
+    }
+  }, [refreshCustomerData])
 
   const q = query.trim().toLowerCase()
   const filtered = customers.filter(c =>
     !q || [c.name, c.phone, c.email].some(f => f?.toLowerCase().includes(q))
   )
+  const selectedCustomer = selected
+    ? customers.find(c => c.id === selected.id)
+      ?? archived.find(c => c.id === selected.id)
+      ?? selected
+    : null
 
   function handleSaved() {
     fetchCustomers(true)
@@ -960,9 +1000,9 @@ export default function Customers() {
         )}
       </div>
 
-      {selected && (
+      {selectedCustomer && (
         <CustomerSheet
-          customer={selected}
+          customer={selectedCustomer}
           isNew={false}
           onClose={() => setSelected(null)}
           onSaved={handleSaved}

@@ -327,11 +327,11 @@ async function extendPaidThroughByLabels(tenancyId: string, labels: string[]) {
   }
 }
 
-async function extendPortablePaidThroughByLabels(assetId: string, labels: string[]) {
+async function extendPortablePaidThroughByLabels(rentalId: string, labels: string[]) {
   const { data: rental } = await supabase
     .from('portable_storage_rentals')
-    .select('asset_id, billing_day, paid_through_date')
-    .eq('asset_id', assetId)
+    .select('id, billing_day, paid_through_date')
+    .eq('id', rentalId)
     .maybeSingle()
 
   if (!rental) return
@@ -344,7 +344,7 @@ async function extendPortablePaidThroughByLabels(assetId: string, labels: string
   if (paidThroughDate && paidThroughDate !== rental.paid_through_date) {
     await supabase.from('portable_storage_rentals')
       .update({ paid_through_date: paidThroughDate })
-      .eq('asset_id', assetId)
+      .eq('id', rental.id)
   }
 }
 
@@ -486,17 +486,18 @@ async function recordPortalPayment(session: Stripe.Checkout.Session) {
   if (portableItems.length) {
     const { error } = await supabase.from('portable_storage_payments').upsert(
       portableItems.map((item: any) => ({
+        rental_id: item.portable_rental_id,
         asset_id: item.asset_id,
         period_label: item.period_label,
         paid_at: paidAt,
         ...paymentRecordAmountsFromCents(Number(item.subtotal_cents ?? 0), Number(item.tax_cents ?? 0)),
       })),
-      { onConflict: 'asset_id,period_label' },
+      { onConflict: 'rental_id,period_label' },
     )
     if (error) throw error
 
-    for (const [assetId, periods] of groupPeriodsBy(portableItems, 'asset_id')) {
-      await extendPortablePaidThroughByLabels(assetId, periods)
+    for (const [rentalId, periods] of groupPeriodsBy(portableItems, 'portable_rental_id')) {
+      await extendPortablePaidThroughByLabels(rentalId, periods)
     }
     await markStorageLateFeesPaid('portable_rental_id', portableItems)
   }
@@ -681,6 +682,7 @@ async function ensurePortableRentalFromBooking(booking: any, customerId: string,
     .from('portable_storage_rentals')
     .select('id, customer_id')
     .eq('asset_id', booking.asset_id)
+    .is('end_date', null)
     .maybeSingle()
 
   if (existingError) throw existingError
@@ -836,11 +838,12 @@ async function recordBookingPayment(session: Stripe.Checkout.Session) {
   if (booking.unit_type === 'portable') {
     const rentalId = await ensurePortableRentalFromBooking(booking, customerId, paidThroughDate)
     const { error: paymentError } = await supabase.from('portable_storage_payments').upsert({
+      rental_id: rentalId,
       asset_id: booking.asset_id,
       period_label: period,
       paid_at: paidAt,
       ...paymentAmounts,
-    }, { onConflict: 'asset_id,period_label' })
+    }, { onConflict: 'rental_id,period_label' })
 
     if (paymentError) throw paymentError
 
@@ -1001,18 +1004,29 @@ Deno.serve(async (req) => {
 
         if (unit_type === 'portable' || portable_asset_id || portable_rental_id) {
           let resolvedAssetId = portable_asset_id || null
-          if (!resolvedAssetId && portable_rental_id) {
+          let resolvedRentalId = portable_rental_id || null
+          if (!resolvedAssetId && resolvedRentalId) {
             const { data: r } = await supabase
               .from('portable_storage_rentals')
               .select('asset_id')
-              .eq('id', portable_rental_id)
+              .eq('id', resolvedRentalId)
               .maybeSingle()
             resolvedAssetId = r?.asset_id ?? null
           }
+          if (!resolvedRentalId && resolvedAssetId) {
+            const { data: r } = await supabase
+              .from('portable_storage_rentals')
+              .select('id')
+              .eq('asset_id', resolvedAssetId)
+              .is('end_date', null)
+              .maybeSingle()
+            resolvedRentalId = r?.id ?? null
+          }
 
-          if (resolvedAssetId) {
+          if (resolvedRentalId) {
             await supabase.from('portable_storage_payments').upsert(
               labels.map((label: string, index: number) => ({
+                rental_id: resolvedRentalId,
                 asset_id: resolvedAssetId,
                 period_label: label,
                 paid_at: new Date().toISOString(),
@@ -1026,9 +1040,9 @@ Deno.serve(async (req) => {
                   taxLabel: tax_label,
                 }),
               })),
-              { onConflict: 'asset_id,period_label' }
+              { onConflict: 'rental_id,period_label' }
             )
-            await extendPortablePaidThroughByLabels(resolvedAssetId, labels)
+            await extendPortablePaidThroughByLabels(resolvedRentalId, labels)
           }
         } else {
           // Resolve tenancy_id — prefer explicit, fall back to looking up active tenancy by unit_id

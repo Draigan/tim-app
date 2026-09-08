@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input'
 import { supabase } from '@/lib/supabase'
 import { formatPhone, formatPhoneInput, getErrorMessage, newClientId, retryTransient, throwSupabaseError } from '@/lib/utils'
 import { geocodeAddress } from '@/lib/mapbox'
-import { CUSTOMER_SAFE_COLUMNS } from '@/lib/customerFields'
+import { CUSTOMER_PICKER_COLUMNS } from '@/lib/customerFields'
 
 const EMPTY_NEW = { name: '', phone: '', email: '', address: '', notes: '' }
 
@@ -24,7 +24,7 @@ export default function CustomerPicker({ value, onChange }) {
   const addrTimer = useRef(null)
 
   useEffect(() => {
-    supabase.from('customers').select(CUSTOMER_SAFE_COLUMNS).order('name').then(({ data }) => {
+    supabase.from('customers').select(CUSTOMER_PICKER_COLUMNS).order('name').then(({ data }) => {
       if (data) setCustomers(data)
     })
   }, [])
@@ -83,12 +83,12 @@ export default function CustomerPicker({ value, onChange }) {
             address: form.address.trim() || null,
             notes:   form.notes.trim()   || null,
           })
-          .select(CUSTOMER_SAFE_COLUMNS)
+          .select(CUSTOMER_PICKER_COLUMNS)
           .single()
 
         if (result.error?.code === '23505') {
           return throwSupabaseError(
-            await supabase.from('customers').select(CUSTOMER_SAFE_COLUMNS).eq('id', createCustomerId).single()
+            await supabase.from('customers').select(CUSTOMER_PICKER_COLUMNS).eq('id', createCustomerId).single()
           )
         }
 

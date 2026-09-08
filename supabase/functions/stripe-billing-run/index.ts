@@ -300,11 +300,36 @@ function totalCentsForSubtotal(subtotalCents: number): number {
   return subtotalCents + taxCentsForSubtotal(subtotalCents)
 }
 
+// A fee charged with no rent alongside it has no period row to ride on. Record
+// it as a standalone revenue line so it still reaches the admin panel instead
+// of being collected by Stripe and never appearing in the books.
+async function recordExtraOnlyRevenue(extraAmountCents: number, extraTaxCents: number, note: string) {
+  const { error } = await supabase.from('admin_manual_payments').insert({
+    amount: dollarsFromCents(extraAmountCents + extraTaxCents),
+    note,
+    paid_at: new Date().toISOString(),
+  })
+  if (error) console.error('Failed to record extra-only charge:', error, note)
+}
+
+// Cash and e-transfer are both "received without charging a card", but they are
+// not interchangeable: cash is reconciled outside this app, while an e-transfer
+// lands in the bank and must reach the accountant. Default to cash so existing
+// callers keep their behaviour.
+function receivedPaymentMethod(body: Record<string, unknown>): 'cash' | 'etransfer' {
+  return body.payment_method === 'etransfer' ? 'etransfer' : 'cash'
+}
+
+function paymentReference(body: Record<string, unknown>): string | null {
+  const raw = typeof body.payment_reference === 'string' ? body.payment_reference.trim() : ''
+  return raw ? raw.slice(0, 200) : null
+}
+
 function shouldCollectTax(body: Record<string, unknown>): boolean {
   return body.collect_tax === true
 }
 
-function paymentRecordAmounts(subtotalCents: number, collectTax = true, paymentMethod?: 'stripe' | 'cash') {
+function paymentRecordAmounts(subtotalCents: number, collectTax = true, paymentMethod?: 'stripe' | 'cash' | 'etransfer') {
   const taxCents = collectTax ? taxCentsForSubtotal(subtotalCents) : 0
   return {
     amount: dollarsFromCents(subtotalCents + taxCents),
@@ -508,6 +533,7 @@ async function removeLatestPortablePayment(body: Record<string, unknown>) {
     .from('portable_storage_rentals')
     .select('*')
     .eq('asset_id', assetId)
+    .is('end_date', null)
     .maybeSingle()
 
   if (rentalError) return json({ error: rentalError.message }, 500)
@@ -516,7 +542,7 @@ async function removeLatestPortablePayment(body: Record<string, unknown>) {
   const { data: payments, error: paymentsError } = await supabase
     .from('portable_storage_payments')
     .select('id, period_label, paid_at, amount, subtotal_amount, tax_amount')
-    .eq('asset_id', assetId)
+    .eq('rental_id', rental.id)
     .order('period_label', { ascending: false })
     .order('paid_at', { ascending: false })
 
@@ -796,19 +822,22 @@ async function chargePeriods(tenancy: any, periods: string[], extraAmount: numbe
   )
 
   if (periodCharges.length > 0) {
-    const inserts = periodCharges.map(({ period, amountCents }) => ({
+    // Same as the portable path: the extra is part of the Stripe charge and
+    // must be recorded, so it rides on the first period's row.
+    const inserts = periodCharges.map(({ period, amountCents }, index) => ({
       tenancy_id: tenancy.id,
       period_label: period,
       paid_at: new Date().toISOString(),
-      ...paymentRecordAmounts(amountCents, true, 'stripe'),
+      ...paymentRecordAmounts(amountCents + (index === 0 ? extraAmountCents : 0), true, 'stripe'),
     }))
     const { error: paymentError } = await supabase.from('storage_payments').upsert(inserts, { onConflict: 'tenancy_id,period_label' })
     if (paymentError) throw paymentError
     await extendPaidThrough(tenancy, periodCharges.map(charge => charge.period))
     await markLateFeesPaid('fixed', tenancy.id, periodCharges.map(charge => charge.period))
+  } else if (extraAmountCents > 0) {
+    await recordExtraOnlyRevenue(extraAmountCents, extraTaxCents, `Unit ${tenancyLabel(tenancy)} - extra charge (${tenancy.tenant_name ?? 'unknown tenant'})`)
   }
 
-  return { status: 'charged', periods: periodCharges.map(charge => charge.period), amount: pi.amount / 100 }
 }
 
 async function chargePortablePeriods(rental: any, periods: string[], extraAmount: number, idempotencyKey?: string) {
@@ -822,7 +851,7 @@ async function chargePortablePeriods(rental: any, periods: string[], extraAmount
     const { data: existing } = await supabase
       .from('portable_storage_payments')
       .select('period_label')
-      .eq('asset_id', rental.asset_id)
+      .eq('rental_id', rental.id)
       .in('period_label', periods)
 
     const paidSet = new Set((existing ?? []).map((p: any) => p.period_label))
@@ -885,16 +914,25 @@ async function chargePortablePeriods(rental: any, periods: string[], extraAmount
   )
 
   if (periodCharges.length > 0) {
-    const inserts = periodCharges.map(({ period, amountCents }) => ({
+    // The extra (delivery, pickup, etc.) is part of what Stripe took, so it has
+    // to land in the ledger too — it rides on the first period's row, the same
+    // way an online booking records rent and fees as one amount. Leaving it out
+    // silently under-reported every fee Tim ever charged through the app.
+    const inserts = periodCharges.map(({ period, amountCents }, index) => ({
+      rental_id: rental.id,
       asset_id: rental.asset_id,
       period_label: period,
       paid_at: new Date().toISOString(),
-      ...paymentRecordAmounts(amountCents, true, 'stripe'),
+      ...paymentRecordAmounts(amountCents + (index === 0 ? extraAmountCents : 0), true, 'stripe'),
     }))
-    const { error: paymentError } = await supabase.from('portable_storage_payments').upsert(inserts, { onConflict: 'asset_id,period_label' })
+    const { error: paymentError } = await supabase.from('portable_storage_payments').upsert(inserts, { onConflict: 'rental_id,period_label' })
     if (paymentError) throw paymentError
     await extendPortablePaidThrough(rental, periodCharges.map(charge => charge.period))
     await markLateFeesPaid('portable', rental.id, periodCharges.map(charge => charge.period))
+  } else if (extraAmountCents > 0) {
+    // Fee charged with no rent alongside it: there is no period row to ride on,
+    // so record it as its own revenue line rather than losing it.
+    await recordExtraOnlyRevenue(extraAmountCents, extraTaxCents, `Portable ${label} - extra charge (${rental.tenant_name ?? 'unknown renter'})`)
   }
 
   return { status: 'charged', periods: periodCharges.map(charge => charge.period), amount: pi.amount / 100, paid_through_date: rental.paid_through_date ?? null }
@@ -950,6 +988,8 @@ async function recordPortableCashPayment(body: Record<string, unknown>) {
   const assetId = typeof body.portable_asset_id === 'string' ? body.portable_asset_id : ''
   if (!assetId) return json({ error: 'portable_asset_id required' }, 400)
   const collectTax = shouldCollectTax(body)
+  const method = receivedPaymentMethod(body)
+  const reference = paymentReference(body)
 
   const requestedPeriods = normalizePeriods(body.periods)
   if (!requestedPeriods?.length) return json({ error: 'periods required' }, 400)
@@ -958,6 +998,7 @@ async function recordPortableCashPayment(body: Record<string, unknown>) {
     .from('portable_storage_rentals')
     .select('*, assets(label)')
     .eq('asset_id', assetId)
+    .is('end_date', null)
     .maybeSingle()
 
   if (rentalError) return json({ error: rentalError.message }, 500)
@@ -966,7 +1007,7 @@ async function recordPortableCashPayment(body: Record<string, unknown>) {
   const { data: existing, error: existingError } = await supabase
     .from('portable_storage_payments')
     .select('period_label')
-    .eq('asset_id', assetId)
+    .eq('rental_id', rental.id)
     .in('period_label', requestedPeriods)
 
   if (existingError) return json({ error: existingError.message }, 500)
@@ -988,12 +1029,14 @@ async function recordPortableCashPayment(body: Record<string, unknown>) {
   const { data: payments, error: paymentError } = await supabase.from('portable_storage_payments')
     .upsert(
       periodCharges.map(({ period, amountCents }) => ({
+        rental_id: rental.id,
         asset_id: assetId,
         period_label: period,
         paid_at: new Date().toISOString(),
-        ...paymentRecordAmounts(amountCents, collectTax, 'cash'),
+        payment_reference: reference,
+        ...paymentRecordAmounts(amountCents, collectTax, method),
       })),
-      { onConflict: 'asset_id,period_label' },
+      { onConflict: 'rental_id,period_label' },
     )
     .select()
 
@@ -1016,6 +1059,8 @@ async function recordCashPayment(body: Record<string, unknown>) {
     return recordPortableCashPayment(body)
   }
   const collectTax = shouldCollectTax(body)
+  const method = receivedPaymentMethod(body)
+  const reference = paymentReference(body)
 
   const tenancyId = typeof body.tenancy_id === 'string' ? body.tenancy_id.trim() : ''
   const unitId = typeof body.cash_unit_id === 'string'
@@ -1072,7 +1117,8 @@ async function recordCashPayment(body: Record<string, unknown>) {
         tenancy_id: tenancy.id,
         period_label: period,
         paid_at: new Date().toISOString(),
-        ...paymentRecordAmounts(amountCents, collectTax, 'cash'),
+        payment_reference: reference,
+        ...paymentRecordAmounts(amountCents, collectTax, method),
       })),
       { onConflict: 'tenancy_id,period_label' },
     )
@@ -1134,6 +1180,7 @@ Deno.serve(async (req) => {
         .from('portable_storage_rentals')
         .select('*, customers(stripe_customer_id, stripe_payment_method_id), assets(label)')
         .eq('asset_id', assetId)
+        .is('end_date', null)
         .maybeSingle()
 
       if (error || !rental) return new Response(JSON.stringify({ error: 'no active rental for portable asset' }), { status: 404, headers: CORS })
@@ -1162,7 +1209,7 @@ Deno.serve(async (req) => {
       const { data: existing } = await supabase
         .from('portable_storage_payments')
         .select('period_label')
-        .eq('asset_id', assetId)
+        .eq('rental_id', rental.id)
         .in('period_label', candidatePeriods)
 
       const paidSet = new Set((existing ?? []).map((p: any) => p.period_label))
@@ -1276,6 +1323,7 @@ Deno.serve(async (req) => {
     const { data: tenancies, error } = await supabase
       .from('storage_tenancies')
       .select('*, customers(stripe_customer_id, stripe_payment_method_id), storage_units(unit_number)')
+      .is('end_date', null)
       .eq('payment_frequency', 'monthly')
       .not('monthly_rate', 'is', null)
       .not('customer_id', 'is', null)
@@ -1304,6 +1352,7 @@ Deno.serve(async (req) => {
     const { data: portableRentals, error: portableError } = await supabase
       .from('portable_storage_rentals')
       .select('*, customers(stripe_customer_id, stripe_payment_method_id), assets(label)')
+      .is('end_date', null)
       .eq('payment_frequency', 'monthly')
       .not('monthly_rate', 'is', null)
       .not('customer_id', 'is', null)

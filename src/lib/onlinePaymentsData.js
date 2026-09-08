@@ -3,9 +3,12 @@ import { supabase } from '@/lib/supabase'
 // Online Payments data + CSV export logic, extracted verbatim from
 // src/pages/OnlinePayments.jsx so the accountant portal produces a byte-for-byte
 // identical export. Keep this in sync with OnlinePayments.jsx if that page's
-// loading/CSV logic changes. "Online payments" means tax-collected records
+// loading/CSV logic changes. Row fields may be added (customerId is used by the
+// Invoices page) as long as the CSV/Xero column builders stay untouched. "Online payments" means tax-collected records
 // (tax_amount > 0) — collecting tax is the defining line, which naturally
 // includes every taxed record and excludes untaxed cash.
+
+const EXPORTED_PAYMENT_METHODS = ['stripe', 'etransfer']
 
 const PAGE_SIZE = 1000
 export const SALES_TAX_RATE = 0.13
@@ -31,6 +34,15 @@ function tenancyStorageLabel(tenancy, unit) {
     return tenancy.item_label ? `${type} ${tenancy.item_label}` : type
   }
   return unit?.unit_number ? `Unit ${unit.unit_number}` : 'Fixed storage'
+}
+
+// The customer-facing name for a pod. `assets.label` is our internal tag ("P9",
+// "p#unknown2") and means nothing on an invoice, so bill by what the pod is —
+// its asset type and size — and keep the tag for internal views only.
+function portableInvoiceLabel(asset) {
+  const type = asset?.asset_types?.name?.trim() || 'Portable storage'
+  const size = String(asset?.size ?? '').trim()
+  return size ? `${type} - ${size}` : type
 }
 
 export function parseLocalDate(value) {
@@ -155,7 +167,10 @@ async function fetchTaxedPayments(table, columns, dateFrom, dateTo) {
     let query = supabase
       .from(table)
       .select(columns)
-      .gt('tax_amount', 0)
+      // Which payments reach the books is a property of how the money arrived,
+      // not of whether HST happened to be recorded. Stripe and e-transfer are
+      // banked; cash is reconciled outside this app.
+      .in('payment_method', EXPORTED_PAYMENT_METHODS)
       .order('paid_at', { ascending: false })
       .range(from, from + PAGE_SIZE - 1)
 
@@ -260,7 +275,7 @@ export function makeXeroInvoiceRows(rows, { accountCode = '', taxType = '' } = {
         extractPostalCode(row.address), // POPostalCode (parsed from the address)
         'Canada',                  // POCountry
         xeroInvoiceNumber(row),    // *InvoiceNumber
-        row.itemLabel,             // Reference
+        row.paymentReference || row.itemLabel, // Reference (bank-matchable when we have one)
         invoiceDate,               // *InvoiceDate
         invoiceDate,               // *DueDate (already paid)
         row.total.toFixed(2),      // Total
@@ -287,14 +302,24 @@ export function makeXeroInvoiceRows(rows, { accountCode = '', taxType = '' } = {
 // given paid-date range. Shared by the Online Payments page and the accountant
 // portal.
 export async function loadOnlinePaymentRows({ dateFrom = '', dateTo = '' } = {}) {
-  const [fixedPayments, portablePayments] = await Promise.all([
+  const [fixedPaymentsRaw, portablePaymentsRaw, hiddenResult] = await Promise.all([
     fetchTaxedPayments('storage_payments', FIXED_PAYMENT_COLUMNS, dateFrom, dateTo),
     fetchTaxedPayments('portable_storage_payments', PORTABLE_PAYMENT_COLUMNS, dateFrom, dateTo),
+    supabase.from('admin_payment_hidden').select('payment_type, payment_id'),
   ])
+  if (hiddenResult.error) throw hiddenResult.error
+
+  // A payment hidden on the revenue page is not real revenue — a test charge, a
+  // duplicate, a correction. It must not reach the accountant export either.
+  const hidden = new Set((hiddenResult.data ?? []).map(row => `${row.payment_type}:${row.payment_id}`))
+  const fixedPayments = fixedPaymentsRaw.filter(payment => !hidden.has(`fixed:${payment.id}`))
+  const portablePayments = portablePaymentsRaw.filter(payment => !hidden.has(`portable:${payment.id}`))
 
   const tenancyIds = [...new Set(fixedPayments.map(payment => payment.tenancy_id).filter(Boolean))]
   const unitIds = [...new Set(fixedPayments.map(payment => payment.unit_id).filter(Boolean))]
   const assetIds = [...new Set(portablePayments.map(payment => payment.asset_id).filter(Boolean))]
+  // Attribute by rental, not by pod: a pod outlives its renters.
+  const rentalIds = [...new Set(portablePayments.map(payment => payment.rental_id).filter(Boolean))]
 
   const [
     tenanciesResult,
@@ -312,13 +337,13 @@ export async function loadOnlinePaymentRows({ dateFrom = '', dateTo = '' } = {})
       ? supabase.from('storage_units').select('id, unit_number').in('id', unitIds)
       : Promise.resolve({ data: [], error: null }),
     assetIds.length
-      ? supabase.from('assets').select('id, label, size').in('id', assetIds)
+      ? supabase.from('assets').select('id, label, size, asset_types(name)').in('id', assetIds)
       : Promise.resolve({ data: [], error: null }),
-    assetIds.length
+    rentalIds.length
       ? supabase
         .from('portable_storage_rentals')
-        .select('asset_id, customer_id, tenant_name, tenant_phone, customers(name, phone, email, address)')
-        .in('asset_id', assetIds)
+        .select('id, asset_id, customer_id, tenant_name, tenant_phone, customers(name, phone, email, address)')
+        .in('id', rentalIds)
       : Promise.resolve({ data: [], error: null }),
   ])
 
@@ -328,7 +353,7 @@ export async function loadOnlinePaymentRows({ dateFrom = '', dateTo = '' } = {})
   const tenancyById = new Map((tenanciesResult.data ?? []).map(tenancy => [tenancy.id, tenancy]))
   const unitById = new Map((unitsResult.data ?? []).map(unit => [unit.id, unit]))
   const assetById = new Map((assetsResult.data ?? []).map(asset => [asset.id, asset]))
-  const rentalByAssetId = new Map((rentalsResult.data ?? []).map(rental => [rental.asset_id, rental]))
+  const rentalById = new Map((rentalsResult.data ?? []).map(rental => [rental.id, rental]))
 
   const fixedRows = fixedPayments.map(payment => {
     const tenancy = tenancyById.get(payment.tenancy_id)
@@ -345,6 +370,8 @@ export async function loadOnlinePaymentRows({ dateFrom = '', dateTo = '' } = {})
       assetId: '',
       typeLabel: tenancy?.storage_kind === 'customer_item' ? 'Customer storage' : 'Fixed storage',
       itemLabel: tenancyStorageLabel(tenancy, unit),
+      invoiceLabel: tenancyStorageLabel(tenancy, unit),
+      customerId: tenancy?.customer_id || '',
       customerName: tenancy?.customers?.name || tenancy?.tenant_name || 'Unknown customer',
       phone: tenancy?.customers?.phone || tenancy?.tenant_phone || '',
       email: tenancy?.customers?.email || '',
@@ -358,12 +385,15 @@ export async function loadOnlinePaymentRows({ dateFrom = '', dateTo = '' } = {})
       taxRate: numberValue(payment.tax_rate),
       total: paymentTotal(payment),
       paymentMethod: payment.payment_method || null,
+      paymentReference: payment.payment_reference || '',
     }
   })
 
   const portableRows = portablePayments.map(payment => {
     const asset = assetById.get(payment.asset_id)
-    const rental = rentalByAssetId.get(payment.asset_id)
+    // No rental_id means the payer was never recorded. Leave it unattributed
+    // rather than crediting the pod's current renter.
+    const rental = payment.rental_id ? rentalById.get(payment.rental_id) : null
     const subtotal = paymentSubtotal(payment)
     const tax = numberValue(payment.tax_amount)
 
@@ -376,6 +406,8 @@ export async function loadOnlinePaymentRows({ dateFrom = '', dateTo = '' } = {})
       assetId: payment.asset_id || '',
       typeLabel: 'Portable storage',
       itemLabel: asset ? asset.label + (asset.size ? ` - ${asset.size}` : '') : 'Portable storage',
+      invoiceLabel: portableInvoiceLabel(asset),
+      customerId: rental?.customer_id || '',
       customerName: rental?.customers?.name || rental?.tenant_name || 'Unknown customer',
       phone: rental?.customers?.phone || rental?.tenant_phone || '',
       email: rental?.customers?.email || '',
@@ -389,6 +421,7 @@ export async function loadOnlinePaymentRows({ dateFrom = '', dateTo = '' } = {})
       taxRate: numberValue(payment.tax_rate),
       total: paymentTotal(payment),
       paymentMethod: payment.payment_method || null,
+      paymentReference: payment.payment_reference || '',
     }
   })
 

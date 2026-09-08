@@ -18,6 +18,11 @@ export const CUSTOMER_BILLING_COLUMNS = [
 
 export const CUSTOMER_SAFE_COLUMNS = CUSTOMER_BASE_COLUMNS
 
+export const CUSTOMER_PICKER_COLUMNS = [
+  CUSTOMER_BASE_COLUMNS,
+  'has_payment_method',
+].join(', ')
+
 export const CUSTOMER_WITH_CREDIT_SUMMARY_COLUMNS = `${CUSTOMER_BILLING_COLUMNS}, payment_pin, customer_credits(amount, status)`
 
 export const CUSTOMER_ASSIGN_COLUMNS = [

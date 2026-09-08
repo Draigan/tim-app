@@ -154,3 +154,74 @@ body {
   background-color: color-mix(in oklch, var(--color-muted-foreground) 55%, transparent);
   border-radius: 5px;
 }
+
+/* ---- Invoices ------------------------------------------------------------
+   The invoice sheet is always ink on white, in dark mode and on paper alike,
+   so it uses fixed colours rather than theme tokens. On print, everything
+   marked .print-hide drops out and the app's fixed full-height shell is
+   unwound (.print-flow) so the sheet flows as ordinary page content. */
+.invoice-sheet {
+  max-width: 7.5in;
+  margin: 0 auto;
+  padding: 0.55in 0.5in;
+  background: #ffffff;
+  color: #1a1a1a;
+  border-radius: 6px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  color-scheme: light;
+}
+
+.invoice-sheet .invoice-footer {
+  margin-top: 2.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid #d4d4d4;
+  color: #525252;
+}
+
+@media print {
+  html {
+    position: static !important;
+    overflow: visible !important;
+    height: auto !important;
+    background: #ffffff !important;
+  }
+
+  body {
+    overflow: visible !important;
+    background: #ffffff !important;
+  }
+
+  #root {
+    height: auto !important;
+    display: block !important;
+    padding-top: 0 !important;
+  }
+
+  .print-flow {
+    display: block !important;
+    flex: none !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  .print-hide {
+    display: none !important;
+  }
+
+  .print-sheet-wrap {
+    padding: 0 !important;
+  }
+
+  .invoice-sheet {
+    max-width: none;
+    padding: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  @page {
+    size: letter;
+    margin: 0.55in;
+  }
+}

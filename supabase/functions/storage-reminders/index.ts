@@ -358,7 +358,8 @@ Deno.serve(async (req) => {
     // ── Portable units (unchanged) ───────────────────────────────────────────
     const { data: rentals } = await supabase
       .from('portable_storage_rentals')
-      .select('asset_id, tenant_name, tenant_phone, billing_day, monthly_rate, move_in_date, paid_through_date, assets(label)')
+      .select('id, asset_id, tenant_name, tenant_phone, billing_day, monthly_rate, move_in_date, paid_through_date, assets(label)')
+      .is('end_date', null)
       .eq('payment_frequency', 'monthly')
       .not('billing_day', 'is', null)
       .not('tenant_phone', 'is', null)
@@ -376,7 +377,7 @@ Deno.serve(async (req) => {
       const { data: payments } = await supabase
         .from('portable_storage_payments')
         .select('period_label')
-        .eq('asset_id', rental.asset_id)
+        .eq('rental_id', rental.id)
         .in('period_label', expectedPeriods)
 
       const paidSet = new Set((payments ?? []).map((p: any) => p.period_label))

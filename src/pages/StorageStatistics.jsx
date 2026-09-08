@@ -181,9 +181,11 @@ function buildStats({
   const deployedPortableIds = new Set((deployments ?? []).map(deployment => deployment.asset_id).filter(id => portableAssetIds.has(id)))
 
   const storagePaymentKeys = new Set(storagePayments.map(payment => `${payment.tenancy_id}:${payment.period_label}`))
-  const portablePaymentKeys = new Set(portablePayments.map(payment => `${payment.asset_id}:${payment.period_label}`))
+  const portablePaymentKeys = new Set(portablePayments.map(payment => `${payment.rental_id}:${payment.period_label}`))
   const tenancyById = new Map(tenancies.map(tenancy => [tenancy.id, tenancy]))
-  const portableRentalByAssetId = new Map(portableRentals.map(rental => [rental.asset_id, rental]))
+  // Spend and revenue attribution follows the rental that earned the payment,
+  // never the pod: a pod outlives its renters.
+  const portableRentalById = new Map(portableRentals.map(rental => [rental.id, rental]))
 
   const billingRecords = [
     ...activeTenancies.map(tenancy => {
@@ -208,7 +210,7 @@ function buildStats({
     ...activePortableRentals.map(rental => {
       const asset = portableByAssetId.get(rental.asset_id)
       const currentPeriod = currentPeriodLabel(rental.billing_day)
-      const paidCurrentPeriod = portablePaymentKeys.has(`${rental.asset_id}:${currentPeriod}`)
+      const paidCurrentPeriod = portablePaymentKeys.has(`${rental.id}:${currentPeriod}`)
       return {
         id: rental.id,
         type: 'portable',
@@ -241,10 +243,10 @@ function buildStats({
   }
 
   function resolvePortableMeta(payment) {
-    const rental = portableRentalByAssetId.get(payment.asset_id)
+    const rental = payment.rental_id ? portableRentalById.get(payment.rental_id) : null
     const asset = portableByAssetId.get(payment.asset_id)
     return {
-      customer: rental?.customers?.name ?? rental?.tenant_name ?? 'Unknown customer',
+      customer: rental?.customers?.name ?? rental?.tenant_name ?? 'Unattributed',
       label: asset?.label ?? 'Portable unit',
     }
   }
@@ -299,7 +301,7 @@ function buildStats({
   })
 
   portablePayments.forEach(payment => {
-    const rental = portableRentalByAssetId.get(payment.asset_id)
+    const rental = payment.rental_id ? portableRentalById.get(payment.rental_id) : null
     if (!rental) return
     addCustomerSpend({
       source: 'portable',
@@ -518,10 +520,11 @@ async function loadStorageStats() {
       .order('label'),
     supabase
       .from('portable_storage_rentals')
-      .select('id, asset_id, customer_id, tenant_name, tenant_phone, monthly_rate, billing_day, payment_frequency, move_in_date, paid_through_date, created_at, customers(id, name, phone, has_payment_method)'),
+      .select('id, asset_id, customer_id, tenant_name, tenant_phone, monthly_rate, billing_day, payment_frequency, move_in_date, paid_through_date, created_at, customers(id, name, phone, has_payment_method)')
+      .is('end_date', null),
     supabase
       .from('portable_storage_payments')
-      .select('asset_id, period_label, paid_at, amount, subtotal_amount, tax_amount'),
+      .select('rental_id, asset_id, period_label, paid_at, amount, subtotal_amount, tax_amount'),
     supabase
       .from('customer_credits')
       .select('id, customer_id, amount, status, created_at, customers(name)')

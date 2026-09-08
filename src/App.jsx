@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { getUserAccess } from '@/lib/authz'
+import { installErrorReporting } from '@/lib/errorReporter'
 import { VOICE_TRIAL_EVENT } from '@/lib/voiceTrial'
 import { Button } from '@/components/ui/button'
 import Layout from '@/components/Layout'
@@ -29,6 +30,7 @@ import Customers from '@/pages/Customers'
 import ReviewRequest from '@/pages/ReviewRequest'
 import AdminRevenue from '@/pages/AdminRevenue'
 import OnlinePayments from '@/pages/OnlinePayments'
+import Invoices from '@/pages/Invoices'
 import AccountantPortal from '@/pages/AccountantPortal'
 import Notifications from '@/pages/Notifications'
 import VoiceDeploy from '@/pages/VoiceDeploy'
@@ -43,6 +45,8 @@ const CUSTOMER_RETURN_PATHS = new Map([
   ['/card-saved', '/card-saved'],
   ['/card-cancelled', '/card-cancelled'],
 ])
+
+installErrorReporting()
 
 function redirectCustomerReturnPath() {
   if (typeof window === 'undefined') return
@@ -164,6 +168,7 @@ export default function App() {
           <Route path="/review-request" element={requireAccess(access.canRequestReviews, <ReviewRequest />)} />
           <Route path="/admin-revenue" element={requireAccess(access.canManageRevenue, <AdminRevenue />)} />
           <Route path="/online-payments" element={requireAccess(access.canManageRevenue, <OnlinePayments />)} />
+          <Route path="/invoices" element={requireAccess(access.canManageRevenue, <Invoices />)} />
           <Route path="/accountant" element={requireAccess(access.canAccessAccountantPortal, <AccountantPortal />)} />
           <Route path="/notifications" element={requireAccess(access.canViewNotifications, <Notifications />)} />
           <Route path="/voice-deploy" element={requireAccess(access.canUseVoiceDeploy, <VoiceDeploy />)} />

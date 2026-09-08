@@ -525,7 +525,7 @@ function FixedUnitCard({ unit, isPaid, onTap }) {
           }
         </div>
         {!vacant && (
-          <div className="flex items-center gap-3 mt-0.5">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-0.5">
             {unit.monthly_rate && <span className="text-xs text-muted-foreground">${unit.monthly_rate}/mo</span>}
             {unit.tenant_phone && <span className="text-xs text-muted-foreground">{formatPhone(unit.tenant_phone)}</span>}
             {unit.customers?.has_payment_method ? (
@@ -1732,9 +1732,18 @@ function PortableUnitCard({ asset, rental, isPaid, isDeployed, onTap }) {
           }
         </div>
         {!unassigned && (
-          <div className="flex items-center gap-3 mt-0.5">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-0.5">
             {rental.monthly_rate && <span className="text-xs text-muted-foreground">${rental.monthly_rate}/mo</span>}
             {rental.tenant_phone && <span className="text-xs text-muted-foreground">{formatPhone(rental.tenant_phone)}</span>}
+            {rental.customers?.has_payment_method ? (
+              <span className="flex items-center gap-1 text-xs text-green-600">
+                <CreditCard size={12} /> Card on file
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                <CreditCard size={12} /> No card
+              </span>
+            )}
             {isDeployed && <span className="text-xs text-primary">Deployed</span>}
           </div>
         )}
@@ -1772,7 +1781,9 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
     if (tenantName(rental)) {
       setHistoryLoading(true)
       Promise.all([
-        supabase.from('portable_storage_payments').select('*').eq('asset_id', asset.id).order('period_label', { ascending: false }),
+        // Scoped to this rental, not the pod: a pod's previous renters keep their
+        // own payments, and their history must not surface as this renter's.
+        supabase.from('portable_storage_payments').select('*').eq('rental_id', rental.id).order('period_label', { ascending: false }),
         supabase.from('sms_reminder_log').select('*').eq('ref_id', asset.id).order('sent_date', { ascending: false }).limit(10),
       ]).then(([{ data: payments }, { data: logs }]) => {
         if (payments) setHistory(sortPaymentsByPeriod(payments))
@@ -1814,7 +1825,7 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
       payment_frequency: editForm.payment_frequency || null,
       move_in_date:      editForm.move_in_date  || null,
       notes:             editForm.notes.trim()  || null,
-    }).eq('asset_id', asset.id)
+    }).eq('id', rental.id)
     setSaving(false)
     setEditing(false)
     onAssigned()
@@ -1824,7 +1835,7 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
     const amount = periodChargeAmount(period, rental.billing_day, rental.move_in_date, rental.monthly_rate)
     const { data } = await supabase
       .from('portable_storage_payments')
-      .upsert({ asset_id: asset.id, period_label: period, payment_method: 'cash', ...paymentAmountsFromSubtotal(amount) }, { onConflict: 'asset_id,period_label' })
+      .upsert({ rental_id: rental.id, asset_id: asset.id, period_label: period, payment_method: 'cash', ...paymentAmountsFromSubtotal(amount) }, { onConflict: 'rental_id,period_label' })
       .select().single()
     if (data) setHistory(prev => sortPaymentsByPeriod([data, ...prev]))
     await extendPortablePaidThrough([period])
@@ -1871,12 +1882,13 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
   async function handlePayAll(unpaid) {
     setPayingAll(true)
     const inserts = unpaid.map(period => ({
+      rental_id: rental.id,
       asset_id: asset.id,
       period_label: period,
       payment_method: 'cash',
       ...paymentAmountsFromSubtotal(periodChargeAmount(period, rental.billing_day, rental.move_in_date, rental.monthly_rate)),
     }))
-    const { data } = await supabase.from('portable_storage_payments').upsert(inserts, { onConflict: 'asset_id,period_label' }).select()
+    const { data } = await supabase.from('portable_storage_payments').upsert(inserts, { onConflict: 'rental_id,period_label' }).select()
     setHistory(prev => sortPaymentsByPeriod([...(data ?? []), ...prev]))
     await extendPortablePaidThrough(unpaid)
     setPayingAll(false)
@@ -1886,7 +1898,7 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
   async function updatePortablePaidThrough(paidThroughDate) {
     await supabase.from('portable_storage_rentals')
       .update({ paid_through_date: paidThroughDate })
-      .eq('asset_id', asset.id)
+      .eq('id', rental.id)
   }
 
   async function extendPortablePaidThrough(periods) {
@@ -1958,7 +1970,10 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
     if (saving) return
     setSaving(true)
     try {
-      const { error } = await supabase.from('portable_storage_rentals').upsert({
+      // Insert, never upsert: a pod's past rentals are kept as history, so
+      // there is no single row per asset to overwrite. The partial unique index
+      // on (asset_id) where end_date is null rejects a second active renter.
+      const { error } = await supabase.from('portable_storage_rentals').insert({
         asset_id:          asset.id,
         customer_id:       customer.id,
         tenant_name:       customer.name  || null,
@@ -1968,7 +1983,7 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
         payment_frequency: assign.payment_frequency || null,
         move_in_date:      assign.move_in_date  || null,
         notes:             assign.notes.trim()  || null,
-      }, { onConflict: 'asset_id' })
+      })
       if (error) throw error
 
       onAssigned()
@@ -1983,7 +1998,13 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
 
   async function handleVacate() {
     setSaving(true)
-    await supabase.from('portable_storage_rentals').delete().eq('asset_id', asset.id)
+    // Close the rental instead of deleting it. Deleting used to strand this
+    // renter's payments on the pod (the next renter inherited them), null the
+    // portable_rental_id on their booking session, and cascade-delete their
+    // late fees.
+    await supabase.from('portable_storage_rentals')
+      .update({ end_date: localDateStr() })
+      .eq('id', rental.id)
     setSaving(false)
     onAssigned()
     onClose()
@@ -2380,8 +2401,8 @@ export default function Storage() {
       supabase.from('storage_tenancies').select('*, customers(name, payment_pin, has_payment_method, stripe_customer_id)').eq('storage_kind', 'customer_item').is('end_date', null).order('item_label'),
       supabase.from('storage_payments').select('tenancy_id, period_label').gte('period_label', cutoff),
       supabase.from('assets').select('*, asset_types(name, is_storage)').eq('archived', false).order('label'),
-      supabase.from('portable_storage_rentals').select('*, customers(name, payment_pin, has_payment_method, stripe_customer_id)'),
-      supabase.from('portable_storage_payments').select('asset_id, period_label').gte('period_label', cutoff),
+      supabase.from('portable_storage_rentals').select('*, customers(name, payment_pin, has_payment_method, stripe_customer_id)').is('end_date', null),
+      supabase.from('portable_storage_payments').select('rental_id, asset_id, period_label').gte('period_label', cutoff),
       supabase.from('active_deployments').select('asset_id'),
     ])
 
@@ -2490,12 +2511,16 @@ export default function Storage() {
           .filter(r => isPaidThroughToday(r.paid_through_date))
           .map(r => r.asset_id)
       )
+      // Match on rental_id: an unattributed payment (rental_id null) or one from
+      // a previous renter must never mark the current renter as paid.
+      const rentalById = {}
+      rentalData.forEach(r => { rentalById[r.id] = r })
       portablePaymentData
         ?.filter(p => {
-          const rental = rentalData.find(r => r.asset_id === p.asset_id)
-          return p.period_label === currentPeriodLabel(rental?.billing_day)
+          const rental = p.rental_id ? rentalById[p.rental_id] : null
+          return rental && p.period_label === currentPeriodLabel(rental.billing_day)
         })
-        .map(p => p.asset_id)
+        .map(p => rentalById[p.rental_id].asset_id)
         .forEach(id => paid.add(id))
       setPortablePaidIds(paid)
     }
@@ -2563,18 +2588,21 @@ export default function Storage() {
     const marking = !portablePaidIds.has(id)
     if (!marking) return
 
+    if (!rental?.id) return
+
     await supabase.from('portable_storage_payments').upsert(
       {
+        rental_id: rental.id,
         asset_id: id,
         period_label: period,
         payment_method: 'cash',
         ...paymentAmountsFromSubtotal(periodChargeAmount(period, rental?.billing_day, rental?.move_in_date, rental?.monthly_rate)),
       },
-      { onConflict: 'asset_id,period_label' }
+      { onConflict: 'rental_id,period_label' }
     )
     const paidThroughDate = paidThroughFromPayments([{ period_label: period }], rental?.billing_day, rental?.paid_through_date)
     if (paidThroughDate) {
-      await supabase.from('portable_storage_rentals').update({ paid_through_date: paidThroughDate }).eq('asset_id', id)
+      await supabase.from('portable_storage_rentals').update({ paid_through_date: paidThroughDate }).eq('id', rental.id)
     }
     setPortablePaidIds(prev => new Set([...prev, id]))
   }

@@ -1,5 +1,3 @@
-import { isVoiceTrialActive } from './voiceTrial'
-
 export const ROLES = {
   SUPERUSER: 'superuser',
   OWNER: 'owner',
@@ -26,6 +24,9 @@ export const DRIVER_EMAILS = ['beau@timberfell.ca']
 // The accountant is locked to the Online Payments portal only — no other part
 // of the app is reachable for this role.
 export const ACCOUNTANT_EMAILS = ['neil@timberfell.ca']
+// Accounts whose time inside the Storage section is timed and reported to the
+// superuser. Superusers are never tracked.
+export const STORAGE_WATCH_EMAILS = ['tim@timberfell.ca']
 
 function normalizedEmail(userOrEmail) {
   const email = typeof userOrEmail === 'string' ? userOrEmail : userOrEmail?.email
@@ -76,6 +77,12 @@ export function isSuperuser(user) {
   return getUserRole(user) === ROLES.SUPERUSER
 }
 
+export function isStorageWatched(user) {
+  const email = normalizedEmail(user)
+  if (!email || SUPERUSER_EMAILS.includes(email)) return false
+  return STORAGE_WATCH_EMAILS.includes(email)
+}
+
 export function isOwner(user) {
   const role = getUserRole(user)
   return role === ROLES.SUPERUSER || role === ROLES.OWNER
@@ -123,8 +130,8 @@ export function getUserAccess(user) {
     canViewHistory: manager,
     canRequestReviews: manager,
     canViewNotifications: manager,
-    // Drivers get voice deploy outright. Only the owner has to sit through the
-    // free trial pitch.
-    canUseVoiceDeploy: superuser || driver || (owner && isVoiceTrialActive()),
+    // Owners and drivers can use voice deploy outright. The owner trial pitch
+    // is cosmetic and does not gate access.
+    canUseVoiceDeploy: superuser || owner || driver,
   }
 }

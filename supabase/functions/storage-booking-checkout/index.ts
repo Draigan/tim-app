@@ -277,7 +277,7 @@ async function resolvePortableUnit(unitNumber: string): Promise<ResolvedUnit> {
 
   const [{ data: deployment, error: deploymentError }, { data: rental, error: rentalError }] = await Promise.all([
     supabase.from('deployments').select('id').eq('asset_id', asset.id).is('picked_up_at', null).limit(1).maybeSingle(),
-    supabase.from('portable_storage_rentals').select('id').eq('asset_id', asset.id).limit(1).maybeSingle(),
+    supabase.from('portable_storage_rentals').select('id').eq('asset_id', asset.id).is('end_date', null).limit(1).maybeSingle(),
   ])
 
   if (deploymentError) throw deploymentError

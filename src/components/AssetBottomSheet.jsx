@@ -36,7 +36,10 @@ function UpdateDialog({ deployment, open, onOpenChange, onSaved }) {
   const timer = useRef(null)
 
   useEffect(() => {
-    if (open) {
+    if (!open) return undefined
+    let cancelled = false
+    Promise.resolve().then(() => {
+      if (cancelled) return
       setAddress(deployment.address ?? '')
       setSelectedCoords({ lng: deployment.lng, lat: deployment.lat })
       setCustomerName(deployment.customer_name ?? '')
@@ -46,7 +49,8 @@ function UpdateDialog({ deployment, open, onOpenChange, onSaved }) {
       setSuggestions([])
       setSaveError('')
       setNewDeploymentId(newClientId())
-    }
+    })
+    return () => { cancelled = true }
   }, [open, deployment])
 
   function handleAddressChange(value) {
@@ -168,7 +172,13 @@ function UpdateDialog({ deployment, open, onOpenChange, onSaved }) {
               type="date"
               value={expiresAt}
               onChange={e => setExpiresAt(e.target.value)}
-              onClick={e => { try { e.target.showPicker() } catch {} }}
+              onClick={e => {
+                try {
+                  e.target.showPicker()
+                } catch {
+                  // Some browsers do not expose the native picker.
+                }
+              }}
               className="w-full rounded-md border border-input px-3 py-2 text-sm cursor-pointer"
             />
           </div>
@@ -192,39 +202,64 @@ function UpdateDialog({ deployment, open, onOpenChange, onSaved }) {
   )
 }
 
-function PickupDialog({ deployment, open, onOpenChange, onConfirm }) {
+export function PickupDialog({ deployment, open, onOpenChange, onConfirm }) {
   const [notes, setNotes] = useState('')
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const isOnline = useOnlineStatus()
 
-  useEffect(() => { if (open) setNotes('') }, [open])
+  useEffect(() => {
+    if (!open) return undefined
+    let cancelled = false
+    Promise.resolve().then(() => {
+      if (cancelled) return
+      setNotes('')
+      setError('')
+    })
+    return () => { cancelled = true }
+  }, [open])
 
   async function handleConfirm() {
-    setSaving(true)
-    const { data: { session } } = await supabase.auth.getSession()
-    const user = session?.user
-    const picked_up_by = user?.user_metadata?.full_name ?? user?.email ?? null
-    await supabase.from('deployments').update({
-      picked_up_at: new Date().toISOString(),
-      pickup_notes: notes.trim() || null,
-      picked_up_by,
-    }).eq('id', deployment.id)
-
-    if (session) {
-      const who = picked_up_by ?? 'Someone'
-      fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-push`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: `${deployment.label} picked up`,
-          body: `${deployment.address}${deployment.customer_name ? ` · ${deployment.customer_name}` : ''} — by ${who}`,
-          url: '/',
-          exclude_user_id: user?.id,
-        }),
-      }).catch(() => {})
+    if (!isOnline) {
+      setError('Reconnect to pick up this asset.')
+      return
     }
 
-    setSaving(false)
-    onConfirm()
+    setSaving(true)
+    setError('')
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const user = session?.user
+      const picked_up_by = user?.user_metadata?.full_name ?? user?.email ?? null
+
+      await retryTransient(async () => throwSupabaseError(await supabase.from('deployments').update({
+        picked_up_at: new Date().toISOString(),
+        pickup_notes: notes.trim() || null,
+        picked_up_by,
+      }).eq('id', deployment.id)))
+
+      if (session) {
+        const who = picked_up_by ?? 'Someone'
+        fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-push`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: `${deployment.label} picked up`,
+            body: `${deployment.address}${deployment.customer_name ? ` · ${deployment.customer_name}` : ''} — by ${who}`,
+            url: '/',
+            exclude_user_id: user?.id,
+          }),
+        }).catch(() => {})
+      }
+
+      onConfirm()
+    } catch (err) {
+      console.error('deployment pickup failed:', err)
+      setError(getErrorMessage(err, 'Could not pick up this asset. Check your connection and try again.'))
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -246,9 +281,13 @@ function PickupDialog({ deployment, open, onOpenChange, onConfirm }) {
               rows={3}
             />
           </div>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          {!isOnline && !error && (
+            <p className="text-sm text-destructive">Reconnect to pick up this asset.</p>
+          )}
           <div className="flex gap-2 pt-1">
             <Button variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>Cancel</Button>
-            <Button variant="destructive" className="flex-1" onClick={handleConfirm} disabled={saving}>
+            <Button variant="destructive" className="flex-1" onClick={handleConfirm} disabled={saving || !isOnline}>
               {saving ? 'Picking up…' : 'Confirm Pickup'}
             </Button>
           </div>
@@ -258,13 +297,22 @@ function PickupDialog({ deployment, open, onOpenChange, onConfirm }) {
   )
 }
 
-function ReviewRequestDialog({ deployment, open, onOpenChange, onDone }) {
+export function ReviewRequestDialog({ deployment, open, onOpenChange, onDone }) {
   const [sending, setSending] = useState(false)
   const [sent, setSent] = useState(false)
   const [error, setError] = useState(null)
   const hasPhone = !!deployment?.customer_phone
 
-  useEffect(() => { if (open) { setSent(false); setError(null) } }, [open])
+  useEffect(() => {
+    if (!open) return undefined
+    let cancelled = false
+    Promise.resolve().then(() => {
+      if (cancelled) return
+      setSent(false)
+      setError(null)
+    })
+    return () => { cancelled = true }
+  }, [open])
 
   async function handleSend() {
     setSending(true)

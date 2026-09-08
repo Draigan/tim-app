@@ -23,6 +23,42 @@ async function currentUser() {
   return data.user
 }
 
+function cleanText(value) {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function errorMessageFromBody(body) {
+  if (!body || typeof body !== 'object') return ''
+  return cleanText(body.error)
+    || cleanText(body.message)
+    || cleanText(body.error?.message)
+}
+
+async function readableFunctionError(error, response) {
+  const source = response || error?.context
+  let message = ''
+
+  try {
+    const clone = typeof source?.clone === 'function' ? source.clone() : null
+    const contentType = clone?.headers?.get('Content-Type') ?? ''
+    if (clone && contentType.includes('application/json')) {
+      message = errorMessageFromBody(await clone.json())
+    } else if (clone) {
+      message = cleanText(await clone.text())
+    }
+  } catch {
+    // Keep the Supabase error if the response body is unavailable.
+  }
+
+  if (!message) return error
+
+  const next = new Error(message)
+  next.name = error?.name || 'FunctionsHttpError'
+  next.cause = error
+  if (typeof source?.status === 'number') next.status = source.status
+  return next
+}
+
 async function fetchDraft(draftId) {
   const result = await supabase
     .from('voice_deploy_drafts')
@@ -61,15 +97,16 @@ export async function uploadAndTranscribeVoiceRecording(recording, context = nul
     .select('id, audio_path, audio_mime_type, audio_size, status, transcript, parse_result, error_message, updated_at')
     .single()).data
 
-  const { data, error } = await supabase.functions.invoke('process-voice-deploy', {
+  const { data, error, response } = await supabase.functions.invoke('process-voice-deploy', {
     body: context ? { draftId, context } : { draftId },
   })
 
   if (error) {
+    const invokeError = await readableFunctionError(error, response)
     try {
-      return { draft: await fetchDraft(draftId), error }
+      return { draft: await fetchDraft(draftId), error: invokeError }
     } catch {
-      return { draft: inserted, error }
+      return { draft: inserted, error: invokeError }
     }
   }
 

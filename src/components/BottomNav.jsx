@@ -1,7 +1,7 @@
 import { createElement, useState } from 'react'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
-import { Map, Package, Settings, Warehouse, MoreHorizontal, Users, CalendarDays, LayoutGrid, History, ChevronRight, Star, ReceiptText, Bell, Mic, BadgeCheck } from 'lucide-react'
-import { Sheet, SheetContent } from '@/components/ui/sheet'
+import { Map, Package, Settings, Warehouse, MoreHorizontal, Users, CalendarDays, LayoutGrid, History, ChevronRight, Star, ReceiptText, Bell, Mic, BadgeCheck, FileText } from 'lucide-react'
+import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { cn } from '@/lib/utils'
 import { useAccess } from '@/lib/useAccess'
 import { useNotificationUnreadCount } from '@/lib/useNotificationUnreadCount'
@@ -14,6 +14,7 @@ const MORE_ITEMS = [
   { to: '/verifier',        icon: BadgeCheck,   label: 'Verifier',        description: 'Check off bins you actually see', access: 'canManageAssets' },
   { to: '/history',         icon: History,      label: 'History',         description: 'Deployment history', access: 'canViewHistory' },
   { to: '/online-payments', icon: ReceiptText,  label: 'Online Payments', description: 'Tax collected payments', access: 'canManageRevenue' },
+  { to: '/invoices',        icon: FileText,     label: 'Invoices',        description: 'Tax invoices for paid charges', access: 'canManageRevenue' },
   { to: '/accountant',      icon: ReceiptText,  label: 'Accountant Portal', description: 'Online payments export for the accountant', access: 'canAccessAccountantPortal' },
   { to: '/admin-revenue',   icon: ReceiptText,  label: 'Admin Revenue',   description: 'Revenue tracker', access: 'canManageRevenue' },
   { to: '/review-request',  icon: Star,         label: 'Review Request',  description: 'Send a review request by SMS', access: 'canRequestReviews' },
@@ -32,8 +33,9 @@ function MoreSheet({ open, onClose, items, unreadCount }) {
   return (
     <>
       <Sheet open={open} onOpenChange={v => !v && onClose()}>
-        <SheetContent side="bottom" className="pb-8">
-          <div className="pt-2 pb-1">
+        <SheetContent side="bottom" className="flex max-h-[85dvh] flex-col px-0 py-0">
+          <SheetTitle className="flex-shrink-0 border-b px-6 py-3 text-base">More</SheetTitle>
+          <div className="flex-1 overflow-y-auto overscroll-contain px-6 pt-3 pb-[max(2rem,env(safe-area-inset-bottom))]">
             <div className="space-y-1">
               {items.map(item => (
                 <button
@@ -93,7 +95,7 @@ export default function BottomNav() {
 
   return (
     <>
-      <nav className="border-t bg-background flex flex-shrink-0 select-none" style={{ paddingBottom: '4px' }}>
+      <nav className="border-t bg-background flex flex-shrink-0 select-none print-hide" style={{ paddingBottom: '4px' }}>
         {navItems.map(item => (
           <NavLink
             key={item.to}

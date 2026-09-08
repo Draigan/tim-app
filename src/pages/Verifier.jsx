@@ -3,38 +3,112 @@ import { supabase } from '@/lib/supabase'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { useRealtime } from '@/lib/useRealtime'
-import { CheckCircle2, Circle, Loader2 } from 'lucide-react'
+import { CheckCircle2, Circle, Loader2, MapPin, Navigation } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const DUMPSTER_TYPE = 'Dumpster'
 
+function validCoordinate(value) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : null
+}
+
+function mapsPoint(stop) {
+  return stop.lat !== null && stop.lng !== null
+    ? `${stop.lat},${stop.lng}`
+    : stop.address
+}
+
+function routeKey(deployment) {
+  const lat = validCoordinate(deployment.lat)
+  const lng = validCoordinate(deployment.lng)
+  if (lat !== null && lng !== null) {
+    return `${lat.toFixed(6)},${lng.toFixed(6)}`
+  }
+  return deployment.address
+}
+
+function buildRouteStops(deployments) {
+  const stops = new Map()
+
+  for (const deployment of deployments) {
+    const key = routeKey(deployment)
+    const existing = stops.get(key)
+    const assetLabel = [deployment.label, deployment.size].filter(Boolean).join(' · ')
+    if (existing) {
+      existing.count += 1
+      if (assetLabel) existing.assets.push(assetLabel)
+      continue
+    }
+    stops.set(key, {
+      key,
+      address: deployment.address,
+      lat: validCoordinate(deployment.lat),
+      lng: validCoordinate(deployment.lng),
+      count: 1,
+      assets: assetLabel ? [assetLabel] : [],
+    })
+  }
+
+  return [...stops.values()].sort((a, b) => {
+    if (a.lat !== null && b.lat !== null && a.lat !== b.lat) return b.lat - a.lat
+    return a.address.localeCompare(b.address)
+  })
+}
+
+function googleMapsRouteUrl(stops) {
+  if (stops.length === 0) return ''
+  const destination = stops[stops.length - 1]
+  const params = new URLSearchParams({
+    api: '1',
+    travelmode: 'driving',
+    destination: mapsPoint(destination),
+  })
+
+  if (stops.length > 1) {
+    params.set('waypoints', stops.slice(0, -1).map(mapsPoint).join('|'))
+  }
+
+  return `https://www.google.com/maps/dir/?${params.toString()}`
+}
+
 export default function Verifier() {
   const [assets, setAssets] = useState([])
+  const [deployments, setDeployments] = useState([])
   const [loading, setLoading] = useState(true)
   const [savingId, setSavingId] = useState(null)
   const [error, setError] = useState('')
   const [confirmUnverify, setConfirmUnverify] = useState(null)
 
   const fetchAssets = useCallback(async () => {
-    const { data, error: loadError } = await supabase
-      .from('assets')
-      .select('id, label, size, notes, verified_at, verified_by, asset_types!inner(name)')
-      .eq('archived', false)
-      .eq('asset_types.name', DUMPSTER_TYPE)
-      .order('label')
+    const [{ data, error: loadError }, { data: deploymentData, error: deploymentError }] = await Promise.all([
+      supabase
+        .from('assets')
+        .select('id, label, size, notes, verified_at, verified_by, asset_types!inner(name)')
+        .eq('archived', false)
+        .eq('asset_types.name', DUMPSTER_TYPE)
+        .order('label'),
+      supabase
+        .from('active_deployments')
+        .select('id, asset_id, label, size, address, lat, lng, type_name')
+        .eq('type_name', DUMPSTER_TYPE)
+        .order('lat', { ascending: false }),
+    ])
 
-    if (loadError) {
-      setError(loadError.message)
+    if (data) setAssets(data)
+    if (deploymentData) setDeployments(deploymentData)
+
+    if (loadError || deploymentError) {
+      setError(loadError?.message ?? deploymentError?.message)
     } else {
       setError('')
-      setAssets(data ?? [])
     }
     setLoading(false)
   }, [])
 
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { fetchAssets() }, [fetchAssets])
-  useRealtime(['assets'], fetchAssets)
+  useRealtime(['assets', 'deployments'], fetchAssets)
 
   function toggle(asset) {
     // Verifying is one tap. Undoing it is a deliberate act - these checks are the
@@ -72,6 +146,9 @@ export default function Verifier() {
   }
 
   const verifiedCount = assets.filter(a => a.verified_at).length
+  const routeStops = buildRouteStops(deployments)
+  const routeUrl = googleMapsRouteUrl(routeStops)
+  const deployedBinCount = deployments.length
 
   return (
     <div className="h-full flex flex-col">
@@ -89,6 +166,21 @@ export default function Verifier() {
               </span>
             )}
           </p>
+        )}
+        {!loading && routeUrl && (
+          <div className="mt-3 rounded-lg border bg-card p-3">
+            <a href={routeUrl} target="_blank" rel="noopener noreferrer">
+              <Button className="w-full">
+                <Navigation size={16} />
+                Open north-first Google Maps route
+              </Button>
+            </a>
+            <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+              <MapPin size={13} className="flex-shrink-0" />
+              {routeStops.length} stop{routeStops.length === 1 ? '' : 's'}
+              {deployedBinCount !== routeStops.length && ` · ${deployedBinCount} deployed bins`}
+            </p>
+          </div>
         )}
       </div>
 

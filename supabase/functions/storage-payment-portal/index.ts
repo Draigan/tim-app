@@ -299,7 +299,8 @@ async function collectOutstandingCharges(customerId: string): Promise<PortalChar
       .from('portable_storage_rentals')
       .select('id, asset_id, monthly_rate, billing_day, payment_frequency, move_in_date, paid_through_date, assets(label)')
       .eq('customer_id', customerId)
-      .eq('payment_frequency', 'monthly'),
+      .eq('payment_frequency', 'monthly')
+      .is('end_date', null),
   ])
 
   if (tenancyError) throw tenancyError
@@ -318,8 +319,8 @@ async function collectOutstandingCharges(customerId: string): Promise<PortalChar
     tenancyIds.length
       ? supabase.from('storage_payments').select('tenancy_id, period_label').in('tenancy_id', tenancyIds)
       : Promise.resolve({ data: [], error: null }),
-    assetIds.length
-      ? supabase.from('portable_storage_payments').select('asset_id, period_label').in('asset_id', assetIds)
+    rentalIds.length
+      ? supabase.from('portable_storage_payments').select('rental_id, period_label').in('rental_id', rentalIds)
       : Promise.resolve({ data: [], error: null }),
     tenancyIds.length
       ? supabase.from('storage_late_fees').select('tenancy_id, period_label, amount').eq('status', 'open').in('tenancy_id', tenancyIds)
@@ -342,8 +343,8 @@ async function collectOutstandingCharges(customerId: string): Promise<PortalChar
 
   const portablePaid = new Map<string, Set<string>>()
   for (const payment of portablePayments ?? []) {
-    if (!portablePaid.has(payment.asset_id)) portablePaid.set(payment.asset_id, new Set())
-    portablePaid.get(payment.asset_id)!.add(payment.period_label)
+    if (!portablePaid.has(payment.rental_id)) portablePaid.set(payment.rental_id, new Set())
+    portablePaid.get(payment.rental_id)!.add(payment.period_label)
   }
 
   const storageLateFees = new Map<string, number>()
@@ -395,7 +396,7 @@ async function collectOutstandingCharges(customerId: string): Promise<PortalChar
 
   for (const rental of rentals ?? []) {
     if (!rental.billing_day || Number(rental.monthly_rate ?? 0) <= 0) continue
-    const paidSet = portablePaid.get(rental.asset_id) ?? new Set<string>()
+    const paidSet = portablePaid.get(rental.id) ?? new Set<string>()
     const unitLabel = (rental.assets as any)?.label ?? 'Portable storage'
     const current = currentPeriodLabel(rental.billing_day)
     let prepayIndex = 0

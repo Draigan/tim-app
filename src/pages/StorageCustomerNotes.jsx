@@ -64,7 +64,8 @@ async function loadStorageCustomers() {
       .is('end_date', null),
     supabase
       .from('portable_storage_rentals')
-      .select('id, asset_id, customer_id, tenant_name, tenant_phone, assets(label), customers(id, name, phone, email)'),
+      .select('id, asset_id, customer_id, tenant_name, tenant_phone, assets(label), customers(id, name, phone, email)')
+      .is('end_date', null),
     supabase.from('storage_customer_notes').select('customer_id, notes, updated_at'),
     supabase
       .from('storage_customer_check_fields')

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, CreditCard, Banknote, CheckCircle2, Plus, X, AlertCircle, Clock, Loader2, ExternalLink } from 'lucide-react'
+import { ArrowLeft, CreditCard, Banknote, Send, CheckCircle2, Plus, X, AlertCircle, Clock, Loader2, ExternalLink } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { supabase } from '@/lib/supabase'
@@ -327,8 +327,12 @@ function PinModal({ open, onClose, onConfirm, charging, actionType, details }) {
   const [pin, setPin] = useState('')
   const [error, setError] = useState('')
   const isCash = actionType === 'cash'
+  const isEtransfer = actionType === 'etransfer'
   const isCard = actionType === 'card'
   const isRemove = actionType === 'remove'
+  // Cash and e-transfer are both money already received; only a card charge
+  // actually moves money here.
+  const isReceived = isCash || isEtransfer
 
   useEffect(() => {
     if (!open) return
@@ -408,21 +412,28 @@ function PinModal({ open, onClose, onConfirm, charging, actionType, details }) {
             )}>
               {isCash
                 ? <Banknote size={22} className="text-primary" />
-                : isRemove
-                  ? <X size={22} className="text-destructive" />
-                  : <CreditCard size={22} className="text-green-600" />
+                : isEtransfer
+                  ? <Send size={22} className="text-primary" />
+                  : isRemove
+                    ? <X size={22} className="text-destructive" />
+                    : <CreditCard size={22} className="text-green-600" />
               }
             </div>
             <div>
               <h2 className="text-base font-bold leading-tight">
-                {isCash ? 'Record cash payment' : isRemove ? 'Remove latest payment' : 'Charge card'}
+                {isCash ? 'Record cash payment'
+                  : isEtransfer ? 'Record e-transfer'
+                  : isRemove ? 'Remove latest payment'
+                  : 'Charge card'}
               </h2>
               <p className="text-xs text-muted-foreground">
                 {isCash
                   ? 'Cash or cheque · enter PIN to confirm'
-                  : isRemove
-                    ? 'Steps paid-through back by one month'
-                    : 'Card on file · enter PIN to confirm'}
+                  : isEtransfer
+                    ? 'Interac e-transfer · no card is charged'
+                    : isRemove
+                      ? 'Steps paid-through back by one month'
+                      : 'Card on file · enter PIN to confirm'}
               </p>
             </div>
           </div>
@@ -522,8 +533,11 @@ function PinModal({ open, onClose, onConfirm, charging, actionType, details }) {
               onClick={handleConfirm}
             >
               {charging
-                ? <><Loader2 size={14} className="animate-spin" /> {isCash ? 'Saving…' : isRemove ? 'Removing…' : 'Charging…'}</>
-                : isCash ? <><Banknote size={14} /> Mark paid</> : isRemove ? <><X size={14} /> Remove</> : <><CreditCard size={14} /> Charge card</>
+                ? <><Loader2 size={14} className="animate-spin" /> {isReceived ? 'Saving…' : isRemove ? 'Removing…' : 'Charging…'}</>
+                : isCash ? <><Banknote size={14} /> Mark paid</>
+                  : isEtransfer ? <><Send size={14} /> Record e-transfer</>
+                  : isRemove ? <><X size={14} /> Remove</>
+                  : <><CreditCard size={14} /> Charge card</>
               }
             </Button>
           </div>
@@ -538,6 +552,8 @@ function PinModal({ open, onClose, onConfirm, charging, actionType, details }) {
 function ChargeSuccessView({ result, onDone }) {
   const { tenantName, unitNumber, periods, monthlyRate, extras, taxTotal = 0, grandTotal, paidThrough, paymentMethod } = result
   const isCash = paymentMethod === 'cash'
+  const isEtransfer = paymentMethod === 'etransfer'
+  const isReceived = isCash || isEtransfer
 
   return (
     <div className="space-y-5">
@@ -548,7 +564,9 @@ function ChargeSuccessView({ result, onDone }) {
         </div>
         <p className="text-xl font-bold">Payment recorded</p>
         <p className="text-sm text-muted-foreground mt-1">
-          ${grandTotal.toFixed(2)} {isCash ? 'recorded as cash' : 'charged to card on file'}
+          ${grandTotal.toFixed(2)} {isCash ? 'recorded as cash'
+            : isEtransfer ? 'recorded as an e-transfer'
+            : 'charged to card on file'}
         </p>
       </div>
 
@@ -557,7 +575,9 @@ function ChargeSuccessView({ result, onDone }) {
         <div className="px-4 py-2.5 bg-muted/30 border-b flex items-center justify-between">
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Receipt</p>
           <span className="flex items-center gap-1 text-xs text-muted-foreground">
-            {isCash ? <><Banknote size={12} /> Cash</> : <><CreditCard size={12} /> Card</>}
+            {isCash ? <><Banknote size={12} /> Cash</>
+              : isEtransfer ? <><Send size={12} /> E-Transfer</>
+              : <><CreditCard size={12} /> Card</>}
           </span>
         </div>
         <div className="divide-y">
@@ -591,7 +611,7 @@ function ChargeSuccessView({ result, onDone }) {
             </div>
           )}
           <div className="flex justify-between px-4 py-2.5 font-semibold">
-            <span>{isCash ? 'Total received' : 'Total charged'}</span>
+            <span>{isReceived ? 'Total received' : 'Total charged'}</span>
             <span className="text-green-600">${grandTotal.toFixed(2)}</span>
           </div>
           {paidThrough && (
@@ -627,6 +647,7 @@ export default function StorageBilling() {
   const [chargeMonths, setChargeMonths] = useState(1)
   const [extras, setExtras]       = useState([])
   const [cashCollectTax, setCashCollectTax] = useState(false)
+  const [etransferReference, setEtransferReference] = useState('')
   const [charging, setCharging]   = useState(false)
   const [lateFeeSaving, setLateFeeSaving] = useState('')
   const [lateFeeError, setLateFeeError] = useState('')
@@ -644,6 +665,7 @@ export default function StorageBilling() {
         supabase.from('portable_storage_rentals')
           .select('*, customers(name, has_payment_method, stripe_customer_id)')
           .eq('asset_id', assetId)
+          .is('end_date', null)
           .maybeSingle(),
       ])
 
@@ -655,7 +677,7 @@ export default function StorageBilling() {
           supabase
             .from('portable_storage_payments')
             .select('*')
-            .eq('asset_id', assetId)
+            .eq('rental_id', r.id)
             .order('period_label', { ascending: false }),
           supabase
             .from('storage_late_fees')
@@ -832,9 +854,7 @@ export default function StorageBilling() {
     if (!nextPaidThroughDate) return null
 
     const table = isPortable ? 'portable_storage_rentals' : 'storage_tenancies'
-    const column = isPortable ? 'asset_id' : 'id'
-    const id = isPortable ? assetId : tenancy.id
-    await supabase.from(table).update({ paid_through_date: nextPaidThroughDate }).eq(column, id)
+    await supabase.from(table).update({ paid_through_date: nextPaidThroughDate }).eq('id', tenancy.id)
     return nextPaidThroughDate
   }
 
@@ -880,7 +900,12 @@ export default function StorageBilling() {
     }
   }
 
-  async function handleMarkPaidCharge(pin) {
+  // Cash and e-transfer share this path: neither charges a card. They differ in
+  // where the money lands — an e-transfer is banked and reaches the accountant,
+  // so it always carries HST, while cash is reconciled outside this app.
+  async function handleMarkPaidCharge(pin, method = 'cash') {
+    const isEtransfer = method === 'etransfer'
+    const collectTax = isEtransfer ? true : cashCollectTax
     const snapshot = {
       tenantName,
       unitNumber: displayName,
@@ -888,9 +913,9 @@ export default function StorageBilling() {
       monthlyRate: tenancy.monthly_rate || 0,
       extras: extras.filter(e => parseFloat(e.amount) > 0),
       extrasTotal,
-      taxTotal: cashTaxTotal,
-      grandTotal: cashGrandTotal,
-      paymentMethod: 'cash',
+      taxTotal: isEtransfer ? taxTotal : cashTaxTotal,
+      grandTotal: isEtransfer ? subtotalTotal + taxTotal : cashGrandTotal,
+      paymentMethod: method,
     }
     const toMark = chargePreview.filter(p => !p.alreadyPaid).map(p => p.label)
     if (!toMark.length) return { error: 'No unpaid months selected.' }
@@ -907,7 +932,9 @@ export default function StorageBilling() {
           action: 'record_cash_payment',
           ...(isPortable ? { portable_asset_id: assetId } : isCustomerItem ? { tenancy_id: tenancy.id } : { cash_unit_id: unitId }),
           periods: toMark,
-          collect_tax: cashCollectTax,
+          collect_tax: collectTax,
+          payment_method: method,
+          payment_reference: isEtransfer ? etransferReference.trim() || null : null,
           billing_pin: pin,
           request_id: newBillingRequestId(),
         }),
@@ -924,8 +951,8 @@ export default function StorageBilling() {
         ...(isPortable ? { asset_id: assetId } : { tenancy_id: tenancy.id }),
         period_label: period,
         paid_at: new Date().toISOString(),
-        payment_method: 'cash',
-        ...paymentAmountsForPeriod(period, cashCollectTax),
+        payment_method: method,
+        ...paymentAmountsForPeriod(period, collectTax),
       }))
       mergeHistoryPayments(payments, paidPeriods)
       markLateFeesPaidInState(paidPeriods)
@@ -933,6 +960,7 @@ export default function StorageBilling() {
       if (nextPaidThroughDate) setTenancy(t => ({ ...t, paid_through_date: nextPaidThroughDate }))
       setPinModalOpen(false)
       setExtras([])
+      setEtransferReference('')
       setChargeMonths(0)
       setCashCollectTax(false)
       setChargeSuccess({
@@ -1022,7 +1050,8 @@ export default function StorageBilling() {
   }
 
   function handlePinConfirm(pin) {
-    if (pendingAction === 'cash') return handleMarkPaidCharge(pin)
+    if (pendingAction === 'cash') return handleMarkPaidCharge(pin, 'cash')
+    if (pendingAction === 'etransfer') return handleMarkPaidCharge(pin, 'etransfer')
     if (pendingAction === 'remove') return handleRemoveLatestPayment(pin)
     return handleChargeCard(pin)
   }
@@ -1112,12 +1141,12 @@ export default function StorageBilling() {
         if (chargedPeriods.length) {
           const paymentQuery = supabase.from(isPortable ? 'portable_storage_payments' : 'storage_payments').select('*')
           const { data: payments } = await (isPortable
-            ? paymentQuery.eq('asset_id', assetId).in('period_label', chargedPeriods)
+            ? paymentQuery.eq('rental_id', tenancy.id).in('period_label', chargedPeriods)
             : paymentQuery.eq('tenancy_id', tenancy.id).in('period_label', chargedPeriods)
           )
           const fallbackPayments = chargedPeriods.map(period => ({
             id: `${tenancy.id}-${period}`,
-            ...(isPortable ? { asset_id: assetId } : { tenancy_id: tenancy.id }),
+            ...(isPortable ? { rental_id: tenancy.id, asset_id: assetId } : { tenancy_id: tenancy.id }),
             period_label: period,
             paid_at: new Date().toISOString(),
             ...paymentAmountsForPeriod(period, true),
@@ -1372,6 +1401,20 @@ export default function StorageBilling() {
                 </label>
               )}
 
+              {/* Optional reference for an e-transfer, so the accountant can
+                  match the line to a deposit in the bank. */}
+              {canMarkPaidCharge && subtotalTotal > 0 && (
+                <label className="block space-y-1">
+                  <span className="text-xs text-muted-foreground">E-Transfer reference (optional)</span>
+                  <Input
+                    value={etransferReference}
+                    onChange={e => setEtransferReference(e.target.value)}
+                    placeholder="Sender name or confirmation number"
+                    maxLength={200}
+                  />
+                </label>
+              )}
+
               {/* Total */}
               {subtotalTotal > 0 && (
                 <div className="space-y-1 py-2 border-t text-sm">
@@ -1383,6 +1426,12 @@ export default function StorageBilling() {
                     <div className="flex items-center justify-between text-muted-foreground">
                       <span>Cash {SALES_TAX_LABEL} 13%</span>
                       <span>${cashTaxTotal.toFixed(2)}</span>
+                    </div>
+                  )}
+                  {canMarkPaidCharge && (
+                    <div className="flex items-center justify-between text-muted-foreground">
+                      <span>E-Transfer total (incl. {SALES_TAX_LABEL})</span>
+                      <span>${(subtotalTotal + taxTotal).toFixed(2)}</span>
                     </div>
                   )}
                   {canMarkPaidCharge && (
@@ -1413,6 +1462,12 @@ export default function StorageBilling() {
                     <Button variant="outline" className="flex-1 gap-1.5" disabled={charging} onClick={() => openPinModal('cash')}>
                       <Banknote size={13} />
                       Cash
+                    </Button>
+                  )}
+                  {canMarkPaidCharge && (
+                    <Button variant="outline" className="flex-1 gap-1.5" disabled={charging} onClick={() => openPinModal('etransfer')}>
+                      <Send size={13} />
+                      E-Transfer
                     </Button>
                   )}
                   {hasCard && (
@@ -1461,7 +1516,9 @@ export default function StorageBilling() {
           taxTotal: pendingAction === 'remove' ? 0 : pendingAction === 'cash' ? cashTaxTotal : taxTotal,
           grandTotal: pendingAction === 'remove'
             ? Number(latestPayment?.amount ?? 0)
-            : pendingAction === 'cash' ? cashGrandTotal : cardGrandTotal,
+            : pendingAction === 'cash' ? cashGrandTotal
+            : pendingAction === 'etransfer' ? subtotalTotal + taxTotal
+            : cardGrandTotal,
         }}
       />
     </div>

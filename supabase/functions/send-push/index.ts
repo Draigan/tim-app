@@ -8,9 +8,18 @@ const CORS = {
 }
 
 const ADMIN_EMAIL = 'tim@timberfell.ca'
+const DEFAULT_SUPERUSER_EMAILS = ['d@d.d']
 const MAX_TITLE_LENGTH = 80
 const MAX_BODY_LENGTH = 180
 const NOTIFICATION_INBOX_URL = '/notifications'
+const SUPERUSER_ROLES = new Set(['superuser'])
+
+// Superuser alerts arrive from a few different places; each kind decides how the
+// notification is filed in the inbox.
+const SUPERUSER_NOTIFICATION_KINDS: Record<string, { type: string; severity: 'info' | 'error' }> = {
+  app_error: { type: 'app_error', severity: 'error' },
+  storage_view: { type: 'storage_view', severity: 'info' },
+}
 
 webpush.setVapidDetails(
   `mailto:${ADMIN_EMAIL}`,
@@ -44,6 +53,40 @@ function firstName(value: string): string {
   return value.trim().split(/\s+/)[0] || 'Chat'
 }
 
+function emailsFromEnv(name: string, fallback: string[] = []): string[] {
+  const raw = Deno.env.get(name)
+  const values = raw
+    ? raw.split(',').map(email => email.trim().toLowerCase()).filter(Boolean)
+    : []
+  return values.length ? values : fallback
+}
+
+const SUPERUSER_EMAILS = emailsFromEnv('SUPERUSER_EMAILS', DEFAULT_SUPERUSER_EMAILS)
+
+function userHasSuperuserRole(user: any): boolean {
+  const metadata = user?.app_metadata ?? {}
+  const role = metadata.role
+  if (typeof role === 'string' && SUPERUSER_ROLES.has(role.toLowerCase())) return true
+
+  const roles = metadata.roles
+  if (Array.isArray(roles)) return roles.some(item => SUPERUSER_ROLES.has(String(item).toLowerCase()))
+  if (roles && typeof roles === 'object') {
+    return [...SUPERUSER_ROLES].some(item => Boolean(roles[item]))
+  }
+
+  return false
+}
+
+function isSuperuserAccount(user: any): boolean {
+  const email = typeof user?.email === 'string' ? user.email.trim().toLowerCase() : ''
+  return userHasSuperuserRole(user) || SUPERUSER_EMAILS.includes(email)
+}
+
+function metadataObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  return value as Record<string, unknown>
+}
+
 async function sendToSubs(subs: any[], payload: string) {
   const results = await Promise.allSettled(
     subs.map(sub =>
@@ -68,6 +111,7 @@ async function sendToSubs(subs: any[], payload: string) {
 }
 
 async function createAppNotification({
+  audience = 'admin',
   title,
   body,
   url,
@@ -75,6 +119,7 @@ async function createAppNotification({
   severity = 'info',
   metadata = {},
 }: {
+  audience?: 'staff' | 'billing' | 'admin' | 'superuser'
   title: string
   body: string
   url: string
@@ -83,7 +128,7 @@ async function createAppNotification({
   metadata?: Record<string, unknown>
 }) {
   const { error } = await supabaseAdmin.from('app_notifications').insert({
-    audience: 'admin',
+    audience,
     title,
     body,
     url,
@@ -93,6 +138,11 @@ async function createAppNotification({
   })
 
   if (error) throw error
+}
+
+async function superuserIds(): Promise<string[]> {
+  const { data: { users } } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 })
+  return users.filter(isSuperuserAccount).map(user => user.id)
 }
 
 async function chatPayloadForCaller(userId: string, body: Record<string, unknown>): Promise<string | Response> {
@@ -142,10 +192,46 @@ Deno.serve(async (req) => {
   if (!user) return json({ error: 'Unauthorized' }, 401)
 
   const requestBody = await req.json()
-  const { title, body, url, exclude_user_id, to_all, to_self } = requestBody
+  const { title, body, url, exclude_user_id, to_all, to_self, to_superuser } = requestBody
 
   const cleanedTitle = cleanText(title, MAX_TITLE_LENGTH)
   const cleanedBody = cleanText(body, MAX_BODY_LENGTH)
+
+  if (to_superuser) {
+    if (!cleanedTitle || !cleanedBody) return json({ error: 'title and body required' }, 400)
+
+    const kind = SUPERUSER_NOTIFICATION_KINDS[String(requestBody.kind ?? '')]
+      ?? SUPERUSER_NOTIFICATION_KINDS.app_error
+
+    const targetIds = await superuserIds()
+    if (!targetIds.length) return json({ ok: true, sent: 0 })
+
+    const targetUrl = safeUrl(url)
+    const payload = JSON.stringify({ title: cleanedTitle, body: cleanedBody, url: targetUrl })
+
+    await createAppNotification({
+      audience: 'superuser',
+      title: cleanedTitle,
+      body: cleanedBody,
+      url: targetUrl,
+      type: kind.type,
+      severity: kind.severity,
+      metadata: {
+        sender_user_id: user.id,
+        ...metadataObject(requestBody.metadata ?? requestBody.error),
+      },
+    }).catch(err => {
+      console.error('Superuser app notification failed.', err)
+    })
+
+    const { data: subs } = await supabaseAdmin
+      .from('push_subscriptions')
+      .select('*')
+      .in('user_id', targetIds)
+    if (!subs?.length) return json({ ok: true, sent: 0 })
+    const sent = await sendToSubs(subs, payload)
+    return json({ ok: true, sent })
+  }
 
   if (to_self) {
     if (!cleanedTitle || !cleanedBody) return json({ error: 'title and body required' }, 400)

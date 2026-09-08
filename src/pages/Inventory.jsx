@@ -12,9 +12,14 @@ function match(q, ...fields) {
   return fields.some(f => f?.toLowerCase().includes(q))
 }
 
+function portableOccupantName(rental) {
+  return rental?.tenant_name || rental?.customers?.name || ''
+}
+
 export default function Inventory() {
   const [yardAssets, setYardAssets] = useState([])
   const [deployedAssets, setDeployedAssets] = useState([])
+  const [portableRentals, setPortableRentals] = useState([])
   const [reservationMap, setReservationMap] = useState({})
   const [loading, setLoading] = useState(true)
   const [deployedOpen, setDeployedOpen] = useState(true)
@@ -26,13 +31,15 @@ export default function Inventory() {
   const fetchAll = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
     const today = new Date().toISOString().slice(0, 10)
-    const [{ data: yard }, { data: deployed }, { data: resData }] = await Promise.all([
+    const [{ data: yard }, { data: deployed }, { data: rentals }, { data: resData }] = await Promise.all([
       supabase.from('yard_assets').select('*').order('created_at', { ascending: false }),
       supabase.from('active_deployments').select('*').order('dropped_at', { ascending: false }),
+      supabase.from('portable_storage_rentals').select('asset_id, tenant_name, customers(name)').is('end_date', null),
       supabase.from('reservations').select('*').gte('to_date', today).order('from_date'),
     ])
     if (yard) setYardAssets(yard)
     if (deployed) setDeployedAssets(deployed)
+    if (rentals) setPortableRentals(rentals)
     if (resData) {
       const map = {}
       resData.forEach(r => {
@@ -47,9 +54,13 @@ export default function Inventory() {
   const refreshSilent = useCallback(() => fetchAll(true), [fetchAll])
 
   useEffect(() => { fetchAll() }, [fetchAll])
-  useRealtime(['deployments', 'assets', 'asset_types', 'reservations'], refreshSilent)
+  useRealtime(['deployments', 'assets', 'asset_types', 'portable_storage_rentals', 'reservations'], refreshSilent)
 
   const q = query.trim().toLowerCase()
+  const portableRentalMap = portableRentals.reduce((acc, rental) => {
+    acc[rental.asset_id] = rental
+    return acc
+  }, {})
 
   function daysLeft(d) {
     if (!d.expires_at) return null
@@ -173,10 +184,19 @@ export default function Inventory() {
                         const nextRes = reservationMap[asset.id]?.[0]
                         const daysUntil = nextRes ? Math.ceil((new Date(nextRes.from_date + 'T00:00:00') - new Date()) / 86400000) : null
                         const resSoon = daysUntil !== null && daysUntil <= 7
+                        const rental = portableRentalMap[asset.id]
+                        const occupantName = portableOccupantName(rental)
                         return (
                           <div key={asset.id} className={`bg-card border rounded-xl p-4 flex items-center justify-between ${resSoon ? 'border-amber-500/50' : ''}`}>
                             <div className="min-w-0">
-                              <p className="font-medium truncate">{asset.label}</p>
+                              <div className="flex items-center gap-2">
+                                <p className="font-medium truncate">{asset.label}</p>
+                                {rental && (
+                                  <span className="text-xs font-medium text-green-600 flex-shrink-0">
+                                    {occupantName ? `Occupied: ${occupantName}` : 'Occupied'}
+                                  </span>
+                                )}
+                              </div>
                               {asset.size && <p className="text-sm text-muted-foreground">{asset.size}</p>}
                               {asset.notes && <p className="text-xs text-muted-foreground mt-0.5 truncate">{asset.notes}</p>}
                               {nextRes && (

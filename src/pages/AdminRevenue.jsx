@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils'
 const ADMIN_SHARE = 0.25
 const START_DATE = '2026-06-05'
 const CUSTOMER_STORAGE_TYPE_LABELS = { boat: 'Boat', trailer: 'Trailer', rv: 'RV', custom: 'Custom' }
-const PAYMENT_METHOD_LABELS = { stripe: 'Stripe', cash: 'Cash', untracked: 'Untracked' }
+const PAYMENT_METHOD_LABELS = { stripe: 'Stripe', etransfer: 'E-Transfer', cash: 'Cash', untracked: 'Untracked' }
 
 function fmtDate(iso) {
   if (!iso) return ''
@@ -34,7 +34,7 @@ function inferPaymentMethod(type, taxAmount) {
 }
 
 function paymentMethodForRow(type, taxAmount, paymentMethod) {
-  if (paymentMethod === 'stripe' || paymentMethod === 'cash') return paymentMethod
+  if (paymentMethod === 'stripe' || paymentMethod === 'cash' || paymentMethod === 'etransfer') return paymentMethod
   return inferPaymentMethod(type, taxAmount)
 }
 
@@ -43,7 +43,7 @@ function methodLabel(method) {
 }
 
 function emptyMethodTotals() {
-  return { stripe: 0, cash: 0, untracked: 0 }
+  return { stripe: 0, etransfer: 0, cash: 0, untracked: 0 }
 }
 
 function methodBreakdown(payments) {
@@ -74,6 +74,7 @@ export default function AdminRevenue() {
   const [manualModal, setManualModal] = useState(false)
   const [manualAmount, setManualAmount] = useState('')
   const [manualNote, setManualNote] = useState('')
+  const [manualFullAmount, setManualFullAmount] = useState(false)
   const [markAllPinOpen, setMarkAllPinOpen] = useState(false)
   const [markingAll, setMarkingAll] = useState(false)
   const [markClientModal, setMarkClientModal] = useState(null)
@@ -97,8 +98,8 @@ export default function AdminRevenue() {
       supabase.from('storage_units').select('id, unit_number'),
       supabase.from('portable_storage_payments').select('*').gte('paid_at', START_DATE).order('paid_at', { ascending: false }),
       supabase.from('assets').select('id, label, size'),
-      supabase.from('portable_storage_rentals').select('asset_id, customer_id, tenant_name, customers(name)'),
-      supabase.from('admin_manual_payments').select('id, amount, note, paid_at').gte('paid_at', START_DATE).order('paid_at', { ascending: false }),
+      supabase.from('portable_storage_rentals').select('id, asset_id, customer_id, tenant_name, customers(name)'),
+      supabase.from('admin_manual_payments').select('id, amount, note, paid_at, full_amount').gte('paid_at', START_DATE).order('paid_at', { ascending: false }),
       supabase.from('admin_payment_received').select('payment_type, payment_id, amount_received'),
       supabase.from('admin_payment_hidden').select('payment_type, payment_id'),
     ])
@@ -106,7 +107,9 @@ export default function AdminRevenue() {
     const tenancyMap = new Map((tenancies ?? []).map(t => [t.id, t]))
     const unitMap    = new Map((storageUnits ?? []).map(u => [u.id, u]))
     const assetMap   = new Map((portableAssets ?? []).map(a => [a.id, a]))
-    const rentalMap  = new Map((portableRentals ?? []).map(r => [r.asset_id, r]))
+    // Keyed by rental, not pod: a pod outlives its renters, so keying by
+    // asset_id credited every past payment to whoever rents it today.
+    const rentalMap  = new Map((portableRentals ?? []).map(r => [r.id, r]))
     const hiddenSet  = new Set((hidden ?? []).map(r => `${r.payment_type}:${r.payment_id}`))
 
     const receivedMap = new Map()
@@ -115,9 +118,9 @@ export default function AdminRevenue() {
       receivedMap.set(key, (receivedMap.get(key) ?? 0) + Number(r.amount_received || 0))
     }
 
-    function buildRow(type, id, label, tenantName, amount, subtotalAmount, taxAmount, paidAt, clientKey = null, paymentMethod = null) {
+    function buildRow(type, id, label, tenantName, amount, subtotalAmount, taxAmount, paidAt, clientKey = null, paymentMethod = null, shareRate = ADMIN_SHARE) {
       const revenueAmount = subtotalAmount ?? amount
-      const adminShare    = revenueAmount * ADMIN_SHARE
+      const adminShare    = revenueAmount * shareRate
       const totalReceived = receivedMap.get(`${type}:${id}`) ?? 0
       const clientName    = tenantName?.trim() || 'Unknown client'
       return {
@@ -127,6 +130,7 @@ export default function AdminRevenue() {
         paymentMethod: paymentMethodForRow(type, taxAmount, paymentMethod),
         amount, subtotalAmount: revenueAmount, taxAmount, adminShare, totalReceived,
         remaining: adminShare - totalReceived,
+        isFullAmount: shareRate >= 1,
         paidAt,
       }
     }
@@ -149,7 +153,7 @@ export default function AdminRevenue() {
 
     const portableRows = (portablePayments ?? []).map(p => {
       const asset  = assetMap.get(p.asset_id)
-      const rental = rentalMap.get(p.asset_id)
+      const rental = p.rental_id ? rentalMap.get(p.rental_id) : null
       return buildRow(
         'portable', p.id,
         asset ? asset.label + (asset.size ? ` · ${asset.size}` : '') : 'Unknown',
@@ -165,14 +169,15 @@ export default function AdminRevenue() {
 
     const manualRows = (manualPayments ?? []).map(p => buildRow(
       'manual', p.id,
-      'Cash payment',
+      p.full_amount ? 'Cash · full amount' : 'Cash payment',
       p.note || null,
       Number(p.amount || 0),
       Number(p.amount || 0),
       0,
       p.paid_at,
       null,
-      'cash'
+      'cash',
+      p.full_amount ? 1 : ADMIN_SHARE
     ))
 
     const all = [...fixedRows, ...portableRows, ...manualRows].sort((a, b) => new Date(b.paidAt) - new Date(a.paidAt))
@@ -280,6 +285,7 @@ export default function AdminRevenue() {
     const { error } = await supabase.from('admin_manual_payments').insert({
       amount: Number(amount.toFixed(2)),
       note: manualNote.trim() || null,
+      full_amount: manualFullAmount,
     })
     setSaving(false)
 
@@ -291,6 +297,7 @@ export default function AdminRevenue() {
     setManualModal(false)
     setManualAmount('')
     setManualNote('')
+    setManualFullAmount(false)
     load()
   }
 
@@ -313,10 +320,15 @@ export default function AdminRevenue() {
   }, new Map()).values()]
     .filter(group => group.payments.length > 1)
     .sort((a, b) => b.total - a.total || b.payments.length - a.payments.length || a.clientName.localeCompare(b.clientName))
-  const grossTotal    = payments.reduce((s, p) => s + p.amount, 0)
-  const grossSubtotal = payments.reduce((s, p) => s + p.subtotalAmount, 0)
+  // Reimbursements are money owed back, not income — they stay out of gross.
+  const revenuePayments   = payments.filter(p => !p.isFullAmount)
+  const reimbursements    = payments.filter(p => p.isFullAmount)
+  const grossTotal        = revenuePayments.reduce((s, p) => s + p.amount, 0)
+  const grossSubtotal     = revenuePayments.reduce((s, p) => s + p.subtotalAmount, 0)
+  const reimbursedTotal   = reimbursements.reduce((s, p) => s + p.amount, 0)
   const manualAmountValue = Number(manualAmount)
-  const manualCut = Number.isFinite(manualAmountValue) && manualAmountValue > 0 ? manualAmountValue * ADMIN_SHARE : 0
+  const manualBase = Number.isFinite(manualAmountValue) && manualAmountValue > 0 ? manualAmountValue : 0
+  const manualCut = manualFullAmount ? manualBase : manualBase * ADMIN_SHARE
 
   return (
     <div className="h-full flex flex-col">
@@ -334,9 +346,9 @@ export default function AdminRevenue() {
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
 
         {/* Gross */}
-        {!loading && payments.length > 0 && (
+        {!loading && revenuePayments.length > 0 && (
           <div className="bg-card border rounded-xl px-4 py-3">
-            <p className="text-xs text-muted-foreground">Gross · {payments.length} entr{payments.length !== 1 ? 'ies' : 'y'}</p>
+            <p className="text-xs text-muted-foreground">Gross · {revenuePayments.length} entr{revenuePayments.length !== 1 ? 'ies' : 'y'}</p>
             <div className="grid grid-cols-2 gap-3 mt-1">
               <div>
                 <p className="text-2xl font-bold">${grossSubtotal.toFixed(2)}</p>
@@ -347,6 +359,12 @@ export default function AdminRevenue() {
                 <p className="text-xs text-muted-foreground mt-0.5">After taxes</p>
               </div>
             </div>
+            {reimbursements.length > 0 && (
+              <p className="text-xs text-muted-foreground mt-2.5 pt-2.5 border-t leading-relaxed">
+                Excludes ${reimbursedTotal.toFixed(2)} in reimbursements
+                {' · '}{reimbursements.length} entr{reimbursements.length !== 1 ? 'ies' : 'y'}
+              </p>
+            )}
           </div>
         )}
 
@@ -603,7 +621,9 @@ export default function AdminRevenue() {
                   </div>
                 )}
                 <div className="flex justify-between px-4 py-2.5">
-                  <span className="text-muted-foreground">{isManual ? 'Your 25% cut' : 'Your 25% of rent'}</span>
+                  <span className="text-muted-foreground">
+                    {acceptModal.isFullAmount ? 'Owed to you in full' : isManual ? 'Your 25% cut' : 'Your 25% of rent'}
+                  </span>
                   <span className="font-medium">${acceptModal.adminShare.toFixed(2)}</span>
                 </div>
                 {acceptModal.totalReceived > 0.01 && (
@@ -662,6 +682,7 @@ export default function AdminRevenue() {
         if (!v) {
           setManualAmount('')
           setManualNote('')
+          setManualFullAmount(false)
         }
       }}>
         <SheetContent side="bottom" className="max-h-[75vh]">
@@ -696,13 +717,41 @@ export default function AdminRevenue() {
               />
             </div>
 
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-muted-foreground">How much is yours</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setManualFullAmount(false)}
+                  className={cn(
+                    'rounded-xl border px-3 py-2.5 text-left transition-colors',
+                    manualFullAmount ? 'bg-card hover:bg-accent' : 'border-primary bg-primary/10'
+                  )}
+                >
+                  <p className="text-sm font-medium">25% cut</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Revenue to split</p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setManualFullAmount(true)}
+                  className={cn(
+                    'rounded-xl border px-3 py-2.5 text-left transition-colors',
+                    manualFullAmount ? 'border-primary bg-primary/10' : 'bg-card hover:bg-accent'
+                  )}
+                >
+                  <p className="text-sm font-medium">Full amount</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Owed back to you</p>
+                </button>
+              </div>
+            </div>
+
             <div className="rounded-xl border divide-y text-sm">
               <div className="flex justify-between px-4 py-2.5">
                 <span className="text-muted-foreground">Cash amount</span>
-                <span className="font-medium">${(Number.isFinite(manualAmountValue) && manualAmountValue > 0 ? manualAmountValue : 0).toFixed(2)}</span>
+                <span className="font-medium">${manualBase.toFixed(2)}</span>
               </div>
               <div className="flex justify-between px-4 py-2.5">
-                <span className="text-muted-foreground">Your 25% cut</span>
+                <span className="text-muted-foreground">{manualFullAmount ? 'Owed to you in full' : 'Your 25% cut'}</span>
                 <span className="font-semibold">${manualCut.toFixed(2)}</span>
               </div>
             </div>

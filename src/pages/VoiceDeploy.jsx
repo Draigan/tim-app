@@ -1,14 +1,16 @@
-import { createElement, useEffect, useMemo, useRef, useState } from 'react'
+import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { createPortal } from 'react-dom'
 import { AlertCircle, CalendarDays, CheckCircle2, Loader2, LocateFixed, MapPin, Mic, Package, Phone, RotateCcw, Search, Square, Truck, User, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { PickupDialog, ReviewRequestDialog } from '@/components/AssetBottomSheet'
 import { cn, formatPhone, formatPhoneInput, getErrorMessage, newClientId, retryTransient, throwSupabaseError } from '@/lib/utils'
 import { useOnlineStatus } from '@/lib/useOnlineStatus'
 import { saveVoiceRecording } from '@/lib/voiceRecordings'
 import { deleteVoiceDeployDraft, uploadAndTranscribeVoiceRecording } from '@/lib/voiceDeployDrafts'
+import { reportErrorToSuperuser } from '@/lib/errorReporter'
 import { supabase } from '@/lib/supabase'
 import { geocodeAddress, reverseGeocode } from '@/lib/mapbox'
 import { CUSTOMER_SAFE_COLUMNS } from '@/lib/customerFields'
@@ -229,6 +231,9 @@ export default function VoiceDeploy() {
   const [savingDeploy, setSavingDeploy] = useState(false)
   const [deploymentId, setDeploymentId] = useState(() => newClientId())
   const [activeDraft, setActiveDraft] = useState(null)
+  const [pickupTarget, setPickupTarget] = useState(null)
+  const [pickupDialogOpen, setPickupDialogOpen] = useState(false)
+  const [reviewDialogOpen, setReviewDialogOpen] = useState(false)
 
   function stopStream() {
     streamRef.current?.getTracks().forEach(track => track.stop())
@@ -273,34 +278,40 @@ export default function VoiceDeploy() {
     stopStream()
   }, [])
 
+  const loadCandidates = useCallback(async ({ isCancelled = () => false } = {}) => {
+    if (!isOnline) return
+    try {
+      const [
+        { data: assets, error: assetError },
+        { data: customerRows, error: customerError },
+        { data: deployed, error: deployedError },
+      ] = await Promise.all([
+        supabase.from('yard_assets').select('id, label, size, type_name, notes').order('label'),
+        supabase.from('customers').select(CUSTOMER_SAFE_COLUMNS).is('archived_at', null).order('name'),
+        supabase
+          .from('active_deployments')
+          .select('id, asset_id, label, size, type_name, customer_name, customer_phone, address, dropped_at, expires_at')
+          .order('label'),
+      ])
+      if (assetError) throw assetError
+      if (customerError) throw customerError
+      if (deployedError) throw deployedError
+      if (isCancelled()) return
+      setYardAssets(assets ?? [])
+      setCustomers(customerRows ?? [])
+      setDeployedAssets(deployed ?? [])
+    } catch (err) {
+      console.error('voice deploy candidate load failed:', err)
+    }
+  }, [isOnline])
+
   useEffect(() => {
     let cancelled = false
-    if (!isOnline) return
-    async function loadCandidates() {
-      try {
-        const [
-          { data: assets, error: assetError },
-          { data: customerRows, error: customerError },
-          { data: deployed, error: deployedError },
-        ] = await Promise.all([
-          supabase.from('yard_assets').select('id, label, size, type_name, notes').order('label'),
-          supabase.from('customers').select(CUSTOMER_SAFE_COLUMNS).is('archived_at', null).order('name'),
-          supabase.from('active_deployments').select('asset_id, label, size, type_name, customer_name, address, dropped_at').order('label'),
-        ])
-        if (assetError) throw assetError
-        if (customerError) throw customerError
-        if (deployedError) throw deployedError
-        if (cancelled) return
-        setYardAssets(assets ?? [])
-        setCustomers(customerRows ?? [])
-        setDeployedAssets(deployed ?? [])
-      } catch (err) {
-        console.error('voice deploy candidate load failed:', err)
-      }
-    }
-    loadCandidates()
+    Promise.resolve().then(() => {
+      if (!cancelled) loadCandidates({ isCancelled: () => cancelled })
+    })
     return () => { cancelled = true }
-  }, [isOnline])
+  }, [loadCandidates])
 
   function setField(field, value) {
     if (error) setError('')
@@ -385,7 +396,9 @@ export default function VoiceDeploy() {
     try {
       const { draft, error: invokeError } = await uploadAndTranscribeVoiceRecording({ blob, type, size: blob.size })
       if (invokeError || draft.status === 'failed') {
-        setError(getErrorMessage(invokeError, draft.error_message || 'Could not transcribe that. Try again.'))
+        const message = draft.error_message || getErrorMessage(invokeError, 'Could not transcribe that. Try again.')
+        if (draft.error_message) reportErrorToSuperuser(draft.error_message, { source: 'voice_deploy' })
+        setError(message)
         setCapture(null)
         return
       }
@@ -439,7 +452,9 @@ export default function VoiceDeploy() {
       const { draft, error: invokeError } = await uploadAndTranscribeVoiceRecording({ blob, type, size: blob.size }, context)
       deleteVoiceDeployDraft(draft.id, draft.audio_path).catch(err => console.error('amend draft cleanup failed:', err))
       if (invokeError || draft.status === 'failed') {
-        setError(getErrorMessage(invokeError, draft.error_message || 'Could not hear that. Try again.'))
+        const message = draft.error_message || getErrorMessage(invokeError, 'Could not hear that. Try again.')
+        if (draft.error_message) reportErrorToSuperuser(draft.error_message, { source: 'voice_deploy_amendment' })
+        setError(message)
         setCapture(null)
         return
       }
@@ -652,6 +667,30 @@ export default function VoiceDeploy() {
       customer: resolvedCustomer.name || prev.customer,
       address: prev.address || resolvedCustomer.address || '',
     }))
+  }
+
+  function openConflictPickup() {
+    if (!deployedMatch) return
+    setPickupTarget(deployedMatch)
+    setPickupDialogOpen(true)
+  }
+
+  async function completeConflictPickup() {
+    const pickedAssetId = pickupTarget?.asset_id
+    setPickupDialogOpen(false)
+    setReviewDialogOpen(false)
+    await loadCandidates()
+    if (pickedAssetId) setResolvedAssetId(pickedAssetId)
+    setPickupTarget(null)
+  }
+
+  function handleConflictPickupConfirmed() {
+    setPickupDialogOpen(false)
+    if (pickupTarget?.customer_phone) {
+      setReviewDialogOpen(true)
+      return
+    }
+    void completeConflictPickup()
   }
 
   const recording = capture === 'recording'
@@ -921,8 +960,15 @@ export default function VoiceDeploy() {
                   {deployedMatch.address ? ` at ${deployedMatch.address}` : ''}.
                 </p>
               </div>
-              <Button type="button" size="sm" variant="outline" className="w-full" disabled title="Pickup not wired yet">
-                Pick up {deployedMatch.label} first (coming soon)
+              <Button
+                type="button"
+                size="sm"
+                variant="destructive"
+                className="w-full"
+                onClick={openConflictPickup}
+                disabled={recording || processing || savingDeploy || !isOnline}
+              >
+                {isOnline ? `Pick up ${deployedMatch.label} first` : 'Reconnect to pick up first'}
               </Button>
             </div>
           )}
@@ -1211,6 +1257,30 @@ export default function VoiceDeploy() {
           </div>
         </div>,
         document.body
+      )}
+
+      {pickupTarget && (
+        <PickupDialog
+          deployment={pickupTarget}
+          open={pickupDialogOpen}
+          onOpenChange={open => {
+            setPickupDialogOpen(open)
+            if (!open && !reviewDialogOpen) setPickupTarget(null)
+          }}
+          onConfirm={handleConflictPickupConfirmed}
+        />
+      )}
+
+      {pickupTarget && (
+        <ReviewRequestDialog
+          deployment={pickupTarget}
+          open={reviewDialogOpen}
+          onOpenChange={open => {
+            setReviewDialogOpen(open)
+            if (!open) void completeConflictPickup()
+          }}
+          onDone={completeConflictPickup}
+        />
       )}
     </div>
   )

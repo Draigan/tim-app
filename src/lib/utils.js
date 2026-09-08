@@ -1,5 +1,6 @@
 import { clsx } from 'clsx'
 import { twMerge } from 'tailwind-merge'
+import { reportErrorToSuperuser } from './errorReporter'
 
 export function cn(...inputs) {
   return twMerge(clsx(inputs))
@@ -39,6 +40,8 @@ export function getErrorMessage(error, fallback = 'Something went wrong.') {
   if (typeof navigator !== 'undefined' && navigator.onLine === false) {
     return 'No internet connection. Check your connection and try again.'
   }
+
+  if (error) reportErrorToSuperuser(error, { source: 'handled_error' })
 
   if (error instanceof Error && error.message) return error.message
   if (error && typeof error === 'object' && 'message' in error && error.message) {

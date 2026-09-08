@@ -10,11 +10,10 @@ import {
 } from '@/lib/voiceTrial'
 
 export default function VoiceTrialOverlay() {
-  // Poster is off for everyone right now. Set this to `isOwner` to show Tim the
-  // pitch, or `isSuperuser` to demo it (superuser also ignores a stored accept,
-  // so it returns on every launch).
-  const { isSuperuser } = useAccess()
-  const isPitchTarget = false
+  // Superuser can still demo/reset this from Settings, but the live pitch is
+  // for owner accounts.
+  const { isSuperuser, isOwner } = useAccess()
+  const isPitchTarget = isOwner
   const [stage, setStage] = useState('pitch')
   const [, setTick] = useState(0)
 

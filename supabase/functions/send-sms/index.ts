@@ -142,6 +142,7 @@ async function validateSmsTarget(params: {
       .from('portable_storage_rentals')
       .select('id, asset_id, tenant_phone, customers(phone), assets(label)')
       .eq('asset_id', refId)
+      .is('end_date', null)
       .maybeSingle()
 
     if (error) return json({ error: error.message }, 500)

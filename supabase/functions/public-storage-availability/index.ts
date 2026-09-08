@@ -149,7 +149,7 @@ Deno.serve(async (req) => {
       supabase.from('storage_tenancies').select('unit_id').eq('storage_kind', 'fixed_unit').is('end_date', null),
       supabase.from('asset_types').select('id, name').eq('is_storage', true),
       supabase.from('deployments').select('asset_id').is('picked_up_at', null),
-      supabase.from('portable_storage_rentals').select('asset_id'),
+      supabase.from('portable_storage_rentals').select('asset_id').is('end_date', null),
       supabase.from('storage_booking_sessions').select('unit_id, asset_id').eq('status', 'pending').gt('expires_at', new Date().toISOString()),
     ])
 

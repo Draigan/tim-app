@@ -9,6 +9,8 @@ import { supabase } from '@/lib/supabase'
 import { useRealtime } from '@/lib/useRealtime'
 import { cn } from '@/lib/utils'
 
+const EXPORTED_PAYMENT_METHODS = ['stripe', 'etransfer']
+
 const PAGE_SIZE = 1000
 const SALES_TAX_RATE = 0.13
 const SALES_TAX_LABEL = 'HST'
@@ -180,7 +182,10 @@ async function fetchTaxedPayments(table, columns, dateFrom, dateTo) {
     let query = supabase
       .from(table)
       .select(columns)
-      .gt('tax_amount', 0)
+      // Which payments reach the books is a property of how the money arrived,
+      // not of whether HST happened to be recorded. Stripe and e-transfer are
+      // banked; cash is reconciled outside this app.
+      .in('payment_method', EXPORTED_PAYMENT_METHODS)
       .order('paid_at', { ascending: false })
       .range(from, from + PAGE_SIZE - 1)
 
@@ -207,6 +212,7 @@ async function fetchManualPaymentTargets() {
     supabase
       .from('portable_storage_rentals')
       .select('id, asset_id, customer_id, tenant_name, tenant_phone, monthly_rate, assets(label, size), customers(name, phone, email)')
+      .is('end_date', null)
       .order('created_at', { ascending: false }),
   ])
 
@@ -229,6 +235,7 @@ async function fetchManualPaymentTargets() {
     key: `portable:${rental.asset_id}`,
     type: 'portable',
     id: rental.id,
+    rentalId: rental.id,
     assetId: rental.asset_id,
     label: rental.assets ? rental.assets.label + (rental.assets.size ? ` - ${rental.assets.size}` : '') : 'Portable storage',
     customerName: rental.customers?.name || rental.tenant_name || 'Unknown customer',
@@ -250,6 +257,7 @@ function targetFromPaymentRow(row) {
     id: row.tenancyId,
     unitId: row.unitId,
     assetId: row.assetId,
+    rentalId: row.rentalId,
     label: row.itemLabel,
     customerName: row.customerName,
     phone: row.phone,
@@ -348,14 +356,24 @@ export default function OnlinePayments() {
     setError('')
 
     try {
-      const [fixedPayments, portablePayments] = await Promise.all([
+      const [fixedPaymentsRaw, portablePaymentsRaw, hiddenResult] = await Promise.all([
         fetchTaxedPayments('storage_payments', FIXED_PAYMENT_COLUMNS, dateFrom, dateTo),
         fetchTaxedPayments('portable_storage_payments', PORTABLE_PAYMENT_COLUMNS, dateFrom, dateTo),
+        supabase.from('admin_payment_hidden').select('payment_type, payment_id'),
       ])
+      if (hiddenResult.error) throw hiddenResult.error
+
+      // A payment hidden on the revenue page is not real revenue — a test
+      // charge, a duplicate, a correction. Keep it out of this list too.
+      const hidden = new Set((hiddenResult.data ?? []).map(row => `${row.payment_type}:${row.payment_id}`))
+      const fixedPayments = fixedPaymentsRaw.filter(payment => !hidden.has(`fixed:${payment.id}`))
+      const portablePayments = portablePaymentsRaw.filter(payment => !hidden.has(`portable:${payment.id}`))
 
       const tenancyIds = [...new Set(fixedPayments.map(payment => payment.tenancy_id).filter(Boolean))]
       const unitIds = [...new Set(fixedPayments.map(payment => payment.unit_id).filter(Boolean))]
       const assetIds = [...new Set(portablePayments.map(payment => payment.asset_id).filter(Boolean))]
+      // Attribute by rental, not by pod: a pod outlives its renters.
+      const rentalIds = [...new Set(portablePayments.map(payment => payment.rental_id).filter(Boolean))]
 
       const [
         tenanciesResult,
@@ -375,11 +393,11 @@ export default function OnlinePayments() {
         assetIds.length
           ? supabase.from('assets').select('id, label, size').in('id', assetIds)
           : Promise.resolve({ data: [], error: null }),
-        assetIds.length
+        rentalIds.length
           ? supabase
             .from('portable_storage_rentals')
-            .select('asset_id, customer_id, tenant_name, tenant_phone, customers(name, phone, email)')
-            .in('asset_id', assetIds)
+            .select('id, asset_id, customer_id, tenant_name, tenant_phone, customers(name, phone, email)')
+            .in('id', rentalIds)
           : Promise.resolve({ data: [], error: null }),
       ])
 
@@ -389,7 +407,7 @@ export default function OnlinePayments() {
       const tenancyById = new Map((tenanciesResult.data ?? []).map(tenancy => [tenancy.id, tenancy]))
       const unitById = new Map((unitsResult.data ?? []).map(unit => [unit.id, unit]))
       const assetById = new Map((assetsResult.data ?? []).map(asset => [asset.id, asset]))
-      const rentalByAssetId = new Map((rentalsResult.data ?? []).map(rental => [rental.asset_id, rental]))
+      const rentalById = new Map((rentalsResult.data ?? []).map(rental => [rental.id, rental]))
 
       const fixedRows = fixedPayments.map(payment => {
         const tenancy = tenancyById.get(payment.tenancy_id)
@@ -423,7 +441,9 @@ export default function OnlinePayments() {
 
       const portableRows = portablePayments.map(payment => {
         const asset = assetById.get(payment.asset_id)
-        const rental = rentalByAssetId.get(payment.asset_id)
+        // No rental_id means the payer was never recorded. Leave it
+        // unattributed rather than crediting the pod's current renter.
+        const rental = payment.rental_id ? rentalById.get(payment.rental_id) : null
         const subtotal = paymentSubtotal(payment)
         const tax = numberValue(payment.tax_amount)
 
@@ -434,6 +454,7 @@ export default function OnlinePayments() {
           tenancyId: '',
           unitId: '',
           assetId: payment.asset_id || '',
+          rentalId: payment.rental_id || '',
           typeLabel: 'Portable storage',
           itemLabel: asset ? asset.label + (asset.size ? ` - ${asset.size}` : '') : 'Portable storage',
           customerName: rental?.customers?.name || rental?.tenant_name || 'Unknown customer',
@@ -636,6 +657,13 @@ export default function OnlinePayments() {
       const target = pending.target
       const editing = pending.editing
 
+      // A portable payment must name the rental that earned it. Legacy rows
+      // predating rental history carry no rental_id; re-point them by picking
+      // the renter from the list rather than saving them back unattributed.
+      if (target.type === 'portable' && !target.rentalId) {
+        return { error: 'Choose the renter this portable payment belongs to before saving.' }
+      }
+
       const { error: saveError } = target.type === 'fixed'
         ? await supabase
           .from('storage_payments')
@@ -652,9 +680,10 @@ export default function OnlinePayments() {
           .upsert(
             {
               ...payload,
+              rental_id: target.rentalId,
               asset_id: target.assetId,
             },
-            { onConflict: 'asset_id,period_label' },
+            { onConflict: 'rental_id,period_label' },
           )
 
       if (saveError) throw saveError

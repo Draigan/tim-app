@@ -7,14 +7,36 @@ import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
-import { ArrowLeft, Truck, MapPin, Calendar, User, Phone, Pencil, BookMarked, Trash2 } from 'lucide-react'
-import { formatPhone, formatPhoneInput } from '@/lib/utils'
+import { ArrowLeft, Truck, MapPin, Calendar, User, Phone, Pencil, BookMarked, Trash2, Camera, Image as ImageIcon, Loader2 } from 'lucide-react'
+import { formatPhone, formatPhoneInput, getErrorMessage, newClientId } from '@/lib/utils'
 import { ICON_OPTIONS, iconImgUrl } from '@/lib/icons'
 import { geocodeAddress } from '@/lib/mapbox'
 import { useAccess } from '@/lib/useAccess'
 
+const ASSET_PHOTOS_BUCKET = 'asset-photos'
+const IMAGE_EXTENSIONS = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'image/heic': 'heic',
+  'image/heif': 'heif',
+}
+
 function fmtDate(d) {
   return new Date(d + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+function fmtTimestamp(d) {
+  return new Date(d).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+}
+
+function imageExtension(file) {
+  const type = file.type?.toLowerCase()
+  if (IMAGE_EXTENSIONS[type]) return IMAGE_EXTENSIONS[type]
+
+  const ext = file.name?.split('.').pop()?.toLowerCase().replace(/[^a-z0-9]/g, '')
+  if (['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'].includes(ext)) return ext
+  return 'jpg'
 }
 
 function ReserveDialog({ assetId, open, onOpenChange, onSaved }) {
@@ -250,7 +272,7 @@ export default function AssetDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
   const { state: routeState } = useLocation()
-  const { canManageAssets, canManageCalendar } = useAccess()
+  const { canUseApp, canManageAssets, canManageCalendar } = useAccess()
   const [asset, setAsset] = useState(null)
   const [deployments, setDeployments] = useState([])
   const [reservations, setReservations] = useState([])
@@ -258,6 +280,12 @@ export default function AssetDetail() {
   const [showEdit, setShowEdit] = useState(false)
   const [showReserve, setShowReserve] = useState(!!routeState?.reserve)
   const [confirmDeleteRes, setConfirmDeleteRes] = useState(null)
+  const [photoUrl, setPhotoUrl] = useState('')
+  const [photoLoading, setPhotoLoading] = useState(false)
+  const [photoUploading, setPhotoUploading] = useState(false)
+  const [photoRemoving, setPhotoRemoving] = useState(false)
+  const [photoError, setPhotoError] = useState('')
+  const photoInputRef = useRef(null)
 
   async function load() {
     const today = new Date().toISOString().slice(0, 10)
@@ -278,6 +306,136 @@ export default function AssetDetail() {
   }
 
   useEffect(() => { load() }, [id])
+
+  useEffect(() => {
+    let cancelled = false
+
+    Promise.resolve().then(async () => {
+      if (!asset?.photo_path) {
+        if (!cancelled) {
+          setPhotoUrl('')
+          setPhotoLoading(false)
+        }
+        return
+      }
+
+      if (!cancelled) {
+        setPhotoLoading(true)
+        setPhotoError('')
+      }
+
+      const { data, error } = await supabase.storage
+        .from(ASSET_PHOTOS_BUCKET)
+        .createSignedUrl(asset.photo_path, 60 * 60)
+
+      if (cancelled) return
+      if (error) {
+        setPhotoUrl('')
+        setPhotoError(error.message)
+      } else {
+        setPhotoUrl(data?.signedUrl ?? '')
+      }
+      setPhotoLoading(false)
+    })
+
+    return () => { cancelled = true }
+  }, [asset?.photo_path])
+
+  async function uploadAssetPhoto(file) {
+    if (!file) return
+    if (!file.type?.startsWith('image/')) {
+      setPhotoError('Choose an image file.')
+      return
+    }
+
+    const previousPath = asset.photo_path
+    const nextPath = `${asset.id}/${newClientId()}.${imageExtension(file)}`
+    setPhotoUploading(true)
+    setPhotoError('')
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const user = session?.user
+      const uploadedAt = new Date().toISOString()
+      const uploadedBy = user?.user_metadata?.full_name ?? user?.email ?? null
+
+      const { error: uploadError } = await supabase.storage
+        .from(ASSET_PHOTOS_BUCKET)
+        .upload(nextPath, file, {
+          contentType: file.type || 'image/jpeg',
+          upsert: false,
+        })
+
+      if (uploadError) throw uploadError
+
+      const patch = {
+        photo_path: nextPath,
+        photo_uploaded_at: uploadedAt,
+        photo_uploaded_by: uploadedBy,
+      }
+      const { error: updateError } = await supabase.rpc('set_asset_photo', {
+        target_asset_id: asset.id,
+        next_photo_path: patch.photo_path,
+        next_photo_uploaded_at: patch.photo_uploaded_at,
+        next_photo_uploaded_by: patch.photo_uploaded_by,
+      })
+      if (updateError) {
+        await supabase.storage.from(ASSET_PHOTOS_BUCKET).remove([nextPath])
+        throw updateError
+      }
+
+      setAsset(prev => (prev ? { ...prev, ...patch } : prev))
+
+      if (previousPath && previousPath !== nextPath) {
+        supabase.storage.from(ASSET_PHOTOS_BUCKET).remove([previousPath]).then(({ error }) => {
+          if (error) console.warn('Could not remove old asset photo:', error)
+        })
+      }
+    } catch (err) {
+      setPhotoError(getErrorMessage(err, 'Could not upload asset photo. Check your connection and try again.'))
+    } finally {
+      setPhotoUploading(false)
+    }
+  }
+
+  function handlePhotoInputChange(e) {
+    const file = e.target.files?.[0]
+    void uploadAssetPhoto(file)
+    e.target.value = ''
+  }
+
+  async function removeAssetPhoto() {
+    if (!asset.photo_path) return
+
+    const previousPath = asset.photo_path
+    setPhotoRemoving(true)
+    setPhotoError('')
+
+    try {
+      const patch = {
+        photo_path: null,
+        photo_uploaded_at: null,
+        photo_uploaded_by: null,
+      }
+      const { error: updateError } = await supabase.rpc('set_asset_photo', {
+        target_asset_id: asset.id,
+        next_photo_path: patch.photo_path,
+        next_photo_uploaded_at: patch.photo_uploaded_at,
+        next_photo_uploaded_by: patch.photo_uploaded_by,
+      })
+      if (updateError) throw updateError
+
+      setAsset(prev => (prev ? { ...prev, ...patch } : prev))
+      setPhotoUrl('')
+      supabase.storage.from(ASSET_PHOTOS_BUCKET).remove([previousPath]).then(({ error }) => {
+        if (error) console.warn('Could not remove asset photo:', error)
+      })
+    } catch (err) {
+      setPhotoError(getErrorMessage(err, 'Could not remove asset photo. Check your connection and try again.'))
+    } finally {
+      setPhotoRemoving(false)
+    }
+  }
 
   const activeDeployment = deployments.find(d => !d.picked_up_at)
 
@@ -320,6 +478,71 @@ export default function AssetDetail() {
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 pb-8 space-y-5">
+        {(asset.photo_path || canUseApp) && (
+          <div className="bg-card border rounded-xl overflow-hidden">
+            <div className="aspect-[4/3] bg-muted flex items-center justify-center">
+              {photoLoading ? (
+                <Loader2 size={24} className="animate-spin text-muted-foreground" />
+              ) : photoUrl ? (
+                <img src={photoUrl} alt={asset.label} className="h-full w-full object-cover" />
+              ) : (
+                <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                  <ImageIcon size={30} />
+                  <span className="text-sm">No photo</span>
+                </div>
+              )}
+            </div>
+            <div className="p-3 space-y-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">Asset Photo</p>
+                  <p className="text-xs text-muted-foreground truncate">
+                    {asset.photo_uploaded_at
+                      ? `Uploaded ${fmtTimestamp(asset.photo_uploaded_at)}${asset.photo_uploaded_by ? ` by ${asset.photo_uploaded_by}` : ''}`
+                      : 'Take or upload a clear photo of this asset.'}
+                  </p>
+                </div>
+                {canUseApp && (
+                  <div className="flex gap-2">
+                    <input
+                      ref={photoInputRef}
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      className="hidden"
+                      onChange={handlePhotoInputChange}
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => photoInputRef.current?.click()}
+                      disabled={photoUploading || photoRemoving}
+                    >
+                      {photoUploading ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
+                      {asset.photo_path ? 'Replace' : 'Upload'}
+                    </Button>
+                    {asset.photo_path && (
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="outline"
+                        className="h-9 w-9 text-destructive hover:text-destructive"
+                        onClick={removeAssetPhoto}
+                        disabled={photoUploading || photoRemoving}
+                        aria-label="Remove asset photo"
+                      >
+                        {photoRemoving ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                      </Button>
+                    )}
+                  </div>
+                )}
+              </div>
+              {photoError && <p className="text-sm text-destructive">{photoError}</p>}
+            </div>
+          </div>
+        )}
+
         {asset.notes && (
           <div className="bg-muted rounded-xl p-4">
             <p className="text-sm text-muted-foreground">{asset.notes}</p>

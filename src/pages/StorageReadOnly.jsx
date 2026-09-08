@@ -118,7 +118,8 @@ export default function StorageReadOnly() {
       supabase.from('assets').select('id, label, size, asset_types(name, is_storage)').eq('archived', false).order('label'),
       supabase
         .from('portable_storage_rentals')
-        .select('asset_id, customer_id, tenant_name, tenant_phone, monthly_rate, billing_day, move_in_date, paid_through_date, customers(name, phone)'),
+        .select('asset_id, customer_id, tenant_name, tenant_phone, monthly_rate, billing_day, move_in_date, paid_through_date, customers(name, phone)')
+        .is('end_date', null),
     ])
 
     const firstError = [unitsResult, fixedTenanciesResult, customerItemsResult, assetsResult, rentalsResult].find(result => result.error)?.error
