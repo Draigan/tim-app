@@ -330,7 +330,7 @@ export async function loadOnlinePaymentRows({ dateFrom = '', dateTo = '' } = {})
     tenancyIds.length
       ? supabase
         .from('storage_tenancies')
-        .select('id, unit_id, storage_kind, item_type, custom_item_type, item_label, customer_id, tenant_name, tenant_phone, storage_units(unit_number), customers(name, billing_name, phone, email, address)')
+        .select('id, unit_id, storage_kind, item_type, custom_item_type, item_label, customer_id, tenant_name, tenant_phone, storage_units(unit_number), customers(name, billing_name, billing_address, phone, email, address)')
         .in('id', tenancyIds)
       : Promise.resolve({ data: [], error: null }),
     unitIds.length
@@ -342,7 +342,7 @@ export async function loadOnlinePaymentRows({ dateFrom = '', dateTo = '' } = {})
     rentalIds.length
       ? supabase
         .from('portable_storage_rentals')
-        .select('id, asset_id, customer_id, tenant_name, tenant_phone, customers(name, billing_name, phone, email, address)')
+        .select('id, asset_id, customer_id, tenant_name, tenant_phone, customers(name, billing_name, billing_address, phone, email, address)')
         .in('id', rentalIds)
       : Promise.resolve({ data: [], error: null }),
   ])
@@ -374,6 +374,7 @@ export async function loadOnlinePaymentRows({ dateFrom = '', dateTo = '' } = {})
       customerId: tenancy?.customer_id || '',
       customerName: tenancy?.customers?.name || tenancy?.tenant_name || 'Unknown customer',
       billingName: tenancy?.customers?.billing_name || '',
+      billingAddress: tenancy?.customers?.billing_address || '',
       phone: tenancy?.customers?.phone || tenancy?.tenant_phone || '',
       email: tenancy?.customers?.email || '',
       address: tenancy?.customers?.address || '',
@@ -411,6 +412,7 @@ export async function loadOnlinePaymentRows({ dateFrom = '', dateTo = '' } = {})
       customerId: rental?.customer_id || '',
       customerName: rental?.customers?.name || rental?.tenant_name || 'Unknown customer',
       billingName: rental?.customers?.billing_name || '',
+      billingAddress: rental?.customers?.billing_address || '',
       phone: rental?.customers?.phone || rental?.tenant_phone || '',
       email: rental?.customers?.email || '',
       address: rental?.customers?.address || '',

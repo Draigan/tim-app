@@ -22,7 +22,7 @@ import {
   fetchStripeBillingDetails,
   groupRowsByCustomer,
   invoiceNumberFor,
-  saveBillingName,
+  saveBillingIdentity,
 } from '@/lib/invoices'
 
 // Invoices are built from our own payment records — those are the only place
@@ -78,11 +78,11 @@ export default function Invoices() {
   const [stripeLoading, setStripeLoading] = useState(false)
   const [stripeError, setStripeError] = useState('')
 
-  // The billing name stored against the selected customer, so the field can
+  // The billing identity stored against the selected customer, so the fields can
   // tell "already saved" apart from "edited but not saved yet".
-  const [savedBillingName, setSavedBillingName] = useState('')
-  const [billingNameSaving, setBillingNameSaving] = useState(false)
-  const [billingNameError, setBillingNameError] = useState('')
+  const [savedBilling, setSavedBilling] = useState({ name: '', address: '' })
+  const [billingSaving, setBillingSaving] = useState(false)
+  const [billingError, setBillingError] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -123,6 +123,11 @@ export default function Invoices() {
 
   const invoice = useMemo(() => buildInvoice(selectedRows), [selectedRows])
 
+  // Both fields match what is on file, so there is nothing to save.
+  const billingStored = Boolean(savedBilling.name)
+    && billTo.name.trim() === savedBilling.name
+    && billTo.address.trim() === savedBilling.address
+
   // Derived, not stored: a given customer + selection always yields the same
   // number, so reprinting one invoice never mints a second number for one sale.
   // Typing in the field pins an override until the selection changes.
@@ -134,7 +139,7 @@ export default function Invoices() {
   )
   const invoiceNumber = invoiceNumberOverride ?? autoInvoiceNumber
 
-  const pullFromStripe = useCallback(async (customerId, billingName = '') => {
+  const pullFromStripe = useCallback(async (customerId, stored = { name: '', address: '' }) => {
     if (!customerId) {
       setStripeError('This customer is not linked to a Stripe record, so there is nothing to pull.')
       return
@@ -145,7 +150,12 @@ export default function Invoices() {
       const details = await fetchStripeBillingDetails(customerId)
       setStripeDetails(details)
       if (!billToEdited.current) {
-        const resolved = billToFromSources({ stripe: details, fallback: null, billingName })
+        const resolved = billToFromSources({
+          stripe: details,
+          fallback: null,
+          billingName: stored.name,
+          billingAddress: stored.address,
+        })
         setBillTo(current => ({
           name: resolved.name || current.name,
           address: resolved.addressLines.length ? resolved.addressLines.join('\n') : current.address,
@@ -168,34 +178,37 @@ export default function Invoices() {
     billToEdited.current = false
     setStripeDetails(null)
     setStripeError('')
-    setSavedBillingName(group.billingName ?? '')
-    setBillingNameError('')
+    const stored = { name: group.billingName ?? '', address: group.billingAddress ?? '' }
+    setSavedBilling(stored)
+    setBillingError('')
     setBillTo({
-      name: group.billingName || (group.name === 'Unknown customer' ? '' : group.name),
-      address: addressLines(group.address).join('\n'),
+      name: stored.name || (group.name === 'Unknown customer' ? '' : group.name),
+      address: addressLines(stored.address || group.address).join('\n'),
       email: group.email ?? '',
       phone: group.phone ?? '',
     })
-    if (group.customerId) pullFromStripe(group.customerId, group.billingName ?? '')
+    if (group.customerId) pullFromStripe(group.customerId, stored)
   }
 
   // Remembered against the customer so the next invoice starts here, ahead of
   // anything Stripe reports.
-  async function storeBillingName() {
+  async function storeBillingIdentity() {
     if (!selected?.customerId) return
-    const name = billTo.name.trim()
-    setBillingNameSaving(true)
-    setBillingNameError('')
+    const stored = { name: billTo.name.trim(), address: billTo.address.trim() }
+    setBillingSaving(true)
+    setBillingError('')
     try {
-      await saveBillingName(selected.customerId, name)
-      setSavedBillingName(name)
+      await saveBillingIdentity(selected.customerId, stored)
+      setSavedBilling(stored)
       setRows(current => current.map(row => (
-        row.customerId === selected.customerId ? { ...row, billingName: name } : row
+        row.customerId === selected.customerId
+          ? { ...row, billingName: stored.name, billingAddress: stored.address }
+          : row
       )))
     } catch (error) {
-      setBillingNameError(error.message ?? 'Could not save the billing name')
+      setBillingError(error.message ?? 'Could not save the billing details')
     } finally {
-      setBillingNameSaving(false)
+      setBillingSaving(false)
     }
   }
 
@@ -380,7 +393,7 @@ export default function Invoices() {
                     variant="outline"
                     className="ml-auto gap-1.5 h-7 text-xs"
                     disabled={stripeLoading || !selected.customerId}
-                    onClick={() => { billToEdited.current = false; pullFromStripe(selected.customerId, savedBillingName) }}
+                    onClick={() => { billToEdited.current = false; pullFromStripe(selected.customerId, savedBilling) }}
                   >
                     <RefreshCw size={12} className={stripeLoading ? 'animate-spin' : ''} />
                     Pull from Stripe
@@ -401,36 +414,31 @@ export default function Invoices() {
                   value={billTo.name}
                   onChange={event => updateBillTo('name', event.target.value)}
                 />
-                {selected.customerId && (
-                  billTo.name.trim() && billTo.name.trim() === savedBillingName ? (
-                    <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                      <Check size={13} className="text-primary" />
-                      Saved as the billing name for {selected.name} — future invoices start here.
-                    </p>
-                  ) : (
-                    <div className="flex items-center gap-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 gap-1.5 text-xs"
-                        disabled={billingNameSaving || !billTo.name.trim()}
-                        onClick={storeBillingName}
-                      >
-                        Always bill {selected.name} as this
-                      </Button>
-                      {savedBillingName && (
-                        <span className="text-xs text-muted-foreground truncate">was "{savedBillingName}"</span>
-                      )}
-                    </div>
-                  )
-                )}
-                {billingNameError && <p className="text-xs text-destructive">{billingNameError}</p>}
                 <Textarea
                   rows={4}
                   placeholder={'Address line 1\nCity Province Postal\nCountry'}
                   value={billTo.address}
                   onChange={event => updateBillTo('address', event.target.value)}
                 />
+                {selected.customerId && (
+                  billingStored ? (
+                    <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <Check size={13} className="text-primary" />
+                      Saved for {selected.name} — future invoices start here, ahead of Stripe.
+                    </p>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 gap-1.5 text-xs"
+                      disabled={billingSaving || !billTo.name.trim()}
+                      onClick={storeBillingIdentity}
+                    >
+                      Always bill {selected.name} as this
+                    </Button>
+                  )
+                )}
+                {billingError && <p className="text-xs text-destructive">{billingError}</p>}
                 <Input
                   placeholder="Email"
                   value={billTo.email}

@@ -152,6 +152,7 @@ export function groupRowsByCustomer(rows) {
       customerId: row.customerId || '',
       name: row.customerName,
       billingName: row.billingName || '',
+      billingAddress: row.billingAddress || '',
       email: row.email,
       phone: row.phone,
       address: row.address,
@@ -180,14 +181,17 @@ export async function fetchStripeBillingDetails(customerId) {
 }
 
 // Set from the invoice page rather than the customer form: it is a billing
-// decision, and it is only ever needed while making an invoice. Empty clears it
-// back to "use the name we have".
-export async function saveBillingName(customerId, billingName) {
+// decision, and it is only ever needed while making an invoice. Empty clears a
+// field back to "use what we already have".
+export async function saveBillingIdentity(customerId, { name, address }) {
   const { error } = await supabase
     .from('customers')
-    .update({ billing_name: billingName.trim() || null })
+    .update({
+      billing_name: name.trim() || null,
+      billing_address: address.trim() || null,
+    })
     .eq('id', customerId)
-  if (error) throw new Error(error.message || 'Could not save the billing name')
+  if (error) throw new Error(error.message || 'Could not save the billing details')
 }
 
 // Which identity to print. A billing name we were told to use outranks
@@ -195,15 +199,18 @@ export async function saveBillingName(customerId, billingName) {
 // is for, and a company is often billed through a director's personal card.
 // Failing that, Stripe's card billing details, then the Stripe customer record,
 // then our file.
-export function billToFromSources({ stripe, fallback, billingName }) {
+export function billToFromSources({ stripe, fallback, billingName, billingAddress }) {
   const card = stripe?.card
   const customer = stripe?.customer
+  const storedAddress = addressLines(billingAddress)
   const stripeAddress = addressLines(card?.address || customer?.address)
 
   return {
     name: billingName || card?.name || customer?.name || fallback?.name || '',
     email: customer?.email || card?.email || fallback?.email || '',
     phone: customer?.phone || card?.phone || fallback?.phone || '',
-    addressLines: stripeAddress.length ? stripeAddress : addressLines(fallback?.address),
+    addressLines: storedAddress.length
+      ? storedAddress
+      : (stripeAddress.length ? stripeAddress : addressLines(fallback?.address)),
   }
 }
