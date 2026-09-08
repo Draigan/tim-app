@@ -213,15 +213,17 @@ body {
     padding: 0 !important;
   }
 
+  /* Keep the sheet's own padding on paper. The margin cannot come from @page:
+     a print dialog set to "Margins: None", and most print-to-PDF paths on
+     phones, override @page margins and drop the text on the paper edge. */
   .invoice-sheet {
     max-width: none;
-    padding: 0;
     border-radius: 0;
     box-shadow: none;
   }
 
   @page {
     size: letter;
-    margin: 0.55in;
+    margin: 0;
   }
 }
