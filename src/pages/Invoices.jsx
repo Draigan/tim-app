@@ -190,6 +190,17 @@ export default function Invoices() {
     if (group.customerId) pullFromStripe(group.customerId, stored)
   }
 
+  // Saved on blur rather than behind a button: an edited Bill-to field reads as
+  // saved whether or not anything was pressed, and losing it on refresh is
+  // worse than storing a name that later needs changing. Only fires once the
+  // field has actually been typed in, so a value Stripe filled in is never
+  // frozen as an override.
+  function storeBillingIdentityOnBlur() {
+    if (!selected?.customerId || !billToEdited.current || billingSaving) return
+    if (billTo.name.trim() === savedBilling.name && billTo.address.trim() === savedBilling.address) return
+    storeBillingIdentity()
+  }
+
   // Remembered against the customer so the next invoice starts here, ahead of
   // anything Stripe reports.
   async function storeBillingIdentity() {
@@ -413,12 +424,14 @@ export default function Invoices() {
                   placeholder="Billed-to name"
                   value={billTo.name}
                   onChange={event => updateBillTo('name', event.target.value)}
+                  onBlur={storeBillingIdentityOnBlur}
                 />
                 <Textarea
                   rows={4}
                   placeholder={'Address line 1\nCity Province Postal\nCountry'}
                   value={billTo.address}
                   onChange={event => updateBillTo('address', event.target.value)}
+                  onBlur={storeBillingIdentityOnBlur}
                 />
                 {selected.customerId && (
                   billingStored ? (
@@ -434,7 +447,7 @@ export default function Invoices() {
                       disabled={billingSaving || !billTo.name.trim()}
                       onClick={storeBillingIdentity}
                     >
-                      Always bill {selected.name} as this
+                      {billingSaving ? 'Saving...' : `Save as the billing name for ${selected.name}`}
                     </Button>
                   )
                 )}
