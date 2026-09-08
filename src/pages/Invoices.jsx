@@ -139,6 +139,17 @@ export default function Invoices() {
   )
   const invoiceNumber = invoiceNumberOverride ?? autoInvoiceNumber
 
+  // Chrome and Safari name a print-to-PDF file after the document title, so the
+  // invoice number becomes the filename and cannot drift from the number on the
+  // sheet. Captured once, since each run would otherwise restore the previous
+  // invoice's title rather than the app's.
+  const baseTitle = useRef(typeof document === 'undefined' ? '' : document.title)
+  useEffect(() => {
+    const base = baseTitle.current
+    if (invoiceNumber) document.title = `Invoice-${invoiceNumber}`
+    return () => { document.title = base }
+  }, [invoiceNumber])
+
   const pullFromStripe = useCallback(async (customerId, stored = { name: '', address: '' }) => {
     if (!customerId) {
       setStripeError('This customer is not linked to a Stripe record, so there is nothing to pull.')
