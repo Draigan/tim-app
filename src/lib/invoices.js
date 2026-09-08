@@ -151,6 +151,7 @@ export function groupRowsByCustomer(rows) {
       key,
       customerId: row.customerId || '',
       name: row.customerName,
+      billingName: row.billingName || '',
       email: row.email,
       phone: row.phone,
       address: row.address,
@@ -178,15 +179,29 @@ export async function fetchStripeBillingDetails(customerId) {
   return data
 }
 
-// Which identity to print. Stripe's card billing details are the strongest
-// signal of who actually paid, then the Stripe customer record, then our file.
-export function billToFromSources({ stripe, fallback }) {
+// Set from the invoice page rather than the customer form: it is a billing
+// decision, and it is only ever needed while making an invoice. Empty clears it
+// back to "use the name we have".
+export async function saveBillingName(customerId, billingName) {
+  const { error } = await supabase
+    .from('customers')
+    .update({ billing_name: billingName.trim() || null })
+    .eq('id', customerId)
+  if (error) throw new Error(error.message || 'Could not save the billing name')
+}
+
+// Which identity to print. A billing name we were told to use outranks
+// everything — the cardholder is evidence of who paid, not of who the invoice
+// is for, and a company is often billed through a director's personal card.
+// Failing that, Stripe's card billing details, then the Stripe customer record,
+// then our file.
+export function billToFromSources({ stripe, fallback, billingName }) {
   const card = stripe?.card
   const customer = stripe?.customer
   const stripeAddress = addressLines(card?.address || customer?.address)
 
   return {
-    name: card?.name || customer?.name || fallback?.name || '',
+    name: billingName || card?.name || customer?.name || fallback?.name || '',
     email: customer?.email || card?.email || fallback?.email || '',
     phone: customer?.phone || card?.phone || fallback?.phone || '',
     addressLines: stripeAddress.length ? stripeAddress : addressLines(fallback?.address),
