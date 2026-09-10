@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
+import { callFunction } from '@/lib/functions'
 import { geocodeAddress } from '@/lib/mapbox'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -121,15 +122,14 @@ export default function DeployAsset() {
     // Notify other users about the deployment (fire-and-forget)
     if (session) {
       const label = asset ? `${asset.label}${asset.size ? ` ${asset.size}` : ''}` : 'Asset'
-      fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-push`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      callFunction('send-push', {
+        token: session.access_token,
+        body: {
           title: `${label} deployed`,
           body: form.address + (selectedCustomer?.name ? ` · ${selectedCustomer.name}` : ''),
           url: '/',
           exclude_user_id: session.user.id,
-        }),
+        },
       }).catch(() => {})
     }
 

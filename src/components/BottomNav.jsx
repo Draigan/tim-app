@@ -1,6 +1,6 @@
 import { createElement, useState } from 'react'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
-import { Map, Package, Settings, Warehouse, MoreHorizontal, Users, CalendarDays, LayoutGrid, History, ChevronRight, Star, ReceiptText, Bell, Mic, BadgeCheck, FileText } from 'lucide-react'
+import { Map, Package, Settings, Warehouse, MoreHorizontal, Users, CalendarDays, LayoutGrid, History, ChevronRight, Star, ReceiptText, Bell, Mic, BadgeCheck, FileText, StickyNote } from 'lucide-react'
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { cn } from '@/lib/utils'
 import { useAccess } from '@/lib/useAccess'
@@ -18,6 +18,7 @@ const MORE_ITEMS = [
   { to: '/accountant',      icon: ReceiptText,  label: 'Accountant Portal', description: 'Online payments export for the accountant', access: 'canAccessAccountantPortal' },
   { to: '/admin-revenue',   icon: ReceiptText,  label: 'Admin Revenue',   description: 'Revenue tracker', access: 'canManageRevenue' },
   { to: '/review-request',  icon: Star,         label: 'Review Request',  description: 'Send a review request by SMS', access: 'canRequestReviews' },
+  { to: '/notes',           icon: StickyNote,   label: 'Notes',           description: 'Shared notes for the crew', access: 'canUseApp' },
   { to: '/settings',        icon: Settings,     label: 'Settings',        description: 'Users, notifications, help', access: 'canUseApp' },
 ]
 

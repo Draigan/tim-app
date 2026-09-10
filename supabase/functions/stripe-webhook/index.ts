@@ -273,12 +273,21 @@ function periodAmountsFromMetadata(value: unknown, labels: string[]): number[] |
   return amounts
 }
 
+// The period metadata carries rent only. A fee charged alongside it (delivery,
+// pickup, a one-off) lives in `extra_amount` and is part of the same payment
+// intent, so it has to be added back onto the first period's row — exactly the
+// way stripe-billing-run writes it. Rebuilding the row from rent alone
+// overwrote the fee that function had already recorded, and every downstream
+// number read off these rows (the admin revenue share, the accountant export)
+// silently lost it.
 function paymentRecordAmountsFromMetadata({
   index,
   perMonth,
   periodAmounts,
   periodSubtotalAmounts,
   periodTaxAmounts,
+  extraCents,
+  extraTaxCents,
   taxRate,
   taxLabel,
 }: {
@@ -287,18 +296,23 @@ function paymentRecordAmountsFromMetadata({
   periodAmounts: number[] | null
   periodSubtotalAmounts: number[] | null
   periodTaxAmounts: number[] | null
+  extraCents: number
+  extraTaxCents: number
   taxRate: unknown
   taxLabel: unknown
 }) {
   const amountCents = periodAmounts?.[index]
   const subtotalCents = periodSubtotalAmounts?.[index] ?? amountCents
-  const taxCents = periodTaxAmounts?.[index] ?? 0
+  const periodTaxCents = periodTaxAmounts?.[index] ?? 0
+  const extraSubtotal = index === 0 ? extraCents : 0
+  const extraTax = index === 0 ? extraTaxCents : 0
+  const taxCents = periodTaxCents + extraTax
   const parsedTaxRate = Number(taxRate)
   const label = typeof taxLabel === 'string' && taxLabel.trim() ? taxLabel.trim() : null
 
   return {
-    amount: typeof amountCents === 'number' ? dollarsFromCents(amountCents) : perMonth,
-    subtotal_amount: typeof subtotalCents === 'number' ? dollarsFromCents(subtotalCents) : perMonth,
+    amount: typeof amountCents === 'number' ? dollarsFromCents(amountCents + extraSubtotal + extraTax) : perMonth,
+    subtotal_amount: typeof subtotalCents === 'number' ? dollarsFromCents(subtotalCents + extraSubtotal) : perMonth,
     tax_amount: dollarsFromCents(taxCents),
     tax_rate: Number.isFinite(parsedTaxRate) && taxCents > 0 ? parsedTaxRate : 0,
     tax_label: taxCents > 0 ? label : null,
@@ -437,6 +451,26 @@ async function notifyPortalPayment(portalPayment: any, items: any[], amount: num
       customer_id: portalPayment.customer_id ?? null,
       amount,
       item_count: items.length,
+    },
+  })
+}
+
+async function notifyCardSaved(customerId: string, card: Stripe.PaymentMethod.Card | null) {
+  const customer = await portalCustomerName(customerId)
+  const who = customer ?? 'A customer'
+  const brand = card?.brand ? card.brand.replace(/\b\w/g, (letter: string) => letter.toUpperCase()) : 'card'
+  const cardText = card?.last4 ? `${brand} ending ${card.last4}` : 'a card'
+
+  await notifyAdminEvent({
+    title: 'Card Added',
+    body: `${who} saved ${cardText} on file.`,
+    url: '/customers',
+    type: 'card_saved',
+    severity: 'success',
+    metadata: {
+      customer_id: customerId,
+      card_brand: card?.brand ?? null,
+      card_last4: card?.last4 ?? null,
     },
   })
 }
@@ -930,8 +964,11 @@ Deno.serve(async (req) => {
       const customerId = session.metadata?.customer_id
       if (!customerId) return new Response('ok')
 
-      const setupIntent = await stripe.setupIntents.retrieve(session.setup_intent as string)
-      const paymentMethodId = setupIntent.payment_method as string
+      const setupIntent = await stripe.setupIntents.retrieve(session.setup_intent as string, {
+        expand: ['payment_method'],
+      })
+      const paymentMethod = setupIntent.payment_method as Stripe.PaymentMethod | string
+      const paymentMethodId = typeof paymentMethod === 'string' ? paymentMethod : paymentMethod.id
 
       await stripe.customers.update(session.customer as string, {
         invoice_settings: { default_payment_method: paymentMethodId },
@@ -949,6 +986,13 @@ Deno.serve(async (req) => {
         await fillMissingCustomerContact(customerId, stripeContactFields(session.customer_details))
       } catch (contactError) {
         console.error('customer contact backfill from setup failed', contactError)
+      }
+
+      // The superuser waits on these invites, so tell them the card landed.
+      try {
+        await notifyCardSaved(customerId, typeof paymentMethod === 'string' ? null : paymentMethod.card ?? null)
+      } catch (notifyError) {
+        console.error('card saved notification failed', notifyError)
       }
     }
 
@@ -982,6 +1026,8 @@ Deno.serve(async (req) => {
         period_amounts_cents,
         period_subtotal_amounts_cents,
         period_tax_amounts_cents,
+        extra_amount,
+        extra_tax_amount,
         tax_rate,
         tax_label,
         unit_type,
@@ -1001,6 +1047,8 @@ Deno.serve(async (req) => {
         const periodAmounts = periodAmountsFromMetadata(period_amounts_cents, labels)
         const periodSubtotalAmounts = periodAmountsFromMetadata(period_subtotal_amounts_cents, labels)
         const periodTaxAmounts = periodAmountsFromMetadata(period_tax_amounts_cents, labels)
+        const extraCents = centsFromAmount(extra_amount)
+        const extraTaxCents = centsFromAmount(extra_tax_amount)
 
         if (unit_type === 'portable' || portable_asset_id || portable_rental_id) {
           let resolvedAssetId = portable_asset_id || null
@@ -1036,6 +1084,8 @@ Deno.serve(async (req) => {
                   periodAmounts,
                   periodSubtotalAmounts,
                   periodTaxAmounts,
+                  extraCents,
+                  extraTaxCents,
                   taxRate: tax_rate,
                   taxLabel: tax_label,
                 }),
@@ -1069,6 +1119,8 @@ Deno.serve(async (req) => {
                   periodAmounts,
                   periodSubtotalAmounts,
                   periodTaxAmounts,
+                  extraCents,
+                  extraTaxCents,
                   taxRate: tax_rate,
                   taxLabel: tax_label,
                 }),

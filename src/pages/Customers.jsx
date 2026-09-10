@@ -6,6 +6,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sh
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { supabase } from '@/lib/supabase'
+import { callFunction, SLOW_FUNCTION_TIMEOUT_MS } from '@/lib/functions'
 import { formatPhone, formatPhoneInput, getErrorMessage, newClientId, retryTransient, throwSupabaseError } from '@/lib/utils'
 import { useRealtime } from '@/lib/useRealtime'
 import { geocodeAddress } from '@/lib/mapbox'
@@ -314,14 +315,14 @@ function CustomerSheet({ customer, isNew, onClose, onSaved, canManageStorage }) 
     const { data: { session } } = await supabase.auth.getSession()
     if (!session?.access_token) throw new Error('Sign in again before creating a Stripe link.')
 
-    const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-setup-session`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    const res = await callFunction('stripe-setup-session', {
+      token: session.access_token,
+      timeoutMs: SLOW_FUNCTION_TIMEOUT_MS,
+      body: {
         customer_id: customer.id,
         origin: window.location.origin,
         link_type: invite ? 'invite' : 'checkout',
-      }),
+      },
     })
     const result = await res.json()
     if (!res.ok || result.error || !result.url) {
@@ -368,15 +369,15 @@ function CustomerSheet({ customer, isNew, onClose, onSaved, canManageStorage }) 
       const { data: { session } } = await supabase.auth.getSession()
       if (!session?.access_token) return { error: 'Sign in again before sending this invite.' }
 
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-billing-run`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const res = await callFunction('stripe-billing-run', {
+        token: session.access_token,
+        timeoutMs: SLOW_FUNCTION_TIMEOUT_MS,
+        body: {
           action: 'send_card_invite',
           customer_id: customer.id,
           billing_pin: pin,
           request_id: newBillingRequestId(),
-        }),
+        },
       })
       const result = await res.json()
       if (!res.ok || result.error) return { error: result.error || 'Could not send card invite.' }
@@ -398,15 +399,15 @@ function CustomerSheet({ customer, isNew, onClose, onSaved, canManageStorage }) 
       const { data: { session } } = await supabase.auth.getSession()
       if (!session?.access_token) return { error: 'Sign in again before marking this refunded.' }
 
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-billing-run`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const res = await callFunction('stripe-billing-run', {
+        token: session.access_token,
+        timeoutMs: SLOW_FUNCTION_TIMEOUT_MS,
+        body: {
           action: 'mark_credit_refunded',
           credit_id: creditId,
           billing_pin: pin,
           request_id: newBillingRequestId(),
-        }),
+        },
       })
       const result = await res.json()
       if (!res.ok || result.error) return { error: result.error || 'Could not mark credit refunded.' }

@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase'
 import { fmtPeriod, numberValue } from '@/lib/onlinePaymentsData'
+import { isFunctionsFetchError } from '@/lib/functions'
 
 // Our own invoice identity. Stripe can't produce a usable tax invoice for us:
 // we compute HST ourselves before charging, so every Stripe charge is a single
@@ -170,12 +171,18 @@ export async function fetchStripeBillingDetails(customerId) {
   if (error) {
     // The function returns a readable reason (no Stripe record, deleted, ...)
     // in the body; supabase-js only surfaces a generic message.
-    let message = error.message
+    let message = ''
     try {
       const body = await error.context?.json?.()
       if (body?.error) message = body.error
     } catch { /* keep the generic message */ }
-    throw new Error(message || 'Could not reach Stripe')
+
+    if (!message && isFunctionsFetchError(error)) {
+      const dropped = new Error('Could not reach the server. Check your connection and try again.')
+      dropped.retryable = true
+      throw dropped
+    }
+    throw new Error(message || error.message || 'Could not reach Stripe')
   }
   return data
 }

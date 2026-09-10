@@ -4,6 +4,7 @@ import { ArrowLeft, CreditCard, Banknote, Send, CheckCircle2, Plus, X, AlertCirc
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { supabase } from '@/lib/supabase'
+import { callFunction, SLOW_FUNCTION_TIMEOUT_MS } from '@/lib/functions'
 import { useRealtime } from '@/lib/useRealtime'
 import { cn } from '@/lib/utils'
 import { newBillingRequestId } from '@/lib/billingApproval'
@@ -887,9 +888,12 @@ export default function StorageBilling() {
   const chargePreview = chargePeriods(chargeMonths)
   const previewByLabel = new Map(chargePreview.map(period => [period.label, period]))
 
-  function paymentAmountsForPeriod(period, collectTax = true) {
+  // `extraSubtotal` rides on the first recorded month, matching how the billing
+  // function writes the row, so the optimistic history entry agrees with what
+  // lands in the database.
+  function paymentAmountsForPeriod(period, collectTax = true, extraSubtotal = 0) {
     const preview = previewByLabel.get(period)
-    const subtotal = preview?.subtotal ?? periodChargeAmount(period, tenancy.billing_day, tenancy.move_in_date, tenancy.monthly_rate)
+    const subtotal = (preview?.subtotal ?? periodChargeAmount(period, tenancy.billing_day, tenancy.move_in_date, tenancy.monthly_rate)) + extraSubtotal
     const breakdown = paymentBreakdownFromSubtotal(subtotal, collectTax)
     return {
       amount: breakdown.amount,
@@ -925,19 +929,20 @@ export default function StorageBilling() {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session?.access_token) return { error: 'Sign in again before recording this payment.' }
 
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-billing-run`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const res = await callFunction('stripe-billing-run', {
+        token: session.access_token,
+        timeoutMs: SLOW_FUNCTION_TIMEOUT_MS,
+        body: {
           action: 'record_cash_payment',
           ...(isPortable ? { portable_asset_id: assetId } : isCustomerItem ? { tenancy_id: tenancy.id } : { cash_unit_id: unitId }),
           periods: toMark,
+          extra_amount: extrasTotal,
           collect_tax: collectTax,
           payment_method: method,
           payment_reference: isEtransfer ? etransferReference.trim() || null : null,
           billing_pin: pin,
           request_id: newBillingRequestId(),
-        }),
+        },
       })
       const data = await res.json()
       if (!res.ok || data.error) return { error: data.error || 'Could not record payment.' }
@@ -946,13 +951,13 @@ export default function StorageBilling() {
       }
 
       const paidPeriods = data.periods ?? toMark
-      const payments = data.payments?.length ? data.payments : paidPeriods.map(period => ({
+      const payments = data.payments?.length ? data.payments : paidPeriods.map((period, index) => ({
         id: `${tenancy.id}-${period}`,
         ...(isPortable ? { asset_id: assetId } : { tenancy_id: tenancy.id }),
         period_label: period,
         paid_at: new Date().toISOString(),
         payment_method: method,
-        ...paymentAmountsForPeriod(period, collectTax),
+        ...paymentAmountsForPeriod(period, collectTax, index === 0 ? extrasTotal : 0),
       }))
       mergeHistoryPayments(payments, paidPeriods)
       markLateFeesPaidInState(paidPeriods)
@@ -1065,15 +1070,15 @@ export default function StorageBilling() {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session?.access_token) return { error: 'Sign in again before removing this payment.' }
 
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-billing-run`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const res = await callFunction('stripe-billing-run', {
+        token: session.access_token,
+        timeoutMs: SLOW_FUNCTION_TIMEOUT_MS,
+        body: {
           action: 'remove_latest_payment',
           ...(isPortable ? { portable_asset_id: assetId } : isCustomerItem ? { tenancy_id: tenancy.id } : { unit_id: unitId }),
           billing_pin: pin,
           request_id: newBillingRequestId(),
-        }),
+        },
       })
       const data = await res.json()
       if (!res.ok || data.error) return { error: data.error || 'Could not remove payment.' }
@@ -1120,16 +1125,16 @@ export default function StorageBilling() {
       if (!session?.access_token) {
         return { error: 'Sign in again before charging this card.' }
       }
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-billing-run`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const res = await callFunction('stripe-billing-run', {
+        token: session.access_token,
+        timeoutMs: SLOW_FUNCTION_TIMEOUT_MS,
+        body: {
           ...(isPortable ? { portable_asset_id: assetId } : isCustomerItem ? { tenancy_id: tenancy.id } : { unit_id: unitId }),
           periods: chargePreview.map(p => p.label),
           extra_amount: extrasTotal,
           billing_pin: pin,
           request_id: newBillingRequestId(),
-        }),
+        },
       })
       const data = await res.json()
       if (!res.ok || data.error) {

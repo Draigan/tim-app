@@ -1,6 +1,7 @@
 import { clsx } from 'clsx'
 import { twMerge } from 'tailwind-merge'
 import { reportErrorToSuperuser } from './errorReporter'
+import { isTransientNetworkMessage } from './network'
 
 export function cn(...inputs) {
   return twMerge(clsx(inputs))
@@ -36,9 +37,25 @@ export function formatPhoneInput(value) {
   return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`
 }
 
+// Anything that failed on the way to the server gets the same advice, whatever
+// wording the browser used for it.
+function getRetryableMessage(error) {
+  const message = String(error?.message ?? '')
+  if (/timed out|timeout/i.test(message)) return 'The request timed out. Check your connection and try again.'
+  if (Number(error?.status) >= 500) return 'The server is having trouble. Try again in a moment.'
+  return 'Could not reach the server. Check your connection and try again.'
+}
+
 export function getErrorMessage(error, fallback = 'Something went wrong.') {
   if (typeof navigator !== 'undefined' && navigator.onLine === false) {
     return 'No internet connection. Check your connection and try again.'
+  }
+
+  // A dropped request is a fact about the signal, not a bug in the app. Reporting
+  // it woke the superuser's phone every time someone walked into a dead spot, so
+  // these are shown to the user and left there.
+  if (isRetryableError(error)) {
+    return getRetryableMessage(error)
   }
 
   if (error) reportErrorToSuperuser(error, { source: 'handled_error' })
@@ -60,22 +77,15 @@ export function newClientId() {
   })
 }
 
-function isRetryableError(error) {
+export function isRetryableError(error) {
+  if (!error) return false
+  if (error.retryable === true) return true
   if (typeof navigator !== 'undefined' && navigator.onLine === false) return true
 
   const status = Number(error?.status)
   if (status === 408 || status === 429 || status >= 500) return true
 
-  const message = String(error?.message ?? error ?? '').toLowerCase()
-  return [
-    'failed to fetch',
-    'load failed',
-    'networkerror',
-    'network request failed',
-    'timeout',
-    'timed out',
-    'temporarily unavailable',
-  ].some(text => message.includes(text))
+  return isTransientNetworkMessage(error?.message ?? error)
 }
 
 function wait(ms) {

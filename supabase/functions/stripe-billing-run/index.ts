@@ -329,16 +329,44 @@ function shouldCollectTax(body: Record<string, unknown>): boolean {
   return body.collect_tax === true
 }
 
-function paymentRecordAmounts(subtotalCents: number, collectTax = true, paymentMethod?: 'stripe' | 'cash' | 'etransfer') {
-  const taxCents = collectTax ? taxCentsForSubtotal(subtotalCents) : 0
+// `extra` is a fee riding on this period's row. It is kept separate from the
+// period subtotal so the tax on it matches the cents Stripe actually charged:
+// tax is rounded per component, and re-rounding rent + fee together drifts a
+// cent off the payment intent. The webhook rebuilds these same rows from the
+// intent's metadata, so both writers must land on identical numbers.
+function paymentRecordAmounts(
+  subtotalCents: number,
+  collectTax = true,
+  paymentMethod?: 'stripe' | 'cash' | 'etransfer',
+  extra: { subtotalCents: number; taxCents: number } = { subtotalCents: 0, taxCents: 0 },
+) {
+  const periodTaxCents = collectTax ? taxCentsForSubtotal(subtotalCents) : 0
+  const totalSubtotalCents = subtotalCents + extra.subtotalCents
+  const taxCents = periodTaxCents + extra.taxCents
   return {
-    amount: dollarsFromCents(subtotalCents + taxCents),
-    subtotal_amount: dollarsFromCents(subtotalCents),
+    amount: dollarsFromCents(totalSubtotalCents + taxCents),
+    subtotal_amount: dollarsFromCents(totalSubtotalCents),
     tax_amount: dollarsFromCents(taxCents),
-    tax_rate: collectTax && taxCents > 0 ? SALES_TAX_RATE : 0,
-    tax_label: collectTax && taxCents > 0 ? SALES_TAX_LABEL : null,
+    tax_rate: taxCents > 0 ? SALES_TAX_RATE : 0,
+    tax_label: taxCents > 0 ? SALES_TAX_LABEL : null,
     ...(paymentMethod ? { payment_method: paymentMethod } : {}),
   }
+}
+
+// A fee recorded alongside a cash or e-transfer payment. It is taxed on the
+// same terms as the rent it rides with: an e-transfer is banked and always
+// carries HST, cash only when the operator asked for it.
+function receivedExtra(body: Record<string, unknown>, collectTax: boolean) {
+  const subtotalCents = Math.round(normalizeExtraAmount(body.extra_amount) * 100)
+  return { subtotalCents, taxCents: collectTax ? taxCentsForSubtotal(subtotalCents) : 0 }
+}
+
+// The extra rides on the first period's row only — the rest of the periods are
+// plain rent.
+function extraForIndex(index: number, extraSubtotalCents: number, extraTaxCents: number) {
+  return index === 0
+    ? { subtotalCents: extraSubtotalCents, taxCents: extraTaxCents }
+    : { subtotalCents: 0, taxCents: 0 }
 }
 
 function amountCentsForPeriod(period: string, rental: any): number {
@@ -828,7 +856,7 @@ async function chargePeriods(tenancy: any, periods: string[], extraAmount: numbe
       tenancy_id: tenancy.id,
       period_label: period,
       paid_at: new Date().toISOString(),
-      ...paymentRecordAmounts(amountCents + (index === 0 ? extraAmountCents : 0), true, 'stripe'),
+      ...paymentRecordAmounts(amountCents, true, 'stripe', extraForIndex(index, extraAmountCents, extraTaxCents)),
     }))
     const { error: paymentError } = await supabase.from('storage_payments').upsert(inserts, { onConflict: 'tenancy_id,period_label' })
     if (paymentError) throw paymentError
@@ -923,7 +951,7 @@ async function chargePortablePeriods(rental: any, periods: string[], extraAmount
       asset_id: rental.asset_id,
       period_label: period,
       paid_at: new Date().toISOString(),
-      ...paymentRecordAmounts(amountCents + (index === 0 ? extraAmountCents : 0), true, 'stripe'),
+      ...paymentRecordAmounts(amountCents, true, 'stripe', extraForIndex(index, extraAmountCents, extraTaxCents)),
     }))
     const { error: paymentError } = await supabase.from('portable_storage_payments').upsert(inserts, { onConflict: 'rental_id,period_label' })
     if (paymentError) throw paymentError
@@ -1014,8 +1042,14 @@ async function recordPortableCashPayment(body: Record<string, unknown>) {
 
   const paidSet = new Set((existing ?? []).map((payment: any) => payment.period_label))
   const periods = requestedPeriods.filter(period => !paidSet.has(period) && !periodCovered(period, rental))
+  const extra = receivedExtra(body, collectTax)
 
   if (!periods.length) {
+    // Every requested month is already covered, so there is no row for the fee
+    // to ride on. Record it on its own rather than dropping it.
+    if (extra.subtotalCents > 0) {
+      await recordExtraOnlyRevenue(extra.subtotalCents, extra.taxCents, `Portable ${(rental.assets as any)?.label ?? assetId} - extra charge (${rental.tenant_name ?? 'unknown renter'})`)
+    }
     return json({ ok: true, status: 'skipped', reason: 'already_paid', periods: [], payments: [] })
   }
 
@@ -1028,13 +1062,13 @@ async function recordPortableCashPayment(body: Record<string, unknown>) {
 
   const { data: payments, error: paymentError } = await supabase.from('portable_storage_payments')
     .upsert(
-      periodCharges.map(({ period, amountCents }) => ({
+      periodCharges.map(({ period, amountCents }, index) => ({
         rental_id: rental.id,
         asset_id: assetId,
         period_label: period,
         paid_at: new Date().toISOString(),
         payment_reference: reference,
-        ...paymentRecordAmounts(amountCents, collectTax, method),
+        ...paymentRecordAmounts(amountCents, collectTax, method, extraForIndex(index, extra.subtotalCents, extra.taxCents)),
       })),
       { onConflict: 'rental_id,period_label' },
     )
@@ -1098,8 +1132,14 @@ async function recordCashPayment(body: Record<string, unknown>) {
 
   const paidSet = new Set((existing ?? []).map((payment: any) => payment.period_label))
   const periods = requestedPeriods.filter(period => !paidSet.has(period) && !periodCovered(period, tenancy))
+  const extra = receivedExtra(body, collectTax)
 
   if (!periods.length) {
+    // Same as the portable path: no month left to carry the fee, so give it its
+    // own revenue line instead of losing it.
+    if (extra.subtotalCents > 0) {
+      await recordExtraOnlyRevenue(extra.subtotalCents, extra.taxCents, `Unit ${tenancyLabel(tenancy)} - extra charge (${tenancy.tenant_name ?? 'unknown tenant'})`)
+    }
     return json({ ok: true, status: 'skipped', reason: 'already_paid', periods: [], payments: [] })
   }
 
@@ -1112,13 +1152,13 @@ async function recordCashPayment(body: Record<string, unknown>) {
 
   const { data: payments, error: paymentError } = await supabase.from('storage_payments')
     .upsert(
-      periodCharges.map(({ period, amountCents }) => ({
+      periodCharges.map(({ period, amountCents }, index) => ({
         unit_id: tenancy.unit_id,
         tenancy_id: tenancy.id,
         period_label: period,
         paid_at: new Date().toISOString(),
         payment_reference: reference,
-        ...paymentRecordAmounts(amountCents, collectTax, method),
+        ...paymentRecordAmounts(amountCents, collectTax, method, extraForIndex(index, extra.subtotalCents, extra.taxCents)),
       })),
       { onConflict: 'tenancy_id,period_label' },
     )

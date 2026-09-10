@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import { callFunction } from '@/lib/functions'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Star } from 'lucide-react'
@@ -60,15 +61,12 @@ export default function ReviewRequest() {
     if (!selected || !phone) return
     setSendState('sending')
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-review-request`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const res = await callFunction('send-review-request', {
+        body: {
           phone,
           customerName: name,
           deploymentId: selected.id,
-        }),
+        },
       })
       if (!res.ok) throw new Error()
       setSendState('sent')

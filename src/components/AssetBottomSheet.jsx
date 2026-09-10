@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { supabase } from '@/lib/supabase'
+import { callFunction } from '@/lib/functions'
 import { geocodeAddress } from '@/lib/mapbox'
 import { getMarkerColor, formatPhone, formatPhoneInput, getErrorMessage, newClientId, retryTransient, throwSupabaseError } from '@/lib/utils'
 import { Textarea } from '@/components/ui/textarea'
@@ -241,15 +242,14 @@ export function PickupDialog({ deployment, open, onOpenChange, onConfirm }) {
 
       if (session) {
         const who = picked_up_by ?? 'Someone'
-        fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-push`, {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        callFunction('send-push', {
+          token: session.access_token,
+          body: {
             title: `${deployment.label} picked up`,
             body: `${deployment.address}${deployment.customer_name ? ` · ${deployment.customer_name}` : ''} — by ${who}`,
             url: '/',
             exclude_user_id: user?.id,
-          }),
+          },
         }).catch(() => {})
       }
 
@@ -318,24 +318,18 @@ export function ReviewRequestDialog({ deployment, open, onOpenChange, onDone }) 
     setSending(true)
     setError(null)
     try {
-      const { data: { session } } = await supabase.auth.getSession()
       const phone = deployment.customer_phone.replace(/\D/g, '')
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-review-request`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${session.access_token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
+      const res = await callFunction('send-review-request', {
+        body: {
           phone,
           customerName: deployment.customer_name || undefined,
           deploymentId: deployment.id,
-        }),
+        },
       })
       if (!res.ok) throw new Error('Request failed')
       setSent(true)
-    } catch {
-      setError('Failed to send — try again.')
+    } catch (err) {
+      setError(getErrorMessage(err, 'Failed to send — try again.'))
     }
     setSending(false)
   }

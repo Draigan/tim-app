@@ -12,6 +12,7 @@ import { saveVoiceRecording } from '@/lib/voiceRecordings'
 import { deleteVoiceDeployDraft, uploadAndTranscribeVoiceRecording } from '@/lib/voiceDeployDrafts'
 import { reportErrorToSuperuser } from '@/lib/errorReporter'
 import { supabase } from '@/lib/supabase'
+import { callFunction } from '@/lib/functions'
 import { geocodeAddress, reverseGeocode } from '@/lib/mapbox'
 import { CUSTOMER_SAFE_COLUMNS } from '@/lib/customerFields'
 
@@ -809,15 +810,14 @@ export default function VoiceDeploy() {
         })
 
       const label = yardAsset.label + (yardAsset.size ? ' ' + yardAsset.size : '')
-      fetch(import.meta.env.VITE_SUPABASE_URL + '/functions/v1/send-push', {
-        method: 'POST',
-        headers: { Authorization: 'Bearer ' + session.access_token, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      callFunction('send-push', {
+        token: session.access_token,
+        body: {
           title: label + ' deployed',
           body: address + (customer?.name ? ' · ' + customer.name : ''),
           url: '/',
           exclude_user_id: session.user.id,
-        }),
+        },
       }).catch(() => {})
 
       if (activeDraft) {

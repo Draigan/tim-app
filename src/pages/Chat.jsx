@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
+import { callFunction } from '@/lib/functions'
 import { markChatRead } from '@/lib/useUnreadChat'
 import { Button } from '@/components/ui/button'
 import { Send } from 'lucide-react'
@@ -106,10 +107,9 @@ export default function Chat() {
       sender_name: senderName,
       content: text,
     }).select('id').single()
-    fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-push`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message_id: message?.id, title: firstName, body: text, url: '/chat', to_all: true, exclude_user_id: user.id }),
+    callFunction('send-push', {
+      token: session.access_token,
+      body: { message_id: message?.id, title: firstName, body: text, url: '/chat', to_all: true, exclude_user_id: user.id },
     }).catch(() => {})
     inputRef.current?.focus()
   }

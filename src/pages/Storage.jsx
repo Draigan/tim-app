@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import StorageViewMenu from '@/components/StorageViewMenu'
 import { supabase } from '@/lib/supabase'
+import { callFunction, SLOW_FUNCTION_TIMEOUT_MS } from '@/lib/functions'
 import CustomerPicker from '@/components/CustomerPicker'
 import { cn, formatPhone, formatPhoneInput, newClientId, retryTransient, throwSupabaseError } from '@/lib/utils'
 import { useRealtime } from '@/lib/useRealtime'
@@ -869,10 +870,10 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
       const chargeTarget = item.storage_kind === 'customer_item'
         ? { tenancy_id: item.tenancy_id }
         : { unit_id: item.id }
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-billing-run`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...chargeTarget, billing_pin: billingPin, request_id: newBillingRequestId() }),
+      const res = await callFunction('stripe-billing-run', {
+        token: session.access_token,
+        timeoutMs: SLOW_FUNCTION_TIMEOUT_MS,
+        body: { ...chargeTarget, billing_pin: billingPin, request_id: newBillingRequestId() },
       })
       const data = await res.json()
       if (!res.ok || data.error) {
@@ -942,15 +943,15 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
       const chargeTarget = item.storage_kind === 'customer_item'
         ? { tenancy_id: item.tenancy_id }
         : { unit_id: item.id }
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-billing-run`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const res = await callFunction('stripe-billing-run', {
+        token: session.access_token,
+        timeoutMs: SLOW_FUNCTION_TIMEOUT_MS,
+        body: {
           ...chargeTarget,
           months: oneTimeMonths,
           billing_pin: billingPin,
           request_id: newBillingRequestId(),
-        }),
+        },
       })
       const data = await res.json()
       if (!res.ok || data.error) {
@@ -988,10 +989,9 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
       const body =
         `Hi ${tenantName(item)}, this is a reminder that your ${label} storage payment is ${behind}.` +
         ` Please arrange payment at your earliest convenience.`
-      await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-sms`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to: item.tenant_phone, body, ref_id: refId, unit_type: unitType }),
+      await callFunction('send-sms', {
+        token: session.access_token,
+        body: { to: item.tenant_phone, body, ref_id: refId, unit_type: unitType },
       })
       setSmsLog(prev => [{
         id: crypto.randomUUID(), ref_id: refId, unit_type: unitType,
@@ -1012,14 +1012,14 @@ export function StorageSheet({ item, isPaid, onClose, onTogglePaid, onAssigned }
       const { data: { session } } = await supabase.auth.getSession()
       if (!session?.access_token) return { error: 'Sign in again before sending this invite.' }
 
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-card-invite`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const res = await callFunction('send-card-invite', {
+        token: session.access_token,
+        timeoutMs: SLOW_FUNCTION_TIMEOUT_MS,
+        body: {
           customer_id: customer.id,
           billing_pin: pin,
           request_id: newBillingRequestId(),
-        }),
+        },
       })
       const result = await res.json()
       if (!res.ok || result.error) return { error: result.error || 'Could not send card invite.' }
@@ -1850,15 +1850,15 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
       const { data: { session } } = await supabase.auth.getSession()
       if (!session?.access_token) return { error: 'Sign in again before removing this payment.' }
 
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-billing-run`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const res = await callFunction('stripe-billing-run', {
+        token: session.access_token,
+        timeoutMs: SLOW_FUNCTION_TIMEOUT_MS,
+        body: {
           action: 'remove_latest_payment',
           portable_asset_id: asset.id,
           billing_pin: pin,
           request_id: newBillingRequestId(),
-        }),
+        },
       })
       const data = await res.json()
       if (!res.ok || data.error) return { error: data.error || 'Could not remove payment.' }
@@ -1919,10 +1919,9 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
       const body =
         `Hi ${tenantName(rental)}, this is a reminder that your ${asset.label} storage payment is ${behind}.` +
         ` Please arrange payment at your earliest convenience.`
-      await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-sms`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to: rental.tenant_phone, body, ref_id: asset.id, unit_type: 'portable' }),
+      await callFunction('send-sms', {
+        token: session.access_token,
+        body: { to: rental.tenant_phone, body, ref_id: asset.id, unit_type: 'portable' },
       })
       setSmsLog(prev => [{
         id: crypto.randomUUID(), ref_id: asset.id, unit_type: 'portable',
@@ -1943,14 +1942,14 @@ function PortableStorageSheet({ asset, rental, isPaid, onClose, onTogglePaid, on
       const { data: { session } } = await supabase.auth.getSession()
       if (!session?.access_token) return { error: 'Sign in again before sending this invite.' }
 
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-card-invite`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const res = await callFunction('send-card-invite', {
+        token: session.access_token,
+        timeoutMs: SLOW_FUNCTION_TIMEOUT_MS,
+        body: {
           customer_id: customer.id,
           billing_pin: pin,
           request_id: newBillingRequestId(),
-        }),
+        },
       })
       const result = await res.json()
       if (!res.ok || result.error) return { error: result.error || 'Could not send card invite.' }

@@ -1,9 +1,17 @@
 import { clientsClaim, skipWaiting } from 'workbox-core'
-import { precacheAndRoute } from 'workbox-precaching'
+import { cleanupOutdatedCaches, createHandlerBoundToURL, precacheAndRoute } from 'workbox-precaching'
+import { NavigationRoute, registerRoute } from 'workbox-routing'
 
 skipWaiting()
 clientsClaim()
+cleanupOutdatedCaches()
 precacheAndRoute(self.__WB_MANIFEST)
+
+// Every route in the app is client-side, so only "/" was ever in the precache.
+// Without this, relaunching the PWA on its last route (or opening it from a
+// notification, which lands on a deep link) had to reach the network before the
+// app could even start, and a weak signal showed a blank screen instead.
+registerRoute(new NavigationRoute(createHandlerBoundToURL('/index.html')))
 
 self.addEventListener('push', event => {
   const data = event.data?.json() ?? {}

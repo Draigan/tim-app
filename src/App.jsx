@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { getUserAccess } from '@/lib/authz'
+import { isRetryableError } from '@/lib/utils'
 import { installErrorReporting } from '@/lib/errorReporter'
 import { VOICE_TRIAL_EVENT } from '@/lib/voiceTrial'
 import { Button } from '@/components/ui/button'
@@ -33,6 +34,7 @@ import OnlinePayments from '@/pages/OnlinePayments'
 import Invoices from '@/pages/Invoices'
 import AccountantPortal from '@/pages/AccountantPortal'
 import Notifications from '@/pages/Notifications'
+import Notes from '@/pages/Notes'
 import VoiceDeploy from '@/pages/VoiceDeploy'
 import Verifier from '@/pages/Verifier'
 
@@ -54,6 +56,38 @@ function redirectCustomerReturnPath() {
   const targetPath = CUSTOMER_RETURN_PATHS.get(normalizedPath)
   if (!targetPath || window.location.origin === STORAGE_PUBLIC_ORIGIN) return
   window.location.replace(`${STORAGE_PUBLIC_ORIGIN}${targetPath}${window.location.search}${window.location.hash}`)
+}
+
+// How long the app may sit on a bare splash before it owes the user an
+// explanation. Supabase retries a token refresh for up to 30s on its own, and
+// the screen used to stay empty for all of it.
+const BOOT_SLOW_MS = 6000
+
+function BootScreen({ error, slow, onRetry }) {
+  if (!error && !slow) {
+    return <div style={{ height: '100dvh', background: 'var(--color-background)' }} />
+  }
+
+  return (
+    <div
+      className="flex h-full items-center justify-center px-6 text-center"
+      style={{ height: '100dvh', background: 'var(--color-background)' }}
+    >
+      <div className="w-full max-w-sm space-y-4">
+        <h1 className="text-lg font-semibold">
+          {error ? 'Cannot reach Timberfell' : 'Still connecting...'}
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          {error
+            ? 'You are still signed in. The app just could not reach the server.'
+            : 'This is taking longer than usual. Check your signal.'}
+        </p>
+        <Button type="button" variant="outline" className="w-full" onClick={onRetry}>
+          Try again
+        </Button>
+      </div>
+    </div>
+  )
 }
 
 function AccessDenied({ roleLabel }) {
@@ -89,6 +123,9 @@ function AccessDenied({ roleLabel }) {
 
 export default function App() {
   const [session, setSession] = useState(undefined)
+  const [bootError, setBootError] = useState(null)
+  const [bootSlow, setBootSlow] = useState(false)
+  const [bootAttempt, setBootAttempt] = useState(0)
   const [needsPassword, setNeedsPassword] = useState(
     () => sessionStorage.getItem('pendingInvite') === '1'
   )
@@ -107,8 +144,31 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => setSession(session))
+    let cancelled = false
+    const slowTimer = setTimeout(() => { if (!cancelled) setBootSlow(true) }, BOOT_SLOW_MS)
+
+    supabase.auth.getSession()
+      .then(({ data, error }) => {
+        if (cancelled) return
+        // A token refresh that died on the network still reports "no session".
+        // Falling through to the login screen there tells the user they were
+        // signed out, when the account is fine and only the connection is not.
+        if (error && isRetryableError(error)) { setBootError(error); return }
+        setBootError(null)
+        setSession(data?.session ?? null)
+      })
+      .catch(err => { if (!cancelled) setBootError(err) })
+      .finally(() => clearTimeout(slowTimer))
+
+    return () => { cancelled = true; clearTimeout(slowTimer) }
+  }, [bootAttempt])
+
+  useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      // The initial event repeats the read the boot effect already owns, and on
+      // a failed refresh it reports a sign-out that never happened.
+      if (event === 'INITIAL_SESSION') return
+      setBootError(null)
       setSession(session)
       if (event === 'SIGNED_IN') window.history.replaceState(null, '', '/')
       if (event === 'USER_UPDATED') { sessionStorage.removeItem('pendingInvite'); setNeedsPassword(false) }
@@ -116,7 +176,19 @@ export default function App() {
     return () => subscription.unsubscribe()
   }, [])
 
-  if (session === undefined) return <div style={{ height: '100dvh', background: 'var(--color-background)' }} />
+  if (session === undefined || bootError) {
+    return (
+      <BootScreen
+        error={bootError}
+        slow={bootSlow}
+        onRetry={() => {
+          setBootError(null)
+          setBootSlow(false)
+          setBootAttempt(n => n + 1)
+        }}
+      />
+    )
+  }
 
   if (needsPassword) return <ThemeProvider><Login onPasswordSet={() => setNeedsPassword(false)} /></ThemeProvider>
 
@@ -171,6 +243,7 @@ export default function App() {
           <Route path="/invoices" element={requireAccess(access.canManageRevenue, <Invoices />)} />
           <Route path="/accountant" element={requireAccess(access.canAccessAccountantPortal, <AccountantPortal />)} />
           <Route path="/notifications" element={requireAccess(access.canViewNotifications, <Notifications />)} />
+          <Route path="/notes" element={requireAccess(access.canUseApp, <Notes />)} />
           <Route path="/voice-deploy" element={requireAccess(access.canUseVoiceDeploy, <VoiceDeploy />)} />
           <Route path="/verifier" element={requireAccess(access.canManageAssets, <Verifier />)} />
           <Route path="*" element={<Navigate to="/" replace />} />

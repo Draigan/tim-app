@@ -1,4 +1,5 @@
 import { supabase } from './supabase'
+import { fetchWithTimeout, isTransientNetworkMessage } from './network'
 
 const DEDUPE_MS = 60_000
 const MAX_DETAIL_LENGTH = 600
@@ -69,11 +70,16 @@ function reportKey(source, message) {
 
 export function reportErrorToSuperuser(reason, context = {}) {
   if (typeof window === 'undefined') return
+  // A phone in a dead spot is not an app error. Reporting those buried the
+  // real ones under a stream of push notifications.
+  if (navigator.onLine === false) return
 
   const source = String(context.source || 'app')
   const details = errorDetails(reason)
   const message = truncate(details.message, MAX_DETAIL_LENGTH)
   if (!message) return
+
+  if (isTransientNetworkMessage(message)) return
 
   const key = reportKey(source, message)
   const now = Date.now()
@@ -101,20 +107,23 @@ async function sendReport({ title, body, url, metadata }) {
     const { data: { session } } = await supabase.auth.getSession()
     if (!session?.access_token) return
 
-    await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-push`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${session.access_token}`,
-        'Content-Type': 'application/json',
+    await fetchWithTimeout(
+      `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-push`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          to_superuser: true,
+          title,
+          body,
+          url,
+          error: metadata,
+        }),
       },
-      body: JSON.stringify({
-        to_superuser: true,
-        title,
-        body,
-        url,
-        error: metadata,
-      }),
-    })
+    )
   } catch {
     // Error reporting must never create a second app error.
   }

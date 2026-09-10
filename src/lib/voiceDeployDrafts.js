@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase'
 import { newClientId, throwSupabaseError } from '@/lib/utils'
+import { isFunctionsFetchError } from '@/lib/functions'
 
 export const VOICE_DEPLOY_BUCKET = 'voice-deploy-audio'
 
@@ -50,6 +51,14 @@ async function readableFunctionError(error, response) {
     // Keep the Supabase error if the response body is unavailable.
   }
 
+  if (!message && isFunctionsFetchError(error)) {
+    const dropped = new Error('Could not reach the server. Check your connection and try again.')
+    dropped.name = 'NetworkError'
+    dropped.retryable = true
+    dropped.cause = error
+    return dropped
+  }
+
   if (!message) return error
 
   const next = new Error(message)
@@ -57,6 +66,30 @@ async function readableFunctionError(error, response) {
   next.cause = error
   if (typeof source?.status === 'number') next.status = source.status
   return next
+}
+
+// The function writes its result straight onto the draft row, so a connection
+// that drops mid-call loses the answer, not the work.
+const TERMINAL_STATUSES = new Set(['transcribed', 'parse_failed', 'failed'])
+const SETTLE_TIMEOUT_MS = 90_000
+const SETTLE_POLL_MS = 2_000
+
+async function waitForDraftToSettle(draftId, { timeoutMs = SETTLE_TIMEOUT_MS } = {}) {
+  const deadline = Date.now() + timeoutMs
+
+  for (;;) {
+    let draft = null
+    try {
+      draft = await fetchDraft(draftId)
+    } catch {
+      // Still offline. Keep waiting until the deadline rather than giving up on
+      // work the server is most likely still doing.
+    }
+
+    if (draft && TERMINAL_STATUSES.has(draft.status)) return draft
+    if (Date.now() >= deadline) return draft
+    await new Promise(resolve => setTimeout(resolve, SETTLE_POLL_MS))
+  }
 }
 
 async function fetchDraft(draftId) {
@@ -103,6 +136,19 @@ export async function uploadAndTranscribeVoiceRecording(recording, context = nul
 
   if (error) {
     const invokeError = await readableFunctionError(error, response)
+
+    // A dropped connection is not a failed transcription. iOS kills in-flight
+    // requests when the app is backgrounded or the signal dips, and this call
+    // runs long enough for that to be routine — so wait for the row the
+    // function is still writing instead of reporting an error over it.
+    if (isFunctionsFetchError(error)) {
+      const settled = await waitForDraftToSettle(draftId)
+      if (settled && TERMINAL_STATUSES.has(settled.status)) {
+        return { draft: settled, error: settled.status === 'failed' ? invokeError : null }
+      }
+      return { draft: settled || inserted, error: invokeError }
+    }
+
     try {
       return { draft: await fetchDraft(draftId), error: invokeError }
     } catch {

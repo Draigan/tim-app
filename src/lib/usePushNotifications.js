@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { supabase } from './supabase'
+import { callFunction } from './functions'
 
 const VAPID_PUBLIC_KEY = import.meta.env.VITE_VAPID_PUBLIC_KEY
 
@@ -11,13 +11,9 @@ function urlBase64ToUint8Array(base64String) {
 }
 
 async function pushFetch(body) {
-  const { data: { session } } = await supabase.auth.getSession()
-  const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/push-subscribe`
-  return fetch(url, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
+  // Storing a subscription is an upsert, so a repeat after a dropped connection
+  // costs nothing and saves the user from silently losing notifications.
+  return callFunction('push-subscribe', { body, attempts: 2 })
 }
 
 export function usePushNotifications() {
