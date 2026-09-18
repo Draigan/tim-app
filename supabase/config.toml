@@ -46,6 +46,13 @@ verify_jwt = false
 import_map = "./functions/storage-reminders/deno.json"
 entrypoint = "./functions/storage-reminders/index.ts"
 
+# Called by pg_cron with no JWT; the cron secret header is what authorises it.
+[functions.weekly-summary]
+enabled = true
+verify_jwt = false
+import_map = "./functions/weekly-summary/deno.json"
+entrypoint = "./functions/weekly-summary/index.ts"
+
 [functions.public-storage-availability]
 enabled = true
 verify_jwt = false

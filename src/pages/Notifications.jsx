@@ -244,7 +244,7 @@ export default function Notifications() {
                         <span className="text-[11px] text-muted-foreground whitespace-nowrap">{fmtDate(notification.created_at)}</span>
                       </div>
                       {notification.body && (
-                        <p className="text-sm text-muted-foreground mt-1 leading-snug">{notification.body}</p>
+                        <p className="text-sm text-muted-foreground mt-1 leading-snug whitespace-pre-line">{notification.body}</p>
                       )}
                       <div className="flex items-center gap-2 mt-2">
                         <Badge variant={badgeVariant(notification.severity)}>

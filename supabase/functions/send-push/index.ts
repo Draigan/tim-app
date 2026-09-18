@@ -7,7 +7,9 @@ const CORS = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
-const ADMIN_EMAIL = 'tim@timberfell.ca'
+// Push-service contact address only. Never used to decide who sees what —
+// roles do that.
+const VAPID_CONTACT = (Deno.env.get('VAPID_CONTACT_EMAIL') ?? 'd@d.d').trim().toLowerCase()
 const DEFAULT_SUPERUSER_EMAILS = ['d@d.d']
 const MAX_TITLE_LENGTH = 80
 const MAX_BODY_LENGTH = 180
@@ -21,8 +23,14 @@ const SUPERUSER_NOTIFICATION_KINDS: Record<string, { type: string; severity: 'in
   storage_view: { type: 'storage_view', severity: 'info' },
 }
 
+// Manager alerts are filed the same way, so a client can pick a filing but
+// never invent a notification type.
+const MANAGER_NOTIFICATION_KINDS: Record<string, { type: string; severity: 'info' | 'success' }> = {
+  calendar_event: { type: 'calendar_event', severity: 'info' },
+}
+
 webpush.setVapidDetails(
-  `mailto:${ADMIN_EMAIL}`,
+  `mailto:${VAPID_CONTACT}`,
   Deno.env.get('VAPID_PUBLIC_KEY')!,
   Deno.env.get('VAPID_PRIVATE_KEY')!,
 )
@@ -49,10 +57,6 @@ function safeUrl(value: unknown): string {
   return value
 }
 
-function firstName(value: string): string {
-  return value.trim().split(/\s+/)[0] || 'Chat'
-}
-
 function emailsFromEnv(name: string, fallback: string[] = []): string[] {
   const raw = Deno.env.get(name)
   const values = raw
@@ -63,15 +67,18 @@ function emailsFromEnv(name: string, fallback: string[] = []): string[] {
 
 const SUPERUSER_EMAILS = emailsFromEnv('SUPERUSER_EMAILS', DEFAULT_SUPERUSER_EMAILS)
 
-function userHasSuperuserRole(user: any): boolean {
+// Legacy "admin" users are owner-level too, matching app_private.current_user_is_owner().
+const OWNER_ROLES = new Set(['owner', 'admin'])
+
+function userHasRole(user: any, allowed: Set<string>): boolean {
   const metadata = user?.app_metadata ?? {}
   const role = metadata.role
-  if (typeof role === 'string' && SUPERUSER_ROLES.has(role.toLowerCase())) return true
+  if (typeof role === 'string' && allowed.has(role.toLowerCase())) return true
 
   const roles = metadata.roles
-  if (Array.isArray(roles)) return roles.some(item => SUPERUSER_ROLES.has(String(item).toLowerCase()))
+  if (Array.isArray(roles)) return roles.some(item => allowed.has(String(item).toLowerCase()))
   if (roles && typeof roles === 'object') {
-    return [...SUPERUSER_ROLES].some(item => Boolean(roles[item]))
+    return [...allowed].some(item => Boolean(roles[item]))
   }
 
   return false
@@ -79,7 +86,18 @@ function userHasSuperuserRole(user: any): boolean {
 
 function isSuperuserAccount(user: any): boolean {
   const email = typeof user?.email === 'string' ? user.email.trim().toLowerCase() : ''
-  return userHasSuperuserRole(user) || SUPERUSER_EMAILS.includes(email)
+  return userHasRole(user, SUPERUSER_ROLES) || SUPERUSER_EMAILS.includes(email)
+}
+
+// Everyone the staff inbox policy lets read a row, so push and inbox agree.
+function isManagerAccount(user: any): boolean {
+  return isSuperuserAccount(user) || userHasRole(user, OWNER_ROLES)
+}
+
+// Deployment and pickup announcements are the owner's alone — the superuser
+// deliberately stays out of that stream, matching the 'admin' audience policy.
+function isOwnerOnlyAccount(user: any): boolean {
+  return userHasRole(user, OWNER_ROLES) && !isSuperuserAccount(user)
 }
 
 function metadataObject(value: unknown): Record<string, unknown> {
@@ -145,42 +163,11 @@ async function superuserIds(): Promise<string[]> {
   return users.filter(isSuperuserAccount).map(user => user.id)
 }
 
-async function chatPayloadForCaller(userId: string, body: Record<string, unknown>): Promise<string | Response> {
-  const messageId = typeof body.message_id === 'string' ? body.message_id.trim() : ''
-  let message: any = null
-
-  if (messageId) {
-    const { data } = await supabaseAdmin
-      .from('messages')
-      .select('id, user_id, sender_name, content, sent_at')
-      .eq('id', messageId)
-      .eq('user_id', userId)
-      .maybeSingle()
-    message = data
-  } else {
-    const content = cleanText(body.body, 1000)
-    if (!content) return json({ error: 'message_id required' }, 400)
-
-    const since = new Date(Date.now() - 5 * 60 * 1000).toISOString()
-    const { data } = await supabaseAdmin
-      .from('messages')
-      .select('id, user_id, sender_name, content, sent_at')
-      .eq('user_id', userId)
-      .eq('content', content)
-      .gte('sent_at', since)
-      .order('sent_at', { ascending: false })
-      .limit(1)
-      .maybeSingle()
-    message = data
-  }
-
-  if (!message) return json({ error: 'Forbidden' }, 403)
-
-  return JSON.stringify({
-    title: cleanText(firstName(message.sender_name ?? 'Chat'), MAX_TITLE_LENGTH) ?? 'Chat',
-    body: cleanText(message.content, MAX_BODY_LENGTH) ?? 'New message',
-    url: '/chat',
-  })
+// The owner plus every superuser — the people who run the business, as opposed
+// to the superuser-only stream that carries app errors.
+async function managerIds(): Promise<string[]> {
+  const { data: { users } } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 })
+  return users.filter(isManagerAccount).map(user => user.id)
 }
 
 Deno.serve(async (req) => {
@@ -192,7 +179,7 @@ Deno.serve(async (req) => {
   if (!user) return json({ error: 'Unauthorized' }, 401)
 
   const requestBody = await req.json()
-  const { title, body, url, exclude_user_id, to_all, to_self, to_superuser } = requestBody
+  const { title, body, url, exclude_user_id, to_self, to_superuser, to_managers } = requestBody
 
   const cleanedTitle = cleanText(title, MAX_TITLE_LENGTH)
   const cleanedBody = cleanText(body, MAX_BODY_LENGTH)
@@ -233,6 +220,45 @@ Deno.serve(async (req) => {
     return json({ ok: true, sent })
   }
 
+  if (to_managers) {
+    if (!cleanedTitle || !cleanedBody) return json({ error: 'title and body required' }, 400)
+
+    const kind = MANAGER_NOTIFICATION_KINDS[String(requestBody.kind ?? '')]
+      ?? MANAGER_NOTIFICATION_KINDS.calendar_event
+
+    const targetUrl = safeUrl(url)
+
+    // The row is filed for everyone who can read it, including whoever acted —
+    // the inbox is a record, not just an alert.
+    await createAppNotification({
+      audience: 'staff',
+      title: cleanedTitle,
+      body: cleanedBody,
+      url: targetUrl,
+      type: kind.type,
+      severity: kind.severity,
+      metadata: {
+        sender_user_id: user.id,
+        ...metadataObject(requestBody.metadata),
+      },
+    }).catch(err => {
+      console.error('Manager app notification failed.', err)
+    })
+
+    // Nobody needs a push about something they just did themselves.
+    const targetIds = (await managerIds()).filter(id => id !== user.id)
+    if (!targetIds.length) return json({ ok: true, sent: 0 })
+
+    const payload = JSON.stringify({ title: cleanedTitle, body: cleanedBody, url: targetUrl })
+    const { data: subs } = await supabaseAdmin
+      .from('push_subscriptions')
+      .select('*')
+      .in('user_id', targetIds)
+    if (!subs?.length) return json({ ok: true, sent: 0 })
+    const sent = await sendToSubs(subs, payload)
+    return json({ ok: true, sent })
+  }
+
   if (to_self) {
     if (!cleanedTitle || !cleanedBody) return json({ error: 'title and body required' }, 400)
     const payload = JSON.stringify({ title: cleanedTitle, body: cleanedBody, url: safeUrl(url) })
@@ -242,28 +268,16 @@ Deno.serve(async (req) => {
     return json({ ok: true, sent })
   }
 
-  if (to_all) {
-    const payload = await chatPayloadForCaller(user.id, requestBody)
-    if (payload instanceof Response) return payload
-
-    // Broadcast is only for recorded chat messages. Never trust a client-selected exclude target.
-    const { data: subs } = await supabaseAdmin
-      .from('push_subscriptions')
-      .select('*')
-      .neq('user_id', user.id)
-    if (!subs?.length) return json({ ok: true, sent: 0 })
-    const sent = await sendToSubs(subs, payload)
-    return json({ ok: true, sent })
-  }
-
   if (!cleanedTitle || !cleanedBody) return json({ error: 'title and body required' }, 400)
 
-  const { data: { users } } = await supabaseAdmin.auth.admin.listUsers({ perPage: 100 })
-  const adminUser = users.find(u => u.email === ADMIN_EMAIL)
-  if (!adminUser) return json({ ok: true, sent: 0 })
+  // Deployment and pickup announcements: filed to the owner's stream only.
+  const { data: { users } } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 })
+  const ownerIds = users.filter(isOwnerOnlyAccount).map(u => u.id)
+  if (!ownerIds.length) return json({ ok: true, sent: 0 })
 
-  // Normal mode: notify admin about employee actions
-  if (exclude_user_id === adminUser.id) return json({ ok: true, sent: 0 })
+  // Nobody needs an announcement about something they just did themselves.
+  const targetIds = ownerIds.filter(id => id !== user.id && id !== exclude_user_id)
+  if (!targetIds.length) return json({ ok: true, sent: 0 })
   const targetUrl = safeUrl(url)
   const payload = JSON.stringify({ title: cleanedTitle, body: cleanedBody, url: NOTIFICATION_INBOX_URL })
 
@@ -283,7 +297,7 @@ Deno.serve(async (req) => {
   const { data: subs } = await supabaseAdmin
     .from('push_subscriptions')
     .select('*')
-    .eq('user_id', adminUser.id)
+    .in('user_id', targetIds)
   if (!subs?.length) return json({ ok: true, sent: 0 })
   const sent = await sendToSubs(subs, payload)
   return json({ ok: true, sent })
