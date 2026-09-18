@@ -60,7 +60,7 @@ export default function PushPrompt() {
               <DialogTitle>Are you sure?</DialogTitle>
             </DialogHeader>
             <p className="text-sm text-muted-foreground mt-1">
-              You won't be able to receive chat messages or deployment updates without notifications enabled.
+              You won't be able to receive deployment updates or alerts without notifications enabled.
             </p>
             <div className="flex flex-col gap-2 mt-3">
               <Button className="w-full" onClick={handleEnable} disabled={loading}>

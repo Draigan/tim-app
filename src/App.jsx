@@ -17,7 +17,6 @@ import AssetDetail from '@/pages/AssetDetail'
 import DeployAsset from '@/pages/DeployAsset'
 import Settings from '@/pages/Settings'
 import History from '@/pages/History'
-import Chat from '@/pages/Chat'
 import Calendar from '@/pages/Calendar'
 import AssetManager from '@/pages/AssetManager'
 import Storage from '@/pages/Storage'
@@ -224,7 +223,6 @@ export default function App() {
           <Route path="/assets/:id" element={requireAccess(access.canUseApp, <AssetDetail />)} />
           <Route path="/deploy/:assetId" element={requireAccess(access.canUseApp, <DeployAsset />)} />
           <Route path="/history" element={requireAccess(access.canViewHistory, <History />)} />
-          <Route path="/chat" element={requireAccess(access.canUseApp, <Chat />)} />
           <Route path="/calendar" element={requireAccess(access.canManageCalendar, <Calendar />)} />
           <Route path="/settings" element={requireAccess(access.canUseApp, <Settings />)} />
           <Route path="/asset-manager" element={requireAccess(access.canManageAssets, <AssetManager />)} />

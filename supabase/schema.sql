@@ -63,21 +63,6 @@ create view yard_assets as
     where d.asset_id = a.id and d.picked_up_at is null
   );
 
--- Team chat messages
-create table messages (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id) on delete cascade,
-  sender_name text not null,
-  content text not null,
-  sent_at timestamptz default now()
-);
-
-alter table messages enable row level security;
-create policy "authenticated users can read messages" on messages
-  for select using (auth.uid() is not null);
-create policy "users can insert own messages" on messages
-  for insert with check (auth.uid() = user_id);
-
 -- Push notification subscriptions (one row per browser/device per user)
 create table push_subscriptions (
   id uuid primary key default gen_random_uuid(),
