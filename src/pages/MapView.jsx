@@ -5,6 +5,7 @@ import { MAPBOX_TOKEN, YARD, geocodeAddress } from '@/lib/mapbox'
 import { useRealtime } from '@/lib/useRealtime'
 import { supabase } from '@/lib/supabase'
 import { getMarkerColor } from '@/lib/utils'
+import { TABLER_ICONS } from '@/lib/icons'
 import AssetBottomSheet from '@/components/AssetBottomSheet'
 import { Button } from '@/components/ui/button'
 import { Mic, LocateFixed, Layers, Search, X, SlidersHorizontal } from 'lucide-react'
@@ -13,7 +14,7 @@ import { useAccess } from '@/lib/useAccess'
 
 mapboxgl.accessToken = MAPBOX_TOKEN
 
-const ICON_KEYS = ['trash', 'package', 'car', 'stairs', 'tool', 'toilet-paper']
+const ICON_KEYS = Object.keys(TABLER_ICONS)
 const COLORS = { red: '#ef4444', yellow: '#f59e0b', green: '#22c55e', blue: '#3b82f6' }
 
 function colorKey(dep) {
@@ -82,16 +83,6 @@ function filterDeployments(deps, urgency, types) {
 }
 
 async function loadPinImages(map, shouldContinue = () => true) {
-  const contents = {}
-  await Promise.all(ICON_KEYS.map(async k => {
-    try {
-      const text = await fetch(`https://api.iconify.design/tabler/${k}.svg`).then(r => r.text())
-      contents[k] = (text.match(/<svg[^>]*>([\s\S]*?)<\/svg>/i)?.[1] ?? '').replace(/currentColor/g, 'STROKE')
-    } catch (e) {
-      console.error('icon fetch failed', k, e)
-      contents[k] = ''
-    }
-  }))
 
   const PIN_BODY = (hex, gradId) => `
     <ellipse cx="13.5" cy="34.8" rx="10.5" ry="5.25" fill="url(#${gradId})"/>
@@ -143,7 +134,7 @@ async function loadPinImages(map, shouldContinue = () => true) {
   await Promise.all(
     Object.entries(COLORS).flatMap(([ck, hex]) =>
       ICON_KEYS.map(ik => {
-        const inner = contents[ik].replace(/STROKE/g, '#1e293b')
+        const inner = TABLER_ICONS[ik].replace(/currentColor/g, '#1e293b')
         const gradId = `sg-${ck}-${ik}`
         return renderPin(`pin-${ck}-${ik}`, `
           <defs><radialGradient id="${gradId}"><stop offset="10%" stop-opacity="0.4"/><stop offset="100%" stop-opacity="0.05"/></radialGradient></defs>
