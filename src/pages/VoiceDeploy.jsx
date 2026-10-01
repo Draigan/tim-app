@@ -5,7 +5,7 @@ import { AlertCircle, CalendarDays, CheckCircle2, Loader2, LocateFixed, MapPin, 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { PickupDialog, ReviewRequestDialog } from '@/components/AssetBottomSheet'
+import { PickupDialog } from '@/components/AssetBottomSheet'
 import { cn, formatPhone, formatPhoneInput, getErrorMessage, newClientId, retryTransient, throwSupabaseError } from '@/lib/utils'
 import { useOnlineStatus } from '@/lib/useOnlineStatus'
 import { saveVoiceRecording } from '@/lib/voiceRecordings'
@@ -234,7 +234,6 @@ export default function VoiceDeploy() {
   const [activeDraft, setActiveDraft] = useState(null)
   const [pickupTarget, setPickupTarget] = useState(null)
   const [pickupDialogOpen, setPickupDialogOpen] = useState(false)
-  const [reviewDialogOpen, setReviewDialogOpen] = useState(false)
 
   function stopStream() {
     streamRef.current?.getTracks().forEach(track => track.stop())
@@ -679,20 +678,11 @@ export default function VoiceDeploy() {
   async function completeConflictPickup() {
     const pickedAssetId = pickupTarget?.asset_id
     setPickupDialogOpen(false)
-    setReviewDialogOpen(false)
     await loadCandidates()
     if (pickedAssetId) setResolvedAssetId(pickedAssetId)
     setPickupTarget(null)
   }
 
-  function handleConflictPickupConfirmed() {
-    setPickupDialogOpen(false)
-    if (pickupTarget?.customer_phone) {
-      setReviewDialogOpen(true)
-      return
-    }
-    void completeConflictPickup()
-  }
 
   const recording = capture === 'recording'
   const processing = capture === 'processing'
@@ -1265,21 +1255,9 @@ export default function VoiceDeploy() {
           open={pickupDialogOpen}
           onOpenChange={open => {
             setPickupDialogOpen(open)
-            if (!open && !reviewDialogOpen) setPickupTarget(null)
+            if (!open) setPickupTarget(null)
           }}
-          onConfirm={handleConflictPickupConfirmed}
-        />
-      )}
-
-      {pickupTarget && (
-        <ReviewRequestDialog
-          deployment={pickupTarget}
-          open={reviewDialogOpen}
-          onOpenChange={open => {
-            setReviewDialogOpen(open)
-            if (!open) void completeConflictPickup()
-          }}
-          onDone={completeConflictPickup}
+          onConfirm={() => void completeConflictPickup()}
         />
       )}
     </div>
