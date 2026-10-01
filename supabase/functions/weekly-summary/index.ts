@@ -7,7 +7,7 @@ const DEFAULT_SUPERUSER_EMAILS = ['d@d.d']
 const CALENDAR_URL = '/calendar'
 const SUPERUSER_ROLES = new Set(['superuser'])
 
-// The push banner is short by nature; the inbox row carries the full week.
+// The push banner is short by nature; the inbox row carries the full period.
 const MAX_PUSH_BODY_LENGTH = 180
 const MAX_PUSH_EVENTS = 3
 const MAX_INBOX_EVENTS = 25
@@ -133,12 +133,24 @@ function timeLabel(value: unknown): string {
   return ` ${hour % 12 || 12}:${m} ${hour < 12 ? 'AM' : 'PM'}`
 }
 
-function eventLine(event: any, weekStart: string, weekEnd: string): string {
-  // An event that runs into the week from before it still belongs on the day
-  // the week opens, not on a date the reader cannot see.
-  const from = event.from_date < weekStart ? weekStart : event.from_date
+function monthLabel(iso: string) {
+  return new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-CA', {
+    month: 'long',
+    timeZone: 'UTC',
+  })
+}
+
+function lastDayOfMonth(iso: string) {
+  const d = new Date(`${iso}T00:00:00Z`)
+  return dateStr(new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)))
+}
+
+function eventLine(event: any, periodStart: string, periodEnd: string): string {
+  // An event that runs into the period from before it still belongs on the day
+  // the period opens, not on a date the reader cannot see.
+  const from = event.from_date < periodStart ? periodStart : event.from_date
   const spans = event.to_date > from
-  const through = spans ? ` → ${dayLabel(event.to_date > weekEnd ? weekEnd : event.to_date)}` : ''
+  const through = spans ? ` → ${dayLabel(event.to_date > periodEnd ? periodEnd : event.to_date)}` : ''
   return `${dayLabel(from)}${timeLabel(event.start_time)}${through} · ${event.title}`
 }
 
@@ -174,14 +186,19 @@ async function sendPush(targetIds: string[], payload: string) {
   return results.filter(r => r.status === 'fulfilled').length
 }
 
-async function createAppNotification(title: string, body: string, metadata: Record<string, unknown>) {
+async function createAppNotification(
+  type: string,
+  title: string,
+  body: string,
+  metadata: Record<string, unknown>,
+) {
   // Filed as staff so both the owner and the superuser can read it back.
   const { error } = await supabase.from('app_notifications').insert({
     audience: 'staff',
     title,
     body,
     url: CALENDAR_URL,
-    type: 'weekly_summary',
+    type,
     severity: 'info',
     metadata,
   })
@@ -196,19 +213,25 @@ Deno.serve(async (req) => {
   const authorizationError = authorizeCron(req)
   if (authorizationError) return authorizationError
 
+  // The same job covers the Sunday week-ahead and the 1st-of-month summary;
+  // the cron body picks which one this run is.
+  const requestBody = await req.json().catch(() => ({}))
+  const monthly = requestBody?.period === 'month'
+
   try {
     const today = new Date()
     today.setUTCHours(0, 0, 0, 0)
 
-    const weekStart = dateStr(today)
-    const weekEnd = addDays(weekStart, 6)
+    const periodStart = dateStr(today)
+    const periodEnd = monthly ? lastDayOfMonth(periodStart) : addDays(periodStart, 6)
+    const heading = monthly ? monthLabel(periodStart) : 'Week ahead'
 
-    // Anything overlapping the week, so a run that started earlier still shows.
+    // Anything overlapping the period, so a run that started earlier still shows.
     const { data: events, error } = await supabase
       .from('calendar_events')
       .select('id, title, from_date, to_date, start_time')
-      .lte('from_date', weekEnd)
-      .gte('to_date', weekStart)
+      .lte('from_date', periodEnd)
+      .gte('to_date', periodStart)
       .order('from_date', { ascending: true })
       .order('start_time', { ascending: true, nullsFirst: true })
 
@@ -216,14 +239,14 @@ Deno.serve(async (req) => {
 
     const list = events ?? []
     const title = list.length
-      ? `Week ahead · ${list.length} event${list.length === 1 ? '' : 's'}`
-      : 'Week ahead · nothing scheduled'
+      ? `${heading} · ${list.length} event${list.length === 1 ? '' : 's'}`
+      : `${heading} · nothing scheduled`
 
-    const lines = list.slice(0, MAX_INBOX_EVENTS).map(e => eventLine(e, weekStart, weekEnd))
+    const lines = list.slice(0, MAX_INBOX_EVENTS).map(e => eventLine(e, periodStart, periodEnd))
     const inboxExtra = list.length > MAX_INBOX_EVENTS ? [`+${list.length - MAX_INBOX_EVENTS} more`] : []
     const inboxBody = list.length
       ? [...lines, ...inboxExtra].join('\n')
-      : `Nothing on the calendar for ${dayLabel(weekStart)} – ${dayLabel(weekEnd)}.`
+      : `Nothing on the calendar for ${dayLabel(periodStart)} – ${dayLabel(periodEnd)}.`
 
     const pushLines = lines.slice(0, MAX_PUSH_EVENTS)
     const pushExtra = list.length > MAX_PUSH_EVENTS ? ` +${list.length - MAX_PUSH_EVENTS} more` : ''
@@ -233,15 +256,16 @@ Deno.serve(async (req) => {
     )
 
     const metadata = {
-      week_start: weekStart,
-      week_end: weekEnd,
+      period: monthly ? 'month' : 'week',
+      period_start: periodStart,
+      period_end: periodEnd,
       event_count: list.length,
       event_ids: list.map(e => e.id),
     }
 
     const targetIds = await recipientIds()
     const results = await Promise.allSettled([
-      createAppNotification(title, inboxBody, metadata),
+      createAppNotification(monthly ? 'monthly_summary' : 'weekly_summary', title, inboxBody, metadata),
       targetIds.length
         ? sendPush(targetIds, JSON.stringify({ title, body: pushBody, url: CALENDAR_URL }))
         : Promise.resolve(0),
@@ -254,7 +278,7 @@ Deno.serve(async (req) => {
     }
 
     const sent = results[1].status === 'fulfilled' ? results[1].value : 0
-    return json({ ok: true, week_start: weekStart, week_end: weekEnd, events: list.length, sent })
+    return json({ ok: true, period_start: periodStart, period_end: periodEnd, events: list.length, sent })
   } catch (err) {
     console.error(err)
     return json({ error: String(err) }, 500)
