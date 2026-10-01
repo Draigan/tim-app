@@ -144,7 +144,7 @@ function RefundSuccessView({ result, onDone }) {
 
 // ─── customer sheet ───────────────────────────────────────────────────────────
 
-function CustomerSheet({ customer, isNew, onClose, onSaved, canManageStorage }) {
+function CustomerSheet({ customer, isNew, onClose, onSaved, canManageStorage, canArchiveCustomers }) {
   const navigate = useNavigate()
   const [editing, setEditing]       = useState(isNew)
   const [saving, setSaving]         = useState(false)
@@ -776,7 +776,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved, canManageStorage }) 
                 </div>
                 {saveError && <p className="text-sm text-destructive">{saveError}</p>}
               </div>
-            ) : hasBlockingCustomerLinks ? (
+            ) : !canArchiveCustomers ? null : hasBlockingCustomerLinks ? (
               <p className="text-xs text-muted-foreground text-center">
                 {canManageStorage ? 'Resolve active deployments, storage, and credits before archiving' : 'Resolve active deployments before archiving'}
               </p>
@@ -853,7 +853,7 @@ function CustomerSheet({ customer, isNew, onClose, onSaved, canManageStorage }) 
 // ─── page ─────────────────────────────────────────────────────────────────────
 
 export default function Customers() {
-  const { canManageStorage } = useAccess()
+  const { canManageStorage, canArchiveCustomers } = useAccess()
   const [customers, setCustomers]         = useState([])
   const [loading, setLoading]             = useState(true)
   const [query, setQuery]                 = useState('')
@@ -1008,6 +1008,7 @@ export default function Customers() {
           onClose={() => setSelected(null)}
           onSaved={handleSaved}
           canManageStorage={canManageStorage}
+          canArchiveCustomers={canArchiveCustomers}
         />
       )}
 
@@ -1018,6 +1019,7 @@ export default function Customers() {
           onClose={() => setAdding(false)}
           onSaved={handleSaved}
           canManageStorage={canManageStorage}
+          canArchiveCustomers={canArchiveCustomers}
         />
       )}
     </div>

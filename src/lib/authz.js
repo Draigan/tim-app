@@ -126,6 +126,7 @@ export function getUserAccess(user) {
     canManageRevenue: superuser,
     canManageBilling: superuser,
     canManageAssets: manager,
+    canArchiveCustomers: superuser,
     canManageCalendar: manager,
     canViewHistory: manager,
     canRequestReviews: manager,
