@@ -43,12 +43,19 @@ function methodLabel(method) {
 }
 
 function emptyMethodTotals() {
-  return { stripe: 0, etransfer: 0, cash: 0, untracked: 0 }
+  return { stripe: 0, etransfer: 0, cash: 0, reimbursement: 0, untracked: 0 }
+}
+
+// Reimbursements are cash too, but they get their own bucket so they don't
+// silently inflate the Cash figure.
+function breakdownBucket(payment) {
+  return payment.isFullAmount ? 'reimbursement' : payment.paymentMethod
 }
 
 function methodBreakdown(payments) {
   return payments.reduce((totals, payment) => {
-    totals[payment.paymentMethod] = (totals[payment.paymentMethod] ?? 0) + payment.remaining
+    const bucket = breakdownBucket(payment)
+    totals[bucket] = (totals[bucket] ?? 0) + payment.remaining
     return totals
   }, emptyMethodTotals())
 }
@@ -57,6 +64,8 @@ function methodBreakdownText(totals) {
   return [
     `Stripe $${totals.stripe.toFixed(2)}`,
     `Cash $${totals.cash.toFixed(2)}`,
+    totals.etransfer > 0.01 ? `E-Transfer $${totals.etransfer.toFixed(2)}` : null,
+    totals.reimbursement > 0.01 ? `Reimbursements $${totals.reimbursement.toFixed(2)}` : null,
     totals.untracked > 0.01 ? `Untracked $${totals.untracked.toFixed(2)}` : null,
   ].filter(Boolean).join(' · ')
 }
@@ -169,7 +178,7 @@ export default function AdminRevenue() {
 
     const manualRows = (manualPayments ?? []).map(p => buildRow(
       'manual', p.id,
-      p.full_amount ? 'Cash · full amount' : 'Cash payment',
+      p.full_amount ? 'Reimbursement' : 'Cash payment',
       p.note || null,
       Number(p.amount || 0),
       Number(p.amount || 0),
@@ -314,7 +323,8 @@ export default function AdminRevenue() {
     }
     group.payments.push(payment)
     group.total += payment.remaining
-    group.methodTotals[payment.paymentMethod] = (group.methodTotals[payment.paymentMethod] ?? 0) + payment.remaining
+    const bucket = breakdownBucket(payment)
+    group.methodTotals[bucket] = (group.methodTotals[bucket] ?? 0) + payment.remaining
     groups.set(payment.clientKey, group)
     return groups
   }, new Map()).values()]
@@ -360,10 +370,24 @@ export default function AdminRevenue() {
               </div>
             </div>
             {reimbursements.length > 0 && (
-              <p className="text-xs text-muted-foreground mt-2.5 pt-2.5 border-t leading-relaxed">
-                Excludes ${reimbursedTotal.toFixed(2)} in reimbursements
-                {' · '}{reimbursements.length} entr{reimbursements.length !== 1 ? 'ies' : 'y'}
-              </p>
+              <div className="mt-2.5 pt-2.5 border-t space-y-1.5">
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Excludes ${reimbursedTotal.toFixed(2)} in reimbursements
+                  {' · '}{reimbursements.length} entr{reimbursements.length !== 1 ? 'ies' : 'y'}
+                </p>
+                {reimbursements.map(r => (
+                  <div key={r.key} className="flex items-baseline justify-between gap-3 text-xs">
+                    <span className="min-w-0 truncate">
+                      {r.tenantName || 'No note'}
+                      <span className="text-muted-foreground"> · {fmtDate(r.paidAt)}</span>
+                    </span>
+                    <span className="flex-shrink-0 font-medium">
+                      ${r.amount.toFixed(2)}
+                      {r.remaining <= 0.01 && <span className="text-green-600"> ✓</span>}
+                    </span>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         )}
