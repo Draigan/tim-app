@@ -4,7 +4,7 @@ import { supabase } from '@/lib/supabase'
 import { callFunction } from '@/lib/functions'
 import { useAccess } from '@/lib/useAccess'
 import { useRealtime } from '@/lib/useRealtime'
-import { ChevronLeft, ChevronRight, Plus, Trash2 } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Pencil, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -127,6 +127,21 @@ function EventDialog({ date, event, onClose, onSaved, onDeleted }) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(false)
+  // An existing event opens read-only; the form is one tap away.
+  const [editing, setEditing] = useState(!event)
+
+  // Backing out of an edit drops the changes and returns to the read-only view.
+  function cancelEdit() {
+    if (!event) return onClose()
+    setTitle(event.title ?? '')
+    setFromDate(event.from_date ?? '')
+    setToDate(event.to_date ?? '')
+    setStartTime(event.start_time?.slice(0, 5) ?? '')
+    setNotes(event.notes ?? '')
+    setColor(event.color ?? 'blue')
+    setError('')
+    setEditing(false)
+  }
 
   // An end date can never sit before the start date.
   function changeFromDate(value) {
@@ -182,6 +197,33 @@ function EventDialog({ date, event, onClose, onSaved, onDeleted }) {
     </Dialog>
   )
 
+  if (!editing) {
+    const c = colorMap[event.color] ?? colorMap.blue
+    const range = fmtRange(event.from_date, event.to_date)
+    return (
+      <Dialog open onOpenChange={onClose}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader className="pr-6">
+            <div className="flex items-start gap-3">
+              <div className={`w-2.5 h-2.5 rounded-full mt-1.5 flex-shrink-0 ${c.dot}`} />
+              <DialogTitle className="leading-snug break-words">{event.title}</DialogTitle>
+            </div>
+          </DialogHeader>
+          <div className="space-y-2 mt-2 pl-[22px] text-sm">
+            <p>{range ? `${fmtDay(event.from_date)} → ${fmtDay(event.to_date)}` : fmtDay(event.from_date)}</p>
+            <p className="text-muted-foreground">{event.start_time ? fmtTime(event.start_time) : 'All day'}</p>
+            {event.notes && <p className="whitespace-pre-wrap text-muted-foreground pt-1">{event.notes}</p>}
+          </div>
+          <div className="flex justify-end mt-4">
+            <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+              <Pencil size={13} className="mr-1.5" />Edit
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    )
+  }
+
   const invalidRange = Boolean(fromDate && toDate && toDate < fromDate)
 
   return (
@@ -231,7 +273,7 @@ function EventDialog({ date, event, onClose, onSaved, onDeleted }) {
                 <Trash2 size={15} className="text-destructive" />
               </Button>
             )}
-            <Button variant="outline" className="flex-1" onClick={onClose}>Cancel</Button>
+            <Button variant="outline" className="flex-1" onClick={cancelEdit}>Cancel</Button>
             <Button className="flex-1" onClick={save} disabled={saving || !title.trim() || !fromDate || !toDate || invalidRange}>
               {saving ? 'Saving…' : event ? 'Save' : 'Add'}
             </Button>
