@@ -866,6 +866,7 @@ async function chargePeriods(tenancy: any, periods: string[], extraAmount: numbe
     await recordExtraOnlyRevenue(extraAmountCents, extraTaxCents, `Unit ${tenancyLabel(tenancy)} - extra charge (${tenancy.tenant_name ?? 'unknown tenant'})`)
   }
 
+  return { status: 'charged', periods: periodCharges.map(charge => charge.period), amount: pi.amount / 100, paid_through_date: tenancy.paid_through_date ?? null }
 }
 
 async function chargePortablePeriods(rental: any, periods: string[], extraAmount: number, idempotencyKey?: string) {

@@ -1172,6 +1172,8 @@ export default function StorageBilling() {
         })
       } else if (data.status === 'skipped') {
         return { error: data.reason === 'no_card' ? 'No usable card on file.' : `Charge skipped: ${data.reason || 'unknown reason'}.` }
+      } else {
+        return { error: 'Could not confirm the charge. Check Stripe before trying again.' }
       }
     } catch (err) {
       return { error: err instanceof Error ? err.message : 'Charge failed.' }
